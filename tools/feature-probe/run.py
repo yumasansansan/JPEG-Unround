@@ -375,9 +375,17 @@ def import_std(tc: Toolchain, std: str, stdlib: str, workdir: Path) -> dict:
         entry = next((m for m in data.get("modules", []) if m.get("logical-name") == "std"), None)
         if not entry:
             return {"status": "skip", "note": f"{manifest} names no std module"}
-        source = (manifest.parent / entry["source-path"]).resolve()
+        # The paths in a manifest are relative to the lib directory of the LLVM or
+        # GCC installation. apt.llvm.org's packages keep the file itself in the
+        # multiarch directory and link to it from /usr/lib/llvm-N/lib, where the
+        # compiler does not look, so that directory is tried as well.
+        bases = [manifest.parent, manifest.resolve().parent]
+        if tc.tools_dir:
+            bases.append(tc.tools_dir.parent / "lib")
+        base = next((b for b in bases if (b / entry["source-path"]).exists()), manifest.parent)
+        source = (base / entry["source-path"]).resolve()
         for directory in entry.get("local-arguments", {}).get("system-include-directories", []):
-            extra += ["-isystem", str((manifest.parent / directory).resolve())]
+            extra += ["-isystem", str((base / directory).resolve())]
         extra += ["-Wno-reserved-module-identifier"]
     if not source.exists():
         return {"status": "skip", "note": f"{source} does not exist"}
@@ -492,8 +500,11 @@ def main() -> int:
         "target": next((v.split(":", 1)[1].strip() for v in version if v.startswith("Target:")), "?"),
         "cflags": tc.cflags, "ldflags": tc.ldflags, "std_flags": tc.std_flag,
         "environment": env, "standards": stds,
+        # Results in the order of the standards rather than of whichever build ended
+        # first, so that a report measured again differs only where a result does.
         "probes": [{"id": p.id, "lang": p.lang, "bundle": p.bundle, "meta": p.meta,
-                    "results": results.get(p.id, {})} for p in probes],
+                    "results": {s: results[p.id][s] for s in [*CXX_STDS, "c23"] if s in results.get(p.id, {})}}
+                   for p in probes],
         "macros": macros, "import_std": modules,
     }
     (out_dir / f"report-{label}.json").write_text(json.dumps(report, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")

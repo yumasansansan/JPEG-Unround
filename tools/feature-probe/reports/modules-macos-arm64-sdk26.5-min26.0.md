@@ -1,4 +1,4 @@
-## C++ modules through CMake (macos)
+## C++ modules through CMake (macos-arm64-sdk26.5-min26.0)
 
 ```
   import std is not probed: the SDK's libc++ has no libc++.modules.json

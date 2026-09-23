@@ -22,7 +22,7 @@ feature; it passes when it compiles, links and exits with status 0.
 | `c/c23.c` | C23 language and C library |
 | `cmake-modules/` | C++ modules through CMake and Ninja: a named module, `import std`, and headers mixed with `import std` |
 | `rust-link/` | Rust linked by LLD against a C23 static library in which `setjmp`/`longjmp` stays inside C |
-| `reports/` | the results measured on 2026-09-23: Windows 11 with the MSVC STL and Ubuntu 26.04 on WSL with libstdc++ 15 (Clang 23.1.3 of apt.llvm.org) on a desktop, and macOS 26.6.2 with the Xcode 26.6 SDK's libc++ in CI (run 35851566476), with that run's module and Rust results. CI's Windows and Linux gave the same results as the desktop, except OpenMP, which CI's Linux does not install |
+| `reports/` | the results measured on 2026-09-23: Windows 11 with the MSVC STL and Ubuntu 26.04 on WSL with libstdc++ 15 (Clang 23.1.3 of apt.llvm.org) on a desktop, and macOS 26.6.2 with Xcode 26.6 (macOS SDK 26.5) and its libc++ in CI (run 35858749541), with that run's module and Rust results. CI's Windows and Linux gave the same results as the desktop, except OpenMP, which CI's Linux does not install |
 
 ## Running
 
@@ -50,6 +50,13 @@ Xcode and the SDK, never taken from the LLVM toolchain, whose `std.cppm` needs
 newer headers than the SDK's. CI runs the whole set on all three systems, macOS
 with Xcode 26 and with the Xcode 27 preview (the `probe` job of
 `.github/workflows/ci.yml`), and keeps the reports as an artifact.
+
+With LLVM 23.1.2, ld64.lld cannot read the `.tbd` files of the macOS 27 SDK,
+which list a target it does not know (`arm64e.x1-macos`), so on Xcode 27 every
+program stops at its link, and the reports of that runner say what compiles
+and nothing more. LLVM's main branch accepts that target since 2026-09-11
+(llvm/llvm-project#222721); the backport to release/23.x
+(llvm/llvm-project#224185) was still open on 2026-09-23.
 
 ## Writing a probe
 
