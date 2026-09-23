@@ -101,7 +101,7 @@ static void on_output_message(j_common_ptr /* cinfo */) {}
 static void on_progress(j_common_ptr cinfo) {
   if (cinfo->is_decompressor == FALSE) return;
   reader* r = reader_of(cinfo);
-  const j_decompress_ptr decompress = (j_decompress_ptr)cinfo;
+  struct jpeg_decompress_struct* const decompress = (j_decompress_ptr)cinfo;
   if (decompress->input_scan_number > r->max_scans) {
     (void)snprintf(r->message, sizeof r->message, "the file has more than %d scans", (int)r->max_scans);
     fail(r, UNROUND_JPEGIO_ERROR_LIMIT);
@@ -192,7 +192,7 @@ static void open_source(reader* r, const uint8_t* data, size_t size) {
   jpeg_save_markers(&r->cinfo, JPEG_APP0 + 2, 0xFFFF);  // ICC profile
   (void)jpeg_read_header(&r->cinfo, TRUE);
 
-  const j_decompress_ptr c = &r->cinfo;
+  struct jpeg_decompress_struct* const c = &r->cinfo;
   // In the lossless process a data unit is one sample rather than a block of
   // eight by eight, and libjpeg says so here from the header on.
 #if JPEG_LIB_VERSION >= 70
@@ -205,8 +205,9 @@ static void open_source(reader* r, const uint8_t* data, size_t size) {
     (void)snprintf(r->message, sizeof r->message, "%d-bit JPEG is not supported", (int)c->data_precision);
     fail(r, UNROUND_JPEGIO_ERROR_UNSUPPORTED);
   }
-  const bool grayscale = c->num_components == 1 && c->jpeg_color_space == JCS_GRAYSCALE;
-  const bool three = c->num_components == 3 && (c->jpeg_color_space == JCS_YCbCr || c->jpeg_color_space == JCS_RGB);
+  const bool grayscale = (bool)(c->num_components == 1 && c->jpeg_color_space == JCS_GRAYSCALE);
+  const bool three =
+      (bool)(c->num_components == 3 && (c->jpeg_color_space == JCS_YCbCr || c->jpeg_color_space == JCS_RGB));
   if (!grayscale && !three) {
     (void)snprintf(r->message, sizeof r->message, "a JPEG of %d components in color space %d is not supported",
                    (int)c->num_components, (int)c->jpeg_color_space);
@@ -240,7 +241,7 @@ static void* allocate(reader* r, size_t count, size_t element_size) {
 }
 
 static void read_coefficients(reader* r, unround_jpegio_image* image) {
-  const j_decompress_ptr c = &r->cinfo;
+  struct jpeg_decompress_struct* const c = &r->cinfo;
   jvirt_barray_ptr* arrays = jpeg_read_coefficients(c);
   if (arrays == nullptr) fail_with(r, UNROUND_JPEGIO_ERROR_DECODE, "libjpeg returned no coefficients");
 
@@ -360,7 +361,7 @@ unround_jpegio_status unround_jpegio_read(const uint8_t* data, size_t size, cons
 }
 
 static void decode(reader* r, unround_jpegio_planes* planes) {
-  const j_decompress_ptr c = &r->cinfo;
+  struct jpeg_decompress_struct* const c = &r->cinfo;
   c->raw_data_out = TRUE;
   c->do_block_smoothing = FALSE;  // the planes are the inverse DCT of the coefficients and nothing else
   c->do_fancy_upsampling = FALSE;

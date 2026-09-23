@@ -1,0 +1,84 @@
+# SPDX-FileCopyrightText: 2026 Yuma Kakei <yumasansansan@gmail.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# What clang-tidy looks for in JPEG-Unround's own C and C++ (c/, cpp/, tests/).
+# ci/tidy.sh runs it over every file that a build compiles, and the lint job of
+# every push runs that. Every check named here is an error, as every compiler
+# warning is: the code is clean of them, and anything new is either a fault to fix
+# or a decision to write down where it is made, with a NOLINT and the reason.
+#
+# The checks are the ones that find faults, or that lead to code which holds up
+# better; the ones that only say how code should look are left out, since
+# .clang-format says that. The list follows ADLplug-Next's. What is left out, and
+# why:
+#
+#   bugprone-easily-swappable-parameters would have every function of two
+#     integers take a type of its own for each.
+#   bugprone-signed-bitwise sees the integral promotion of every uint8_t rather
+#     than a signedness that could go wrong; the undefined behaviour sanitizer
+#     finds the shifts that really can.
+#   clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling asks for
+#     memcpy_s and its kin, which are Microsoft's and not in the C or C++ this
+#     project is written in.
+#   misc-include-cleaner wants every name's own header included, where a C header
+#     like jpeglib.h brings its types with it by design.
+#   misc-non-private-member-variables-in-classes is about classes with
+#     invariants; this project's structs of plain data have none to protect.
+#   modernize-redundant-void-arg would take the void out of f(void), which is the
+#     one place it must not be taken out of: the void says what a function takes.
+#     This project checks the other way round (ci/void-params.py): a parameter
+#     list of nothing, written (), is an error there.
+#
+# Several of the checks here are not about faults but about saying what the code
+# means: readability-implicit-bool-conversion has a pointer compared with nullptr
+# and a number with 0; misc-const-correctness has a local that is never written
+# say const; cppcoreguidelines-init-variables has a local hold a value from the
+# line it is declared on; modernize-use-designated-initializers has the field
+# named where a value goes into a struct; modernize-use-nodiscard has a function
+# that answers a question say that the answer is the point of calling it.
+Checks: >
+  -*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-signed-bitwise,
+  clang-analyzer-*,
+  -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling,
+  concurrency-*,
+  cppcoreguidelines-init-variables,
+  cppcoreguidelines-narrowing-conversions,
+  cppcoreguidelines-pro-type-cstyle-cast,
+  cppcoreguidelines-pro-type-member-init,
+  cppcoreguidelines-pro-type-reinterpret-cast,
+  cppcoreguidelines-pro-type-static-cast-downcast,
+  cppcoreguidelines-pro-type-union-access,
+  cppcoreguidelines-slicing,
+  cppcoreguidelines-virtual-class-destructor,
+  google-explicit-constructor,
+  misc-*,
+  -misc-include-cleaner,
+  -misc-non-private-member-variables-in-classes,
+  modernize-deprecated-headers,
+  modernize-use-designated-initializers,
+  modernize-use-emplace,
+  modernize-use-nodiscard,
+  modernize-use-nullptr,
+  modernize-use-equals-default,
+  modernize-use-equals-delete,
+  modernize-use-override,
+  modernize-use-starts-ends-with,
+  performance-*,
+  -performance-enum-size,
+  readability-implicit-bool-conversion,
+  readability-misleading-indentation,
+  readability-named-parameter,
+  readability-non-const-parameter,
+  readability-qualified-auto,
+  readability-redundant-declaration,
+  readability-static-accessed-through-instance
+
+# Only this project's own code is reported in; ci/tidy.sh gives the same
+# directories anchored at the root of the checkout, so that libjpeg-turbo's
+# installed headers in the build directory are left out wherever it sits.
+HeaderFilterRegex: '/(c|cpp|tests)/'
+WarningsAsErrors: '*'
+FormatStyle: none

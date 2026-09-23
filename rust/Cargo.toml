@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: 2026 Yuma Kakei <yumasansansan@gmail.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# The Rust implementation of JPEG-Unround, as a Cargo workspace. jpegio-sys is
+# the C layer that all three implementations read JPEG files with, built by the
+# CMake project at the root of the repository; it is the only crate here that
+# holds unsafe code. The crates of the implementation itself come next to it.
+# No crate is fetched from crates.io.
+
+[workspace]
+members = ["jpegio-sys"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/yumasansansan/JPEG-Unround"
+publish = false
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "forbid"
+missing_debug_implementations = "deny"
+missing_docs = "deny"
+unused_qualifications = "deny"
+
+[workspace.lints.clippy]
+pedantic = { level = "deny", priority = -1 }
+undocumented_unsafe_blocks = "deny"
+multiple_unsafe_ops_per_block = "deny"
+cast_lossless = "deny"
+as_conversions = "deny"

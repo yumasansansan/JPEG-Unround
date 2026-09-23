@@ -139,7 +139,7 @@ static writer* writer_new(void) {
 }
 
 static void encode_coefficients(writer* w, const test_jpeg* spec) {
-  const j_compress_ptr c = &w->cinfo;
+  struct jpeg_compress_struct* const c = &w->cinfo;
   jpeg_create_compress(c);
   c->dest = &w->destination;
 
@@ -228,7 +228,7 @@ static void encode_coefficients(writer* w, const test_jpeg* spec) {
 }
 
 static void encode_lossless(writer* w, uint32_t width, uint32_t height, const uint8_t* samples) {
-  const j_compress_ptr c = &w->cinfo;
+  struct jpeg_compress_struct* const c = &w->cinfo;
   jpeg_create_compress(c);
   c->dest = &w->destination;
   c->image_width = (JDIMENSION)width;
@@ -315,7 +315,7 @@ typedef struct decoder {
 } decoder;
 
 static void decode_samples(decoder* d, const uint8_t* data, size_t size) {
-  const j_decompress_ptr c = &d->cinfo;
+  struct jpeg_decompress_struct* const c = &d->cinfo;
   jpeg_create_decompress(c);
   jpeg_mem_src(c, data, (unsigned long)size);
   (void)jpeg_read_header(c, TRUE);

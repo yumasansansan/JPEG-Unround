@@ -1,0 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Yuma Kakei <yumasansansan@gmail.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Lines of up to 120 columns, as in the C, the C++ and the Python of the project.
+max_width = 120

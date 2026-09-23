@@ -8,7 +8,17 @@
 # several threads at once; and on Ubuntu the fuzz targets, which are fuzzed for
 # a minute on every push (ci/fuzz.sh) and for longer once a day
 # (.github/workflows/fuzz.yml). A build also fails when one of its programs asks
-# the system for a library other than the C++ library and the C runtime.
+# the system for a library other than the C++ library and the C runtime. The
+# debug builds also read every parameter list of the project's C and C++ on each
+# system, where each one's own #if branches are compiled (ci/void-params.py).
+#
+# The rust job checks and tests the Rust implementation on each system
+# (ci/rust.sh), with the toolchain that rust/rust-toolchain.toml pins; the
+# python job the Python implementation (ci/python.sh), in the micromamba
+# environment of environment.yml (ci/micromamba.sh), with the shared C layer
+# built by the release preset. The lint job reads the C and C++ with clang-tidy
+# (ci/tidy.sh) and for their layout (ci/format.sh), and checks the checker of
+# parameter lists on cases of its own.
 #
 # The probe job measures what the pinned LLVM toolchain and the system's C++
 # library can do (ci/probe.sh): JPEG-Unround uses a C++23/26 or C23 feature only
@@ -77,6 +87,14 @@ jobs:
       - name: Test
         run: bash ci/test.sh "${{ matrix.preset }}"
 
+      - name: Read the parameter lists
+        if: ${{ matrix.preset == 'debug' }}
+        run: |
+          # Windows calls it python; there, python3 may be the Store's stub.
+          python=python3
+          if [ "$RUNNER_OS" = Windows ]; then python=python; fi
+          "$python" ci/void-params.py --build build/debug
+
       - name: Fuzz for a minute
         if: ${{ matrix.preset == 'fuzz' }}
         run: bash ci/fuzz.sh 60 fuzz-run/corpus fuzz-run/crashes
@@ -89,6 +107,89 @@ jobs:
           path: fuzz-run/crashes/
           if-no-files-found: ignore
           retention-days: 30
+
+  rust:
+    name: rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025-vs2026, ubuntu-26.04, macos-26]
+
+    steps:
+      - name: Check out
+        run: |
+          git config --global core.autocrlf false
+          git -c init.defaultBranch=main init --quiet
+          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          git fetch --no-tags --quiet --depth 1 origin "$GITHUB_SHA"
+          git checkout --quiet --detach "$GITHUB_SHA"
+          git submodule update --init --depth 1 --jobs 4
+          git log -1 --format='%H %s'
+
+      - name: Set up the toolchain
+        run: bash ci/setup.sh
+
+      - name: Check and test
+        run: bash ci/rust.sh
+
+  python:
+    name: python (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025-vs2026, ubuntu-26.04, macos-26]
+
+    steps:
+      - name: Check out
+        run: |
+          git config --global core.autocrlf false
+          git -c init.defaultBranch=main init --quiet
+          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          git fetch --no-tags --quiet --depth 1 origin "$GITHUB_SHA"
+          git checkout --quiet --detach "$GITHUB_SHA"
+          git submodule update --init --depth 1 --jobs 4
+          git log -1 --format='%H %s'
+
+      - name: Set up the toolchain
+        run: bash ci/setup.sh
+
+      - name: Set up micromamba and the environment
+        run: bash ci/micromamba.sh
+
+      - name: Check and test
+        run: bash ci/python.sh release
+
+  lint:
+    name: lint (ubuntu-26.04)
+    runs-on: ubuntu-26.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out
+        run: |
+          git config --global core.autocrlf false
+          git -c init.defaultBranch=main init --quiet
+          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          git fetch --no-tags --quiet --depth 1 origin "$GITHUB_SHA"
+          git checkout --quiet --detach "$GITHUB_SHA"
+          git submodule update --init --depth 1 --jobs 4
+          git log -1 --format='%H %s'
+
+      - name: Set up the toolchain
+        run: bash ci/setup.sh
+
+      - name: Lay out the C and C++
+        run: bash ci/format.sh
+
+      - name: Read the C and C++ with clang-tidy
+        run: bash ci/tidy.sh debug
+
+      - name: Check the checker of parameter lists
+        run: python3 ci/void-params.py --self-test
 
   probe:
     name: feature probes (${{ matrix.os }})

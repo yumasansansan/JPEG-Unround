@@ -1,0 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Yuma Kakei <yumasansansan@gmail.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Names that documentation writes as names, not as code ("..": and clippy's own).
+doc-valid-idents = ["CMake", ".."]

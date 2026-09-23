@@ -11,18 +11,19 @@
 // Built with libFuzzer when UNROUND_BUILD_FUZZERS is on; smoke.c runs it on
 // every system, on mutations of files of its own.
 
+#include "fuzz_jpegio.h"
+
 #include "unround/jpegio.h"
 
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
-int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size);
-
 static volatile uint8_t sink;
 
-static void require(bool condition) {
-  if (!condition) abort();
+// A promise of the C layer, as a comparison of C gives a truth: an int.
+static void require(int holds) {
+  if (holds == 0) abort();
 }
 
 // Reads every byte, so that the sanitizers see each of them read.

@@ -11,14 +11,13 @@
 // smoke --seeds DIRECTORY writes its own files there instead, as the corpus a
 // fuzzing run starts from (ci/fuzz.sh).
 
+#include "fuzz_jpegio.h"
 #include "test_jpeg.h"
 
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size);
 
 typedef struct rng {
   uint64_t state;
@@ -161,13 +160,13 @@ static bool write_file(const char* directory, int32_t kind, const uint8_t* data,
   FILE* file = fopen(path, "wb");
   if (file == nullptr) return false;
   const bool written = fwrite(data, 1, size, file) == size;
-  return fclose(file) == 0 && written;
+  return (bool)(fclose(file) == 0 && written);
 }
 
 static constexpr int32_t kinds = 24;
 
 int main(int argc, char** argv) {
-  const bool seeds_only = argc == 3 && strcmp(argv[1], "--seeds") == 0;
+  const bool seeds_only = (bool)(argc == 3 && strcmp(argv[1], "--seeds") == 0);
   if (argc > 1 && !seeds_only) return replay(argc - 1, argv + 1);
 
   rng g = {.state = UINT64_C(0x756E726F756E64)};  // "unround"

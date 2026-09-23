@@ -13,8 +13,10 @@
 #     release build (WITH_CRT_DLL, which libjpeg-turbo would otherwise leave
 #     off). The C layer frees memory that libjpeg allocates (the ICC profile),
 #     which works only when both use one runtime.
-#   - Position-independent code, so that the library can go into the shared C
-#     layer that Python loads.
+#   - Position-independent code with hidden symbols, so that the library can go
+#     into the shared C layer that Python loads without exporting libjpeg's own
+#     functions from it: a process that also loads another libjpeg (Pillow's,
+#     say) then keeps the two apart.
 #   - No SIMD: the SIMD code needs NASM on x86-64, which the toolchain does not
 #     have, and it adds nothing this project needs -- the coefficients are read
 #     by the entropy decoder, which has no SIMD, and the planes are decoded for
@@ -79,6 +81,7 @@ set(UNROUND_LIBJPEG_CACHE_ARGS
   "-DCMAKE_EXE_LINKER_FLAGS:STRING=-fuse-ld=lld"
   "-DCMAKE_C_FLAGS:STRING=${UNROUND_LIBJPEG_C_FLAGS}"
   "-DCMAKE_POSITION_INDEPENDENT_CODE:BOOL=ON"
+  "-DCMAKE_C_VISIBILITY_PRESET:STRING=hidden"
   "-DCMAKE_MSVC_RUNTIME_LIBRARY:STRING=${CMAKE_MSVC_RUNTIME_LIBRARY}"
   "-DENABLE_SHARED:BOOL=OFF"
   "-DENABLE_STATIC:BOOL=ON"

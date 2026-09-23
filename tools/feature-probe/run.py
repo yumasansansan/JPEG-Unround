@@ -507,8 +507,12 @@ def main() -> int:
                    for p in probes],
         "macros": macros, "import_std": modules,
     }
-    (out_dir / f"report-{label}.json").write_text(json.dumps(report, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
-    (out_dir / f"report-{label}.md").write_text(markdown(report), encoding="utf-8")
+    # Line ends are LF on every system, as the repository keeps them; Python would
+    # otherwise write CRLF on Windows, and a report measured again would differ
+    # from the last one on every line.
+    (out_dir / f"report-{label}.json").write_text(
+        json.dumps(report, indent=1, ensure_ascii=False) + "\n", encoding="utf-8", newline="\n")
+    (out_dir / f"report-{label}.md").write_text(markdown(report), encoding="utf-8", newline="\n")
 
     passed = sum(1 for p in report["probes"] for r in p["results"].values() if r["status"] == "pass")
     total = sum(1 for p in report["probes"] for r in p["results"].values() if r["status"] != "skip")

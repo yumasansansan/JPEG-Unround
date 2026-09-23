@@ -15,7 +15,9 @@
 #include <barrier>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
+#include <exception>
 #include <print>
 #include <source_location>
 #include <span>
@@ -118,8 +120,9 @@ void test_read(void) {
   const unround_jpegio_component& luma = image->components()[0];
   CHECK(luma.h_samp_factor == 2 && luma.v_samp_factor == 2);
   CHECK(luma.width_in_blocks == 5 && luma.height_in_blocks == 3);
-  CHECK(jpegio::coefficients(luma).size() == std::size_t{5 * 3 * 64});
-  CHECK(std::ranges::equal(jpegio::block(luma, 4, 2), std::span{file.coefficients[0]}.subspan((2 * 5 + 4) * 64, 64)));
+  CHECK(jpegio::coefficients(luma).size() == std::size_t{5} * 3 * 64);
+  CHECK(std::ranges::equal(jpegio::block(luma, 4, 2),
+                           std::span{file.coefficients[0]}.subspan(std::size_t{2 * 5 + 4} * 64, 64)));
   CHECK(jpegio::quant_table(luma)[0] == static_cast<std::uint16_t>(1 + 1 % 50));
   CHECK(image->components()[1].quant_table_slot == 1);
 }
@@ -131,10 +134,11 @@ void test_ownership(void) {
   jpegio::Image first = std::move(*read);
   CHECK(first.components().size() == 1 && first.progressive());
   jpegio::Image second = std::move(first);
-  CHECK(first.components().empty());  // NOLINT(bugprone-use-after-move): a moved-from image is empty
+  // A moved-from image is empty, which is what is checked.
+  CHECK(first.components().empty());  // NOLINT(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
   CHECK(second.components().size() == 1 && same_coefficients(second, file));
   first = std::move(second);
-  CHECK(second.components().empty());  // NOLINT(bugprone-use-after-move): as above
+  CHECK(second.components().empty());  // NOLINT(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
   CHECK(same_coefficients(first, file));
   jpegio::Image empty;
   CHECK(empty.components().empty() && empty.width() == 0);
@@ -153,9 +157,9 @@ void test_errors(void) {
   CHECK(!nothing.has_value() && nothing.error().code == jpegio::Errc::decode);
 
   const File file = make_file(40, 30, TEST_JPEG_YCBCR, 1, 3, false);
-  auto limited = jpegio::Image::read(file.data, jpegio::Options{.max_pixels = 40 * 30 - 1});
+  auto limited = jpegio::Image::read(file.data, jpegio::Options{.max_pixels = std::uint64_t{40} * 30 - 1});
   CHECK(!limited.has_value() && limited.error().code == jpegio::Errc::limit);
-  auto allowed = jpegio::Image::read(file.data, jpegio::Options{.max_pixels = 40 * 30});
+  const auto allowed = jpegio::Image::read(file.data, jpegio::Options{.max_pixels = std::uint64_t{40} * 30});
   CHECK(allowed.has_value());
 
   // Cut short: a warning, or an error when warnings are errors.
@@ -176,8 +180,9 @@ void test_planes(void) {
   CHECK(jpegio::samples(luma).size() == std::size_t{luma.stride} * luma.height);
   const unround_jpegio_plane& chroma = planes->planes()[1];
   CHECK(chroma.width == 24 && chroma.height == 16);
-  jpegio::Planes moved = std::move(*planes);
-  CHECK(planes->planes().empty());  // NOLINT(bugprone-use-after-move): a moved-from value is empty
+  const jpegio::Planes moved = std::move(*planes);
+  // Moved-from planes are empty, which is what is checked.
+  CHECK(planes->planes().empty());  // NOLINT(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
   CHECK(moved.planes().size() == 3);
 }
 
@@ -187,6 +192,7 @@ void test_threads(void) {
   constexpr std::size_t thread_count = 8;
   constexpr int rounds = 20;
   std::vector<File> files;
+  files.reserve(4);
   for (std::uint32_t i = 0; i < 4; ++i) {
     files.push_back(make_file(24 + 8 * i, 16 + 5 * i, i % 2 == 0 ? TEST_JPEG_YCBCR : TEST_JPEG_GRAYSCALE,
                               i % 3 == 0 ? 2 : 1, 10 + i, i % 2 == 1));
@@ -195,6 +201,7 @@ void test_threads(void) {
   std::atomic<int> mismatches{0};
   {
     std::vector<std::jthread> threads;
+    threads.reserve(thread_count);
     for (std::size_t t = 0; t < thread_count; ++t) {
       threads.emplace_back([&files, &start, &mismatches, t](void) {
         start.arrive_and_wait();
@@ -216,11 +223,19 @@ void test_threads(void) {
 }  // namespace
 
 int main(void) {
-  test_read();
-  test_ownership();
-  test_errors();
-  test_planes();
-  test_threads();
-  std::println(stderr, "{} of {} checks failed", failures.load(), checks.load());
+  // A test that throws -- out of memory, or a thread that cannot start -- fails
+  // with what it says, rather than ending the program without a word.
+  try {
+    test_read();
+    test_ownership();
+    test_errors();
+    test_planes();
+    test_threads();
+    std::println(stderr, "{} of {} checks failed", failures.load(), checks.load());
+  } catch (const std::exception& error) {
+    (void)std::fputs(error.what(), stderr);
+    (void)std::fputc('\n', stderr);
+    return EXIT_FAILURE;
+  }
   return failures.load() == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }

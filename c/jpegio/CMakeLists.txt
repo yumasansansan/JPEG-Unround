@@ -2,13 +2,37 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # The C layer (C23) over libjpeg-turbo, as a static library for the C++ and
-# Rust implementations; its tests; and its fuzz target.
+# Rust implementations and as a shared library for the Python one; its tests;
+# and its fuzz target.
 
 add_library(unround_jpegio STATIC src/jpegio.c)
 add_library(unround::jpegio ALIAS unround_jpegio)
 target_include_directories(unround_jpegio PUBLIC include)
 target_link_libraries(unround_jpegio PRIVATE unround::libjpeg)
 unround_target_defaults(unround_jpegio)
+
+if(UNROUND_WITH_PYTHON)
+  # The shared library that the Python implementation loads with ctypes, with
+  # libjpeg-turbo linked in. It exports the functions of unround/jpegio.h and
+  # nothing else (tests/check_exports.cmake checks), and it is written into
+  # python/ of the build directory, apart from the static library of the same
+  # name. Linux is asked to leave no symbol undefined; Apple's linker and
+  # Windows' do so anyway. A sanitizer build cannot: the sanitizer's runtime
+  # comes with the program that loads the library.
+  add_library(unround_jpegio_shared SHARED src/jpegio.c)
+  set_target_properties(unround_jpegio_shared PROPERTIES
+    OUTPUT_NAME unround_jpegio
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/python"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/python"
+    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/python")
+  target_include_directories(unround_jpegio_shared PUBLIC include)
+  target_compile_definitions(unround_jpegio_shared PRIVATE UNROUND_JPEGIO_BUILDING_SHARED)
+  target_link_libraries(unround_jpegio_shared PRIVATE unround::libjpeg)
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT UNROUND_SANITIZER_LIST)
+    target_link_options(unround_jpegio_shared PRIVATE "LINKER:-z,defs")
+  endif()
+  unround_target_defaults(unround_jpegio_shared)
+endif()
 
 if(UNROUND_BUILD_TESTS)
   # libjpeg's encoder and its standard decoding, for the tests of this layer

@@ -242,7 +242,7 @@ static int plane_error(const unround_jpegio_plane* plane, const unround_jpegio_c
       for (uint32_t y = 0; y < 8; ++y) {
         for (uint32_t x = 0; x < 8; ++x) {
           const long expected = lround(clamp(samples[y * 8 + x] + 128.0, 0.0, 255.0));
-          const int actual = plane->samples[(size_t)(by * 8 + y) * plane->stride + bx * 8 + x];
+          const int actual = plane->samples[((size_t)by * 8 + y) * plane->stride + (size_t)bx * 8 + x];
           const int difference = abs(actual - (int)expected);
           worst = difference > worst ? difference : worst;
         }
@@ -261,7 +261,7 @@ static void check_planes(const encoded* e, const unround_jpegio_image* image) {
     (void)fprintf(stderr, "  %s\n", message);
     return;
   }
-  CHECK(planes.num_components == image->num_components);
+  bool decoded = CHECK(planes.num_components == image->num_components);
   bool upsampled = false;
   for (int32_t ci = 0; ci < image->num_components; ++ci) {
     const unround_jpegio_component* c = &image->components[ci];
@@ -269,34 +269,40 @@ static void check_planes(const encoded* e, const unround_jpegio_image* image) {
     CHECK(p->width == c->width_in_blocks * 8);
     CHECK(p->height == c->height_in_blocks * 8);
     CHECK(p->stride >= p->width);
-    CHECK(p->samples != nullptr);
-    if (p->samples != nullptr) CHECK(plane_error(p, c) <= 1);
-    upsampled =
-        upsampled || c->h_samp_factor != image->max_h_samp_factor || c->v_samp_factor != image->max_v_samp_factor;
+    if (CHECK(p->samples != nullptr)) {
+      CHECK(plane_error(p, c) <= 1);
+    } else {
+      decoded = false;
+    }
+    if (c->h_samp_factor != image->max_h_samp_factor || c->v_samp_factor != image->max_v_samp_factor) {
+      upsampled = true;
+    }
   }
 
   // Without upsampling, libjpeg's standard decoding is the planes, cropped.
-  if (!upsampled) {
+  if (decoded && !upsampled) {
     uint8_t* samples = nullptr;
     uint32_t width = 0;
     uint32_t height = 0;
     int32_t components = 0;
     if (CHECK(test_jpeg_decode(e->data, e->size, &samples, &width, &height, &components, message, sizeof message) ==
-              0)) {
-      CHECK(width == image->width && height == image->height && components == image->num_components);
+              0) &&
+        CHECK(width == image->width && height == image->height && components == image->num_components)) {
       bool same = true;
       for (uint32_t y = 0; y < height && same; ++y) {
         for (uint32_t x = 0; x < width && same; ++x) {
           for (int32_t ci = 0; ci < components; ++ci) {
             const unround_jpegio_plane* p = &planes.planes[ci];
-            same = same && samples[((size_t)y * width + x) * (size_t)components + (size_t)ci] ==
-                               p->samples[(size_t)y * p->stride + x];
+            if (samples[((size_t)y * width + x) * (size_t)components + (size_t)ci] !=
+                p->samples[(size_t)y * p->stride + x]) {
+              same = false;
+            }
           }
         }
       }
       CHECK(same);
-      free(samples);
     }
+    free(samples);
   }
   unround_jpegio_planes_free(&planes);
   CHECK(planes.num_components == 0 && planes.planes[0].samples == nullptr);
@@ -457,7 +463,8 @@ static void put32(uint8_t* p, uint32_t value, bool little) {
 // An EXIF payload with an IFD of two entries: an image width, then the
 // orientation, with the type and count given.
 static size_t exif_payload(uint8_t* out, bool little, uint32_t orientation, uint32_t type, uint32_t count) {
-  memcpy(out, "Exif\0\0", 6);
+  static const uint8_t signature[6] = {'E', 'x', 'i', 'f', 0, 0};
+  memcpy(out, signature, sizeof signature);
   uint8_t* tiff = out + 6;
   tiff[0] = little ? 'I' : 'M';
   tiff[1] = tiff[0];
@@ -638,9 +645,9 @@ static void test_limits(void) {
   rng g = {.state = 3};
   encoded e = {};
   if (small_file(&e, &g)) {
-    unround_jpegio_options options = {.max_pixels = 40 * 30 - 1};
+    unround_jpegio_options options = {.max_pixels = (uint64_t)40 * 30 - 1};
     expect_status(e.data, e.size, &options, UNROUND_JPEGIO_ERROR_LIMIT, "40 x 30");
-    options.max_pixels = 40 * 30;
+    options.max_pixels = (uint64_t)40 * 30;
     expect_status(e.data, e.size, &options, UNROUND_JPEGIO_OK, nullptr);
   }
   encoded_free(&e);

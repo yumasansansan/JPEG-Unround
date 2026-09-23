@@ -1,0 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Yuma Kakei <yumasansansan@gmail.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Text is kept with LF line ends, in the repository and in every checkout, on
+# every system: a file that a tool on Windows wrote with CRLF is stored with LF
+# when it is added, rather than differing from its last version on every line.
+* text=auto eol=lf

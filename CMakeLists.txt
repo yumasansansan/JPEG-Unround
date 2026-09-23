@@ -73,6 +73,7 @@ option(UNROUND_WERROR "Treat warnings in JPEG-Unround's own sources as errors" O
 option(UNROUND_BUILD_TESTS "Build the tests and register them with CTest" ON)
 option(UNROUND_BUILD_FUZZERS "Build the fuzz targets with libFuzzer (not on Windows)" OFF)
 option(UNROUND_WITH_CPP "Build the C++ implementation" ON)
+option(UNROUND_WITH_PYTHON "Build the C layer as the shared library that the Python implementation loads" OFF)
 set(UNROUND_SANITIZERS "" CACHE STRING "Sanitizers to build with, comma-separated (address, undefined, thread)")
 
 # libFuzzer runs on Linux and macOS. On Windows it cannot be linked at all: the

@@ -1,0 +1,69 @@
+# SPDX-FileCopyrightText: 2026 Yuma Kakei <yumasansansan@gmail.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# The Python implementation of JPEG-Unround. Its environment is micromamba's
+# (environment.yml at the root of the repository); it reads JPEG files through
+# the C layer, built by CMake as a shared library (-DUNROUND_WITH_PYTHON=ON) and
+# found at the path in UNROUND_JPEGIO_LIBRARY. ci/python.sh builds that library
+# and runs ruff, mypy and pytest.
+
+[build-system]
+requires = ["setuptools>=84"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jpeg-unround"
+version = "0.1.0"
+description = "JPEG decoding that removes compression artifacts within the quantization intervals"
+license = "GPL-3.0-or-later"
+requires-python = ">=3.14"
+dependencies = ["numpy>=2.5"]
+
+[project.urls]
+Repository = "https://github.com/yumasansansan/JPEG-Unround"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+unround = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = ["-ra", "--strict-markers", "--strict-config"]
+xfail_strict = true
+filterwarnings = ["error"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py314"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+  "A", "ANN", "ARG", "B", "BLE", "C4", "E", "ERA", "F", "FBT", "FURB", "I", "N", "NPY", "PERF",
+  "PL", "PT", "PTH", "RET", "RUF", "S", "SIM", "T20", "TRY", "UP", "W",
+]
+ignore = [
+  "TRY003",  # an exception says what went wrong where it is raised
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = [
+  "PLR2004",  # a test compares with the numbers it expects
+  "S101",     # pytest's assert
+  "SLF001",   # a test looks at the layout of the ctypes structures
+]
+
+[tool.mypy]
+strict = true
+python_version = "3.14"
+files = ["src", "tests"]
+warn_unreachable = true
+
+# jpeglib has no types at all, and SciPy's are a package of their own
+# (scipy-stubs); the tests use each for one function.
+[[tool.mypy.overrides]]
+module = ["jpeglib", "jpeglib.*", "scipy", "scipy.*"]
+ignore_missing_imports = true
