@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: 2026 Yuma Kakei <yumasansansan@gmail.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Checks of the build itself. In a sanitizer build, one test for each of its
+# sanitizers makes the mistake that sanitizer finds and passes only when the
+# sanitizer's report is in the output, so that the silence of the other tests
+# means something. Leaks are looked for where LeakSanitizer runs, which is on
+# Linux (CMakeLists.txt).
+
+if(NOT UNROUND_SANITIZER_LIST)
+  return()
+endif()
+
+find_package(Threads REQUIRED)
+add_executable(unround_sanitizer_canary sanitizer_canary.cpp)
+target_link_libraries(unround_sanitizer_canary PRIVATE Threads::Threads)
+unround_target_defaults(unround_sanitizer_canary)
+
+set(canaries "")
+if("address" IN_LIST UNROUND_SANITIZER_LIST)
+  list(APPEND canaries "address=AddressSanitizer: heap-buffer-overflow")
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    list(APPEND canaries "leak=LeakSanitizer: detected memory leaks")
+  endif()
+endif()
+if("undefined" IN_LIST UNROUND_SANITIZER_LIST)
+  list(APPEND canaries "undefined=runtime error: signed integer overflow")
+endif()
+if("thread" IN_LIST UNROUND_SANITIZER_LIST)
+  list(APPEND canaries "thread=ThreadSanitizer: data race")
+endif()
+
+foreach(canary IN LISTS canaries)
+  string(FIND "${canary}" "=" split)
+  string(SUBSTRING "${canary}" 0 ${split} kind)
+  math(EXPR start "${split} + 1")
+  string(SUBSTRING "${canary}" ${start} -1 report)
+  unround_add_test(sanitizer.${kind} unround_sanitizer_canary ${kind})
+  set_tests_properties(sanitizer.${kind} PROPERTIES PASS_REGULAR_EXPRESSION "${report}")
+endforeach()

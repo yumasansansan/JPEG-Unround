@@ -1,0 +1,91 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 30, "patch": 0 },
+
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_LINKER_TYPE": "LLD",
+        "CMAKE_AR": "llvm-ar",
+        "CMAKE_RANLIB": "llvm-ranlib",
+        "CMAKE_NM": "llvm-nm",
+        "CMAKE_OBJCOPY": "llvm-objcopy",
+        "CMAKE_OBJDUMP": "llvm-objdump",
+        "CMAKE_STRIP": "llvm-strip",
+        "CMAKE_READELF": "llvm-readelf",
+        "CMAKE_ADDR2LINE": "llvm-addr2line",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "UNROUND_WERROR": "ON",
+        "UNROUND_PRESET": "${presetName}"
+      }
+    },
+    {
+      "name": "debug",
+      "displayName": "Debug",
+      "inherits": "base",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "release",
+      "displayName": "Release",
+      "inherits": "base",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+    },
+    {
+      "name": "sanitize",
+      "displayName": "RelWithDebInfo with the address and undefined sanitizers",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "UNROUND_SANITIZERS": "address,undefined"
+      }
+    },
+    {
+      "name": "tsan",
+      "displayName": "RelWithDebInfo with the thread and undefined sanitizers (Linux, macOS)",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "UNROUND_SANITIZERS": "thread,undefined"
+      }
+    },
+    {
+      "name": "fuzz",
+      "displayName": "The fuzz targets with libFuzzer and the address and undefined sanitizers (Linux, macOS)",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "UNROUND_SANITIZERS": "address,undefined",
+        "UNROUND_BUILD_FUZZERS": "ON"
+      }
+    }
+  ],
+
+  "buildPresets": [
+    { "name": "debug", "configurePreset": "debug" },
+    { "name": "release", "configurePreset": "release" },
+    { "name": "sanitize", "configurePreset": "sanitize" },
+    { "name": "tsan", "configurePreset": "tsan" },
+    { "name": "fuzz", "configurePreset": "fuzz" }
+  ],
+
+  "testPresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error", "timeout": 600 }
+    },
+    { "name": "debug", "configurePreset": "debug", "inherits": "base" },
+    { "name": "release", "configurePreset": "release", "inherits": "base" },
+    { "name": "sanitize", "configurePreset": "sanitize", "inherits": "base" },
+    { "name": "tsan", "configurePreset": "tsan", "inherits": "base" },
+    { "name": "fuzz", "configurePreset": "fuzz", "inherits": "base" }
+  ]
+}

@@ -1,13 +1,19 @@
 # SPDX-FileCopyrightText: 2026 Yuma Kakei <yumasansansan@gmail.com>
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# The probe job measures, on each of the three systems JPEG-Unround supports,
-# what the pinned LLVM toolchain and the system's C++ library can do (ci/probe.sh):
-# JPEG-Unround uses a C++23/26 or C23 feature only when its probe passes
-# everywhere, and macOS has no machine of its own but this one. The reports are
-# kept as an artifact and shown in the summary of the run. The build and test
-# jobs of the implementations will follow.
+# The build job builds and tests every preset of CMakePresets.json that a system
+# can build, on each of the three systems JPEG-Unround supports (ci/build.sh,
+# ci/test.sh): Debug, Release, and the address and undefined sanitizers
+# everywhere; the thread sanitizer on Ubuntu, where the C++ tests read files on
+# several threads at once; and on Ubuntu the fuzz targets, which are fuzzed for
+# a minute on every push (ci/fuzz.sh) and for longer once a day
+# (.github/workflows/fuzz.yml). A build also fails when one of its programs asks
+# the system for a library other than the C++ library and the C runtime.
 #
+# The probe job measures what the pinned LLVM toolchain and the system's C++
+# library can do (ci/probe.sh): JPEG-Unround uses a C++23/26 or C23 feature only
+# when its probe passes everywhere, and macOS has no machine of its own but this
+# one. The reports are kept as an artifact and shown in the summary of the run.
 # macOS is probed twice: on macos-26 with the Xcode 26 SDK, for macOS 26.0, and
 # on xcode-27 (a public preview of GitHub's, macOS 27 with the Xcode 27 SDK),
 # for macOS 26.0 and 27.0. What the newer SDK's headers bring shows for 26.0
@@ -35,6 +41,55 @@ defaults:
     shell: bash
 
 jobs:
+  build:
+    name: ${{ matrix.preset }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025-vs2026, ubuntu-26.04, macos-26]
+        preset: [debug, release, sanitize]
+        include:
+          - { os: ubuntu-26.04, preset: tsan }
+          - { os: ubuntu-26.04, preset: fuzz }
+
+    steps:
+      - name: Check out
+        run: |
+          # The commit, and the submodules at depth 1. Git keeps the files as
+          # committed, CRLF or LF, on every runner.
+          git config --global core.autocrlf false
+          git -c init.defaultBranch=main init --quiet
+          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          git fetch --no-tags --quiet --depth 1 origin "$GITHUB_SHA"
+          git checkout --quiet --detach "$GITHUB_SHA"
+          git submodule update --init --depth 1 --jobs 4
+          git log -1 --format='%H %s'
+          git submodule status
+
+      - name: Set up the toolchain
+        run: bash ci/setup.sh
+
+      - name: Build
+        run: bash ci/build.sh "${{ matrix.preset }}"
+
+      - name: Test
+        run: bash ci/test.sh "${{ matrix.preset }}"
+
+      - name: Fuzz for a minute
+        if: ${{ matrix.preset == 'fuzz' }}
+        run: bash ci/fuzz.sh 60 fuzz-run/corpus fuzz-run/crashes
+
+      - name: Keep the inputs that failed
+        if: ${{ failure() && matrix.preset == 'fuzz' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-crashes-${{ github.run_id }}
+          path: fuzz-run/crashes/
+          if-no-files-found: ignore
+          retention-days: 30
+
   probe:
     name: feature probes (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

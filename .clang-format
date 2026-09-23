@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: 2026 Yuma Kakei <yumasansansan@gmail.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# The shape of JPEG-Unround's C and C++: Google's style, with lines of up to 120
+# columns and the * and & of a declaration with its type.
+BasedOnStyle: Google
+ColumnLimit: 120
+DerivePointerAlignment: false
+PointerAlignment: Left
+Standard: Latest
+# Includes are sorted within the blocks they are written in: a block may have to
+# come before another (jpeglib.h needs stdio.h).
+IncludeBlocks: Preserve

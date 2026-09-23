@@ -1,0 +1,77 @@
+# SPDX-FileCopyrightText: 2026 Yuma Kakei <yumasansansan@gmail.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# The long fuzzing. Once a day, and whenever it is started by hand, the fuzz
+# target of the C layer runs with libFuzzer on Ubuntu, in the build of the fuzz
+# preset (the address and undefined sanitizers), for twenty minutes or for as
+# long as the run is asked to (ci/fuzz.sh). The corpus starts from the files the
+# smoke test writes; the inputs that fail are kept as an artifact.
+#
+# The one action, actions/upload-artifact, is pinned to the commit of its
+# release.
+
+name: Fuzz
+
+run-name: Fuzz, ${{ github.event.inputs.minutes || '20' }} minutes
+
+on:
+  schedule:
+    - cron: '41 18 * * *'
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: How long to fuzz
+        type: choice
+        default: '20'
+        options: ['1', '5', '10', '20', '60']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  fuzz:
+    name: fuzz (ubuntu-26.04)
+    runs-on: ubuntu-26.04
+    # The time asked for and half an hour for the build; an expression of GitHub's
+    # cannot add, so the limits are a table.
+    timeout-minutes: >-
+      ${{ fromJSON('{"1": 31, "5": 35, "10": 40, "20": 50, "60": 90}')[github.event.inputs.minutes || '20'] }}
+
+    steps:
+      - name: Check out
+        run: |
+          git config --global core.autocrlf false
+          git -c init.defaultBranch=main init --quiet
+          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          git fetch --no-tags --quiet --depth 1 origin "$GITHUB_SHA"
+          git checkout --quiet --detach "$GITHUB_SHA"
+          git submodule update --init --depth 1 --jobs 4
+          git log -1 --format='%H %s'
+
+      - name: Set up the toolchain
+        run: bash ci/setup.sh
+
+      - name: Build
+        run: bash ci/build.sh fuzz
+
+      - name: Fuzz
+        env:
+          MINUTES: ${{ github.event.inputs.minutes || '20' }}
+        run: bash ci/fuzz.sh "$((MINUTES * 60))" fuzz-run/corpus fuzz-run/crashes
+
+      - name: Keep the inputs that failed
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-crashes-${{ github.run_id }}
+          path: fuzz-run/crashes/
+          if-no-files-found: ignore
+          retention-days: 30
