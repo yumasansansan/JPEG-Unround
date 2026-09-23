@@ -163,7 +163,7 @@ def detect_toolchain(args) -> Toolchain:
     # The spelling of each standard that this compiler accepts.
     with tempfile.TemporaryDirectory() as tmp:
         src = Path(tmp) / "empty.cpp"
-        src.write_text("int main() {}\n")
+        src.write_text("int main(void) { return 0; }\n")
         for std in CXX_STDS:
             spellings = [std] + ({"c++26": ["c++2c"], "c++23": ["c++2b"], "c++20": ["c++2a"]}[std])
             for spelling in spellings:
@@ -279,7 +279,7 @@ def macro_program(names: list[str]) -> str:
         "#include <cstdio>",
         "#define PROBE_TEXT_OF(...) #__VA_ARGS__",
         "#define PROBE_TEXT(...) PROBE_TEXT_OF(__VA_ARGS__)",
-        "int main() {",
+        "int main(void) {",
     ]
     for name in names:
         attribute = re.fullmatch(r"__has_cpp_attribute\((\w+)\)", name)
@@ -290,7 +290,7 @@ def macro_program(names: list[str]) -> str:
         else:
             lines += [f"#ifdef {name}", f'  std::puts("{name}=" PROBE_TEXT({name}));', "#else",
                       f'  std::puts("{name}=-");', "#endif"]
-    lines += ["}", ""]
+    lines += ["  return 0;", "}", ""]
     return "\n".join(lines)
 
 
@@ -302,13 +302,13 @@ ENV_PROGRAM = r"""
 #endif
 #define PROBE_TEXT_OF(x) #x
 #define PROBE_TEXT(x) PROBE_TEXT_OF(x)
-int main() {
+int main(void) {
 #if defined(_LIBCPP_VERSION)
-  std::printf("stdlib=libc++ %d\n", (int)_LIBCPP_VERSION);
+  std::printf("stdlib=libc++ %d\n", static_cast<int>(_LIBCPP_VERSION));
 #elif defined(__GLIBCXX__)
-  std::printf("stdlib=libstdc++ %d (%ld)\n", (int)_GLIBCXX_RELEASE, (long)__GLIBCXX__);
+  std::printf("stdlib=libstdc++ %d (%ld)\n", static_cast<int>(_GLIBCXX_RELEASE), static_cast<long>(__GLIBCXX__));
 #elif defined(_MSVC_STL_UPDATE)
-  std::printf("stdlib=MSVC STL %d (%ld)\n", (int)_MSVC_STL_VERSION, (long)_MSVC_STL_UPDATE);
+  std::printf("stdlib=MSVC STL %d (%ld)\n", static_cast<int>(_MSVC_STL_VERSION), static_cast<long>(_MSVC_STL_UPDATE));
 #else
   std::printf("stdlib=unknown\n");
 #endif
@@ -316,12 +316,13 @@ int main() {
   std::printf("libc=glibc %s\n", gnu_get_libc_version());
 #endif
 #if defined(_MSC_VER)
-  std::printf("msvc_compat=%d\n", (int)_MSC_FULL_VER);
+  std::printf("msvc_compat=%d\n", static_cast<int>(_MSC_FULL_VER));
 #endif
 #if defined(__apple_build_version__)
-  std::printf("apple_clang=%d\n", (int)__apple_build_version__);
+  std::printf("apple_clang=%d\n", static_cast<int>(__apple_build_version__));
 #endif
   std::printf("clang=%s\n", __clang_version__);
+  return 0;
 }
 """
 
@@ -352,11 +353,24 @@ def import_std(tc: Toolchain, std: str, stdlib: str, workdir: Path) -> dict:
             return {"status": "skip", "note": "the MSVC tools directory was not found"}
         source = Path(match.group(1).replace("\\\\", "\\")) / "modules" / "std.ixx"
         extra = ["-Wno-include-angled-in-module-purview", "-Wno-reserved-module-identifier"]
+    elif tc.system == "macos":
+        # A macOS build compiles against the SDK's libc++, so its std module has to be that
+        # libc++'s. The manifest the compiler finds is the LLVM toolchain's, whose std.cppm needs
+        # headers newer than the SDK's, so only Xcode's and the SDK's own are looked for.
+        sdk = Path(tc.cflags[tc.cflags.index("-isysroot") + 1])
+        developer = Path(run(["xcode-select", "-p"]).stdout.strip())
+        candidates = [developer / "Toolchains" / "XcodeDefault.xctoolchain" / "usr" / "lib" / "libc++.modules.json",
+                      sdk / "usr" / "lib" / "libc++.modules.json"]
+        manifest = next((c for c in candidates if c.exists()), None)
+        if manifest is None:
+            return {"status": "skip",
+                    "note": "no libc++.modules.json for the SDK's libc++ in " + ", ".join(str(c.parent) for c in candidates)}
     else:
         manifest_name = "libc++.modules.json" if stdlib.startswith("libc++") else "libstdc++.modules.json"
         manifest = Path(run([tc.cxx, *tc.cflags, f"-print-file-name={manifest_name}"]).stdout.strip())
         if not manifest.is_absolute() or not manifest.exists():
             return {"status": "skip", "note": f"{manifest_name} is not found by the compiler"}
+    if not stdlib.startswith("MSVC STL"):
         data = json.loads(manifest.read_text(encoding="utf-8"))
         entry = next((m for m in data.get("modules", []) if m.get("logical-name") == "std"), None)
         if not entry:
@@ -376,7 +390,7 @@ def import_std(tc: Toolchain, std: str, stdlib: str, workdir: Path) -> dict:
     main_src, main_obj, exe = work / "main.cpp", work / f"main{tc.obj}", work / f"main{tc.exe}"
     main_src.write_text(
         "import std;\n"
-        "int main() {\n"
+        "int main(void) {\n"
         "  std::vector<int> v{1, 2, 3};\n"
         "  auto text = std::format(\"{}\", v.size());\n"
         "  return text == \"3\" && std::ranges::max(v) == 3 ? 0 : 1;\n"

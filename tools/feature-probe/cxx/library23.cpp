@@ -88,10 +88,9 @@ int main(void) {
 }
 
 //=== probe: views_zip
-//--- title: views::zip, zip_transform, adjacent, pairwise_transform
+//--- title: views::zip
 //--- paper: P2321R2
 //--- macro: __cpp_lib_ranges_zip
-#include <functional>
 #include <ranges>
 #include <vector>
 int main(void) {
@@ -99,10 +98,45 @@ int main(void) {
   std::vector<float> b{0.5f, 1.5f, 2.5f};
   float s = 0.0f;
   for (auto [x, y] : std::views::zip(a, b)) s += static_cast<float>(x) * y;
+  return s == 11.0f ? 0 : 1;
+}
+
+//=== probe: views_zip_transform
+//--- title: views::zip_transform
+//--- paper: P2321R2
+//--- macro: __cpp_lib_ranges_zip
+#include <functional>
+#include <ranges>
+#include <vector>
+int main(void) {
+  std::vector<int> a{1, 2, 3};
   auto sums = std::views::zip_transform(std::plus<>{}, a, a);
+  return sums[2] == 6 ? 0 : 1;
+}
+
+//=== probe: views_adjacent
+//--- title: views::adjacent
+//--- paper: P2321R2
+//--- macro: __cpp_lib_ranges_zip
+#include <ranges>
+#include <vector>
+int main(void) {
+  std::vector<int> a{1, 2, 3};
+  auto pairs = a | std::views::adjacent<2>;
+  auto [p, q] = *pairs.begin();
+  return std::ranges::distance(pairs) == 2 && p == 1 && q == 2 ? 0 : 1;
+}
+
+//=== probe: views_pairwise_transform
+//--- title: views::pairwise_transform (adjacent_transform)
+//--- paper: P2321R2
+//--- macro: __cpp_lib_ranges_zip
+#include <ranges>
+#include <vector>
+int main(void) {
+  std::vector<int> a{1, 2, 4};
   auto diffs = a | std::views::pairwise_transform([](int p, int q) -> int { return q - p; });
-  auto adjacent = a | std::views::adjacent<2>;
-  return s == 11.0f && sums[2] == 6 && diffs[0] == 1 && std::ranges::distance(adjacent) == 2 ? 0 : 1;
+  return diffs[0] == 1 && diffs[1] == 2 ? 0 : 1;
 }
 
 //=== probe: views_enumerate
@@ -134,47 +168,105 @@ int main(void) {
   return count == 12 && last == 11 ? 0 : 1;
 }
 
-//=== probe: views_chunk_slide_stride
-//--- title: views::chunk, chunk_by, slide, stride
-//--- paper: P2442R1, P2443R1, P1899R3
-//--- macro: __cpp_lib_ranges_chunk, __cpp_lib_ranges_slide, __cpp_lib_ranges_stride, __cpp_lib_ranges_chunk_by
+//=== probe: views_chunk
+//--- title: views::chunk
+//--- paper: P2442R1
+//--- macro: __cpp_lib_ranges_chunk
+#include <ranges>
+int main(void) {
+  auto chunks = std::views::iota(0, 10) | std::views::chunk(4);
+  return std::ranges::distance(chunks) == 3 ? 0 : 1;
+}
+
+//=== probe: views_slide
+//--- title: views::slide
+//--- paper: P2442R1
+//--- macro: __cpp_lib_ranges_slide
+#include <ranges>
+int main(void) {
+  auto windows = std::views::iota(0, 10) | std::views::slide(3);
+  return std::ranges::distance(windows) == 8 ? 0 : 1;
+}
+
+//=== probe: views_stride
+//--- title: views::stride
+//--- paper: P1899R3
+//--- macro: __cpp_lib_ranges_stride
+#include <ranges>
+int main(void) {
+  auto strided = std::views::iota(0, 10) | std::views::stride(3);
+  return std::ranges::distance(strided) == 4 ? 0 : 1;
+}
+
+//=== probe: views_chunk_by
+//--- title: views::chunk_by
+//--- paper: P2443R1
+//--- macro: __cpp_lib_ranges_chunk_by
 #include <functional>
 #include <ranges>
 #include <vector>
 int main(void) {
-  auto r = std::views::iota(0, 10);
-  auto chunks = r | std::views::chunk(4);
-  auto windows = r | std::views::slide(3);
-  auto strided = r | std::views::stride(3);
   std::vector<int> runs{1, 1, 2, 2, 2, 3};
   auto groups = runs | std::views::chunk_by(std::ranges::equal_to{});
-  return std::ranges::distance(chunks) == 3 && std::ranges::distance(windows) == 8 &&
-                 std::ranges::distance(strided) == 4 && std::ranges::distance(groups) == 3
-             ? 0
-             : 1;
+  return std::ranges::distance(groups) == 3 ? 0 : 1;
 }
 
-//=== probe: views_join_with_repeat
-//--- title: views::join_with, repeat, as_rvalue, as_const
-//--- paper: P2441R2, P2474R2, P2446R2, P2278R4
-//--- macro: __cpp_lib_ranges_join_with, __cpp_lib_ranges_repeat, __cpp_lib_ranges_as_rvalue, __cpp_lib_ranges_as_const
+//=== probe: views_join_with
+//--- title: views::join_with
+//--- paper: P2441R2
+//--- macro: __cpp_lib_ranges_join_with
 #include <ranges>
 #include <string>
-#include <utility>
 #include <vector>
 int main(void) {
   std::vector<std::string> words{"a", "b", "c"};
   std::string joined;
   for (char c : words | std::views::join_with(',')) joined += c;
-  auto rep = std::views::repeat(7, 3);
-  std::vector<std::string> moved;
-  for (auto&& s : words | std::views::as_rvalue) moved.push_back(std::forward<decltype(s)>(s));
-  auto view = moved | std::views::as_const;
-  return joined == "a,b,c" && std::ranges::distance(rep) == 3 && view[1] == "b" ? 0 : 1;
+  return joined == "a,b,c" ? 0 : 1;
 }
 
-//=== probe: ranges_fold
-//--- title: ranges::fold_left, fold_left_first, fold_right
+//=== probe: views_repeat
+//--- title: views::repeat
+//--- paper: P2474R2
+//--- macro: __cpp_lib_ranges_repeat
+#include <ranges>
+int main(void) {
+  auto rep = std::views::repeat(7, 3);
+  return std::ranges::distance(rep) == 3 && *rep.begin() == 7 ? 0 : 1;
+}
+
+//=== probe: views_as_rvalue
+//--- title: views::as_rvalue
+//--- paper: P2446R2
+//--- macro: __cpp_lib_ranges_as_rvalue
+#include <ranges>
+#include <string>
+#include <utility>
+#include <vector>
+int main(void) {
+  std::vector<std::string> words{"a", "b"};
+  std::vector<std::string> moved;
+  for (auto&& s : words | std::views::as_rvalue) moved.push_back(std::forward<decltype(s)>(s));
+  return moved.size() == 2uz && moved[1] == "b" ? 0 : 1;
+}
+
+//=== probe: views_as_const
+//--- title: views::as_const
+//--- paper: P2278R4
+//--- macro: __cpp_lib_ranges_as_const
+#include <ranges>
+#include <string>
+#include <type_traits>
+#include <vector>
+int main(void) {
+  std::vector<std::string> words{"a", "b"};
+  auto view = words | std::views::as_const;
+  static_assert(std::is_same_v<std::ranges::range_reference_t<decltype(view)>, const std::string&>);
+  return view[1] == "b" ? 0 : 1;
+}
+
+//=== probe: ranges_fold_left
+//--- title: ranges::fold_left
 //--- paper: P2322R6
 //--- macro: __cpp_lib_ranges_fold
 #include <algorithm>
@@ -182,10 +274,31 @@ int main(void) {
 #include <vector>
 int main(void) {
   std::vector<int> v{1, 2, 3, 4};
-  int s = std::ranges::fold_left(v, 0, std::plus{});
+  return std::ranges::fold_left(v, 0, std::plus{}) == 10 ? 0 : 1;
+}
+
+//=== probe: ranges_fold_left_first
+//--- title: ranges::fold_left_first
+//--- paper: P2322R6
+//--- macro: __cpp_lib_ranges_fold
+#include <algorithm>
+#include <vector>
+int main(void) {
+  std::vector<int> v{1, 4, 3, 2};
   auto m = std::ranges::fold_left_first(v, [](int a, int b) -> int { return a > b ? a : b; });
-  int r = std::ranges::fold_right(v, 0, std::minus{});
-  return s == 10 && m.has_value() && *m == 4 && r == -2 ? 0 : 1;
+  return m.has_value() && *m == 4 ? 0 : 1;
+}
+
+//=== probe: ranges_fold_right
+//--- title: ranges::fold_right
+//--- paper: P2322R6
+//--- macro: __cpp_lib_ranges_fold
+#include <algorithm>
+#include <functional>
+#include <vector>
+int main(void) {
+  std::vector<int> v{1, 2, 3, 4};
+  return std::ranges::fold_right(v, 0, std::minus{}) == -2 ? 0 : 1;
 }
 
 //=== probe: ranges_contains
@@ -463,8 +576,8 @@ int main(void) {
   return s == "3.142 1e-05 0.1" ? 0 : 1;
 }
 
-//=== probe: charconv_float
-//--- title: std::from_chars / to_chars for double and float
+//=== probe: from_chars_double
+//--- title: std::from_chars for double
 //--- paper: P0067R5
 //--- std: c++20
 //--- macro: __cpp_lib_to_chars
@@ -475,15 +588,50 @@ int main(void) {
   constexpr std::string_view in = "1.25e-3";
   double d = 0.0;
   auto r = std::from_chars(in.data(), in.data() + in.size(), d);
-  constexpr std::string_view in2 = "2.5";
+  return r.ec == std::errc{} && d == 1.25e-3 ? 0 : 1;
+}
+
+//=== probe: from_chars_float
+//--- title: std::from_chars for float
+//--- paper: P0067R5
+//--- std: c++20
+//--- macro: __cpp_lib_to_chars
+#include <charconv>
+#include <string_view>
+#include <system_error>
+int main(void) {
+  constexpr std::string_view in = "2.5";
   float f = 0.0f;
-  auto r2 = std::from_chars(in2.data(), in2.data() + in2.size(), f);
+  auto r = std::from_chars(in.data(), in.data() + in.size(), f);
+  return r.ec == std::errc{} && f == 2.5f ? 0 : 1;
+}
+
+//=== probe: to_chars_double
+//--- title: std::to_chars for double
+//--- paper: P0067R5
+//--- std: c++20
+//--- macro: __cpp_lib_to_chars
+#include <charconv>
+#include <string_view>
+#include <system_error>
+int main(void) {
   char out[32];
   auto w = std::to_chars(out, out + sizeof out, 0.5);
-  return r.ec == std::errc{} && d == 1.25e-3 && r2.ec == std::errc{} && f == 2.5f && w.ec == std::errc{} &&
-                 std::string_view(out, w.ptr) == "0.5"
-             ? 0
-             : 1;
+  return w.ec == std::errc{} && std::string_view(out, w.ptr) == "0.5" ? 0 : 1;
+}
+
+//=== probe: to_chars_float
+//--- title: std::to_chars for float
+//--- paper: P0067R5
+//--- std: c++20
+//--- macro: __cpp_lib_to_chars
+#include <charconv>
+#include <string_view>
+#include <system_error>
+int main(void) {
+  char out[32];
+  auto w = std::to_chars(out, out + sizeof out, 0.25f);
+  return w.ec == std::errc{} && std::string_view(out, w.ptr) == "0.25" ? 0 : 1;
 }
 
 //=== probe: filesystem_utf8

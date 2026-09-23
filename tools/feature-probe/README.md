@@ -38,9 +38,14 @@ bash ci/probe.sh probe-reports
 ```
 
 On macOS, `run.py` compiles against the SDK (`xcrun --show-sdk-path`) for the
-deployment target given with `--macos-min`; `ci/probe.sh` runs it for 14.0 and
-26.0. CI runs the whole set on all three systems (the `probe` job of
-`.github/workflows/ci.yml`) and keeps the reports as an artifact.
+deployment target given with `--macos-min`, 26.0 by default: JPEG-Unround
+supports macOS 26.0 and later, and the SDK's libc++ marks some features as
+available only from a given version (floating-point `std::from_chars` from 26.0).
+The std module for `import std` has to be the one of the SDK's libc++, so it is
+looked for in Xcode and the SDK, never taken from the LLVM toolchain, whose
+`std.cppm` needs newer headers than the SDK's. CI runs the whole set on all
+three systems (the `probe` job of `.github/workflows/ci.yml`) and keeps the
+reports as an artifact.
 
 ## Writing a probe
 

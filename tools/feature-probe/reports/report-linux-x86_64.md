@@ -1,8 +1,8 @@
 # Feature probes: linux-x86_64
 
-- Date: 2026-09-23T08:20:06+00:00
+- Date: 2026-09-23T10:49:27+00:00
 - System: Linux-6.18.40.1-microsoft-standard-WSL2-x86_64-with-glibc2.43 (x86_64)
-- Compiler: Ubuntu clang version 23.1.2 (++20260920033735+85ac56026243-1~exp1~20260920033753.76) (target x86_64-pc-linux-gnu)
+- Compiler: Ubuntu clang version 23.1.3 (++20260922084409+67f4a076a097-1~exp1~20260922084419.77) (target x86_64-pc-linux-gnu)
 - C++ library: libstdc++ 15 (20260321)
 - C library: glibc 2.43
 - Compile flags: `-O2 -pthread`
@@ -55,12 +55,23 @@
 | `print` | std::print / std::println | P2093R14 | ✅ | ✅ | c++23: probe 1 2.500; c++26: probe 1 2.500 |
 | `format_ranges` | formatting ranges with std::format | P2286R8 | ✅ | ✅ |  |
 | `ranges_to` | std::ranges::to and container append_range | P1206R7 | ✅ | ✅ |  |
-| `views_zip` | views::zip, zip_transform, adjacent, pairwise_transform | P2321R2 | ✅ | ✅ |  |
+| `views_zip` | views::zip | P2321R2 | ✅ | ✅ |  |
+| `views_zip_transform` | views::zip_transform | P2321R2 | ✅ | ✅ |  |
+| `views_adjacent` | views::adjacent | P2321R2 | ✅ | ✅ |  |
+| `views_pairwise_transform` | views::pairwise_transform (adjacent_transform) | P2321R2 | ✅ | ✅ |  |
 | `views_enumerate` | views::enumerate | P2164R9 | ✅ | ✅ |  |
 | `views_cartesian_product` | views::cartesian_product | P2374R4 | ✅ | ✅ |  |
-| `views_chunk_slide_stride` | views::chunk, chunk_by, slide, stride | P2442R1, P2443R1, P1899R3 | ✅ | ✅ |  |
-| `views_join_with_repeat` | views::join_with, repeat, as_rvalue, as_const | P2441R2, P2474R2, P2446R2, P2278R4 | ✅ | ✅ |  |
-| `ranges_fold` | ranges::fold_left, fold_left_first, fold_right | P2322R6 | ✅ | ✅ |  |
+| `views_chunk` | views::chunk | P2442R1 | ✅ | ✅ |  |
+| `views_slide` | views::slide | P2442R1 | ✅ | ✅ |  |
+| `views_stride` | views::stride | P1899R3 | ✅ | ✅ |  |
+| `views_chunk_by` | views::chunk_by | P2443R1 | ✅ | ✅ |  |
+| `views_join_with` | views::join_with | P2441R2 | ✅ | ✅ |  |
+| `views_repeat` | views::repeat | P2474R2 | ✅ | ✅ |  |
+| `views_as_rvalue` | views::as_rvalue | P2446R2 | ✅ | ✅ |  |
+| `views_as_const` | views::as_const | P2278R4 | ✅ | ✅ |  |
+| `ranges_fold_left` | ranges::fold_left | P2322R6 | ✅ | ✅ |  |
+| `ranges_fold_left_first` | ranges::fold_left_first | P2322R6 | ✅ | ✅ |  |
+| `ranges_fold_right` | ranges::fold_right | P2322R6 | ✅ | ✅ |  |
 | `ranges_contains` | ranges::contains, contains_subrange | P2302R4 | ✅ | ✅ |  |
 | `ranges_starts_ends_with` | ranges::starts_with, ends_with | P1659R3 | ❌ compile | ❌ compile | c++23: ranges_starts_ends_with.cxx23.cpp:12:23: error: no member named 'starts_with' in namespace 'std::ranges'; c++26: ranges_starts_ends_with.cxx26.cpp:12:23: error: no member named 'starts_with' in namespace 'std::ranges' |
 | `ranges_find_last` | ranges::find_last | P1223R5 | ✅ | ✅ |  |
@@ -80,7 +91,10 @@
 | `constexpr_unique_ptr` | constexpr std::unique_ptr | P2273R3 | ✅ | ✅ |  |
 | `threads20` | jthread, stop_token, barrier, latch, counting_semaphore, atomic wait | P0660R10, P1135R6 | ✅ | ✅ |  |
 | `format_float` | std::format of floating point (needs to_chars in the library) | P0645R10 | ✅ | ✅ |  |
-| `charconv_float` | std::from_chars / to_chars for double and float | P0067R5 | ✅ | ✅ |  |
+| `from_chars_double` | std::from_chars for double | P0067R5 | ✅ | ✅ |  |
+| `from_chars_float` | std::from_chars for float | P0067R5 | ✅ | ✅ |  |
+| `to_chars_double` | std::to_chars for double | P0067R5 | ✅ | ✅ |  |
+| `to_chars_float` | std::to_chars for float | P0067R5 | ✅ | ✅ |  |
 | `filesystem_utf8` | std::filesystem with UTF-8 (u8) file names | P0218R1, P0482R6 | ✅ | ✅ |  |
 | `parallel_algorithms` | parallel algorithms (execution::par / par_unseq); prints the threads used | P0024R2 | ✅ | ✅ | c++23: threads=1; needs libstdc++.so.6, libm.so.6, libgcc_s.so.1, libc.so.6; c++26: threads=1 |
 | `hardware_interference_size` | std::hardware_destructive_interference_size | P0154R1 | ✅ | ✅ |  |
