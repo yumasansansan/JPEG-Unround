@@ -1,0 +1,3378 @@
+{
+ "label": "macos-arm64",
+ "date": "2026-09-23T10:56:55+00:00",
+ "system": "macos",
+ "arch": "arm64",
+ "os": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+ "cxx": "clang++",
+ "cc": "clang",
+ "compiler": "clang version 23.1.2 (https://github.com/llvm/llvm-project 85ac560262434c9ccfc0c183ec22d4138ed647fb)",
+ "target": "arm64-apple-darwin25.6.0",
+ "cflags": [
+  "-O2",
+  "-isysroot",
+  "/Applications/Xcode_26.6.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk",
+  "-mmacosx-version-min=26.0"
+ ],
+ "ldflags": [
+  "-fuse-ld=lld",
+  "-isysroot",
+  "/Applications/Xcode_26.6.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk",
+  "-mmacosx-version-min=26.0"
+ ],
+ "std_flags": {
+  "c++20": "-std=c++20",
+  "c++23": "-std=c++23",
+  "c++26": "-std=c++26",
+  "c23": "-std=c23"
+ },
+ "environment": {
+  "stdlib": "libc++ 210106",
+  "clang": "23.1.2 (https://github.com/llvm/llvm-project 85ac560262434c9ccfc0c183ec22d4138ed647fb)"
+ },
+ "standards": [
+  "c++23",
+  "c++26"
+ ],
+ "probes": [
+  {
+   "id": "clang_vector_builtins",
+   "lang": "c++",
+   "bundle": "extensions.cpp",
+   "meta": {
+    "title": "Clang ext_vector_type with __builtin_elementwise_* (portable SIMD)",
+    "paper": "Clang extension"
+   },
+   "results": {
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    },
+    "c++23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "clang_masked_load_store",
+   "lang": "c++",
+   "bundle": "extensions.cpp",
+   "meta": {
+    "title": "__builtin_masked_load / __builtin_masked_store (vector tails)",
+    "paper": "Clang extension"
+   },
+   "results": {
+    "c++23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    },
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "target_clones",
+   "lang": "c++",
+   "bundle": "extensions.cpp",
+   "meta": {
+    "title": "function multiversioning with target_clones (x86-64)",
+    "paper": "Clang extension",
+    "only": "x86_64",
+    "libs": "| -lclang_rt.builtins-x86_64"
+   },
+   "results": {
+    "c++23": {
+     "status": "skip",
+     "note": "only x86_64"
+    },
+    "c++26": {
+     "status": "skip",
+     "note": "only x86_64"
+    }
+   }
+  },
+  {
+   "id": "target_attribute_dispatch",
+   "lang": "c++",
+   "bundle": "extensions.cpp",
+   "meta": {
+    "title": "target(\"avx2,fma\") functions chosen with __builtin_cpu_supports (x86-64)",
+    "paper": "Clang extension",
+    "only": "x86_64",
+    "libs": "| -lclang_rt.builtins-x86_64"
+   },
+   "results": {
+    "c++23": {
+     "status": "skip",
+     "note": "only x86_64"
+    },
+    "c++26": {
+     "status": "skip",
+     "note": "only x86_64"
+    }
+   }
+  },
+  {
+   "id": "aarch64_fmv",
+   "lang": "c++",
+   "bundle": "extensions.cpp",
+   "meta": {
+    "title": "function multiversioning with target_version (AArch64)",
+    "paper": "Clang extension (ACLE FMV)",
+    "only": "arm64"
+   },
+   "results": {
+    "c++23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    },
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "float16_extension",
+   "lang": "c++",
+   "bundle": "extensions.cpp",
+   "meta": {
+    "title": "_Float16 arithmetic (Clang)",
+    "paper": "Clang extension (ISO/IEC TS 18661-3 type)"
+   },
+   "results": {
+    "c++23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    },
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "bfloat16_extension",
+   "lang": "c++",
+   "bundle": "extensions.cpp",
+   "meta": {
+    "title": "__bf16 arithmetic (Clang)",
+    "paper": "Clang extension"
+   },
+   "results": {
+    "c++23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    },
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "openmp",
+   "lang": "c++",
+   "bundle": "extensions.cpp",
+   "meta": {
+    "title": "OpenMP parallel regions (-fopenmp); prints the threads it ran",
+    "paper": "OpenMP 5.x",
+    "flags": "-fopenmp",
+    "inspect": "imports"
+   },
+   "results": {
+    "c++23": {
+     "status": "run",
+     "variant": "-fopenmp",
+     "exit": -6,
+     "stdout": "",
+     "diag": "exit status -6: dyld[2570]: Library not loaded: @rpath/libomp.dylib"
+    },
+    "c++26": {
+     "status": "run",
+     "variant": "-fopenmp",
+     "exit": -6,
+     "stdout": "",
+     "diag": "exit status -6: dyld[2571]: Library not loaded: @rpath/libomp.dylib"
+    }
+   }
+  },
+  {
+   "id": "openmp_simd",
+   "lang": "c++",
+   "bundle": "extensions.cpp",
+   "meta": {
+    "title": "#pragma omp simd without the OpenMP runtime (-fopenmp-simd)",
+    "paper": "OpenMP 5.x",
+    "flags": "-fopenmp-simd",
+    "inspect": "imports"
+   },
+   "results": {
+    "c++23": {
+     "status": "pass",
+     "variant": "-fopenmp-simd",
+     "exit": 0,
+     "stdout": "",
+     "imports": [
+      "/usr/lib/libc++.1.dylib",
+      "/usr/lib/libSystem.B.dylib"
+     ]
+    },
+    "c++26": {
+     "status": "pass",
+     "variant": "-fopenmp-simd",
+     "exit": 0,
+     "stdout": "",
+     "imports": [
+      "/usr/lib/libc++.1.dylib",
+      "/usr/lib/libSystem.B.dylib"
+     ]
+    }
+   }
+  },
+  {
+   "id": "cxx_runtime_linkage",
+   "lang": "c++",
+   "bundle": "extensions.cpp",
+   "meta": {
+    "title": "the C++ library a program links (should be the system's, as a shared library)",
+    "paper": "-",
+    "inspect": "imports"
+   },
+   "results": {
+    "c++23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": "x 1",
+     "imports": [
+      "/usr/lib/libc++.1.dylib",
+      "/usr/lib/libSystem.B.dylib"
+     ]
+    },
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": "x 1",
+     "imports": [
+      "/usr/lib/libc++.1.dylib",
+      "/usr/lib/libSystem.B.dylib"
+     ]
+    }
+   }
+  },
+  {
+   "id": "deducing_this",
+   "lang": "c++",
+   "bundle": "language.cpp",
+   "meta": {
+    "title": "explicit object parameter (deducing this)",
+    "paper": "P0847R7",
+    "macro": "__cpp_explicit_this_parameter"
+   },
+   "results": {
+    "c++23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    },
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "multidimensional_subscript",
+   "lang": "c++",
+   "bundle": "language.cpp",
+   "meta": {
+    "title": "multidimensional subscript operator a[i, j]",
+    "paper": "P2128R6",
+    "macro": "__cpp_multidimensional_subscript"
+   },
+   "results": {
+    "c++23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    },
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "if_consteval",
+   "lang": "c++",
+   "bundle": "language.cpp",
+   "meta": {
+    "title": "if consteval",
+    "paper": "P1938R3",
+    "macro": "__cpp_if_consteval"
+   },
+   "results": {
+    "c++23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    },
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "static_call_operator",
+   "lang": "c++",
+   "bundle": "language.cpp",
+   "meta": {
+    "title": "static operator() and static lambdas",
+    "paper": "P1169R4",
+    "macro": "__cpp_static_call_operator"
+   },
+   "results": {
+    "c++23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    },
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "auto_cast",
+   "lang": "c++",
+   "bundle": "language.cpp",
+   "meta": {
+    "title": "auto(x) decay-copy",
+    "paper": "P0849R8",
+    "macro": "__cpp_auto_cast"
+   },
+   "results": {
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    },
+    "c++23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "assume_attribute",
+   "lang": "c++",
+   "bundle": "language.cpp",
+   "meta": {
+    "title": "[[assume(expr)]]",
+    "paper": "P1774R8",
+    "macro": "__has_cpp_attribute(assume)"
+   },
+   "results": {
+    "c++23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    },
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "size_t_literal",
+   "lang": "c++",
+   "bundle": "language.cpp",
+   "meta": {
+    "title": "uz / z integer literal suffixes",
+    "paper": "P0330R8",
+    "macro": "__cpp_size_t_suffix"
+   },
+   "results": {
+    "c++23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    },
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "constexpr_static_local",
+   "lang": "c++",
+   "bundle": "language.cpp",
+   "meta": {
+    "title": "static constexpr variables in constexpr functions",
+    "paper": "P2647R1",
+    "macro": "__cpp_constexpr"
+   },
+   "results": {
+    "c++23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    },
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "elifdef",
+   "lang": "c++",
+   "bundle": "language.cpp",
+   "meta": {
+    "title": "#elifdef / #elifndef",
+    "paper": "P2334R1"
+   },
+   "results": {
+    "c++23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    },
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "consteval_escalation",
+   "lang": "c++",
+   "bundle": "language.cpp",
+   "meta": {
+    "title": "consteval propagates up (immediate-escalating functions)",
+    "paper": "P2564R3",
+    "macro": "__cpp_consteval"
+   },
+   "results": {
+    "c++23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    },
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "float16_t",
+   "lang": "c++",
+   "bundle": "language.cpp",
+   "meta": {
+    "title": "std::float16_t (<stdfloat>)",
+    "paper": "P1467R9",
+    "macro": "__STDCPP_FLOAT16_T__"
+   },
+   "results": {
+    "c++23": {
+     "status": "compile",
+     "variant": "",
+     "diag": "float16_t.cxx23.cpp:6:10: fatal error: 'stdfloat' file not found"
+    },
+    "c++26": {
+     "status": "compile",
+     "variant": "",
+     "diag": "float16_t.cxx26.cpp:6:10: fatal error: 'stdfloat' file not found"
+    }
+   }
+  },
+  {
+   "id": "bfloat16_t",
+   "lang": "c++",
+   "bundle": "language.cpp",
+   "meta": {
+    "title": "std::bfloat16_t (<stdfloat>)",
+    "paper": "P1467R9",
+    "macro": "__STDCPP_BFLOAT16_T__"
+   },
+   "results": {
+    "c++26": {
+     "status": "compile",
+     "variant": "",
+     "diag": "bfloat16_t.cxx26.cpp:6:10: fatal error: 'stdfloat' file not found"
+    },
+    "c++23": {
+     "status": "compile",
+     "variant": "",
+     "diag": "bfloat16_t.cxx23.cpp:6:10: fatal error: 'stdfloat' file not found"
+    }
+   }
+  },
+  {
+   "id": "builtin_overflow",
+   "lang": "c++",
+   "bundle": "language.cpp",
+   "meta": {
+    "title": "__builtin_mul_overflow / __builtin_add_overflow (checked sizes)",
+    "paper": "Clang builtin"
+   },
+   "results": {
+    "c++23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    },
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "pack_indexing",
+   "lang": "c++",
+   "bundle": "language.cpp",
+   "meta": {
+    "title": "pack indexing Ts...[I]",
+    "paper": "P2662R3",
+    "std": "c++26",
+    "macro": "__cpp_pack_indexing"
+   },
+   "results": {
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "deleted_with_reason",
+   "lang": "c++",
+   "bundle": "language.cpp",
+   "meta": {
+    "title": "= delete(\"reason\")",
+    "paper": "P2573R2",
+    "std": "c++26",
+    "macro": "__cpp_deleted_function"
+   },
+   "results": {
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "placeholder_variables",
+   "lang": "c++",
+   "bundle": "language.cpp",
+   "meta": {
+    "title": "placeholder variables named _",
+    "paper": "P2169R4",
+    "std": "c++26",
+    "macro": "__cpp_placeholder_variables"
+   },
+   "results": {
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "structured_binding_pack",
+   "lang": "c++",
+   "bundle": "language.cpp",
+   "meta": {
+    "title": "structured bindings that introduce a pack",
+    "paper": "P1061R10",
+    "std": "c++26",
+    "macro": "__cpp_structured_bindings"
+   },
+   "results": {
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "structured_binding_condition",
+   "lang": "c++",
+   "bundle": "language.cpp",
+   "meta": {
+    "title": "structured binding declaration as a condition",
+    "paper": "P0963R3",
+    "std": "c++26"
+   },
+   "results": {
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "constexpr_placement_new",
+   "lang": "c++",
+   "bundle": "language.cpp",
+   "meta": {
+    "title": "placement new in constant expressions",
+    "paper": "P2747R2",
+    "std": "c++26"
+   },
+   "results": {
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "constexpr_void_cast",
+   "lang": "c++",
+   "bundle": "language.cpp",
+   "meta": {
+    "title": "cast from void* in constant expressions",
+    "paper": "P2738R1",
+    "std": "c++26"
+   },
+   "results": {
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "static_assert_message",
+   "lang": "c++",
+   "bundle": "language.cpp",
+   "meta": {
+    "title": "user-generated static_assert messages",
+    "paper": "P2741R3",
+    "std": "c++26",
+    "macro": "__cpp_static_assert"
+   },
+   "results": {
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "embed_cxx",
+   "lang": "c++",
+   "bundle": "language.cpp",
+   "meta": {
+    "title": "#embed in C++",
+    "paper": "P1967R14",
+    "std": "c++26",
+    "macro": "__cpp_pp_embed"
+   },
+   "results": {
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "contracts",
+   "lang": "c++",
+   "bundle": "language.cpp",
+   "meta": {
+    "title": "contracts: pre, post, contract_assert",
+    "paper": "P2900R14",
+    "std": "c++26",
+    "macro": "__cpp_contracts",
+    "flags": "| -fcontracts | -fexperimental-contracts"
+   },
+   "results": {
+    "c++26": {
+     "status": "compile",
+     "variant": "",
+     "diag": "contracts.cxx26.cpp:8:24: error: expected function body after function declarator"
+    }
+   }
+  },
+  {
+   "id": "reflection_core",
+   "lang": "c++",
+   "bundle": "language.cpp",
+   "meta": {
+    "title": "the reflection operator ^^ (compiler side of P2996, without <meta>)",
+    "paper": "P2996R13",
+    "std": "c++26",
+    "macro": "__cpp_impl_reflection",
+    "flags": "| -freflection | -freflection-latest"
+   },
+   "results": {
+    "c++26": {
+     "status": "compile",
+     "variant": "",
+     "diag": "reflection_core.cxx26.cpp:8:29: error: type name requires a specifier or qualifier"
+    }
+   }
+  },
+  {
+   "id": "reflection",
+   "lang": "c++",
+   "bundle": "language.cpp",
+   "meta": {
+    "title": "static reflection with std::meta",
+    "paper": "P2996R13",
+    "std": "c++26",
+    "macro": "__cpp_impl_reflection, __cpp_lib_reflection",
+    "flags": "| -freflection | -freflection-latest"
+   },
+   "results": {
+    "c++26": {
+     "status": "compile",
+     "variant": "",
+     "diag": "reflection.cxx26.cpp:8:10: fatal error: 'meta' file not found"
+    }
+   }
+  },
+  {
+   "id": "expansion_statements",
+   "lang": "c++",
+   "bundle": "language.cpp",
+   "meta": {
+    "title": "expansion statements (template for)",
+    "paper": "P1306R5",
+    "std": "c++26",
+    "macro": "__cpp_expansion_statements"
+   },
+   "results": {
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "trivial_unions",
+   "lang": "c++",
+   "bundle": "language.cpp",
+   "meta": {
+    "title": "unions of non-trivial members are trivially constructible",
+    "paper": "P3074R7",
+    "std": "c++26",
+    "macro": "__cpp_trivial_union"
+   },
+   "results": {
+    "c++26": {
+     "status": "compile",
+     "variant": "",
+     "diag": "trivial_unions.cxx26.cpp:13:8: error: call to implicitly-deleted default constructor of 'Slot'"
+    }
+   }
+  },
+  {
+   "id": "mdspan",
+   "lang": "c++",
+   "bundle": "library23.cpp",
+   "meta": {
+    "title": "std::mdspan, extents, layout_right / layout_stride",
+    "paper": "P0009R18",
+    "macro": "__cpp_lib_mdspan"
+   },
+   "results": {
+    "c++23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    },
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "expected",
+   "lang": "c++",
+   "bundle": "library23.cpp",
+   "meta": {
+    "title": "std::expected with monadic operations",
+    "paper": "P0323R12, P2505R5",
+    "macro": "__cpp_lib_expected"
+   },
+   "results": {
+    "c++23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    },
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "print",
+   "lang": "c++",
+   "bundle": "library23.cpp",
+   "meta": {
+    "title": "std::print / std::println",
+    "paper": "P2093R14",
+    "macro": "__cpp_lib_print"
+   },
+   "results": {
+    "c++23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": "probe 1 2.500"
+    },
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": "probe 1 2.500"
+    }
+   }
+  },
+  {
+   "id": "format_ranges",
+   "lang": "c++",
+   "bundle": "library23.cpp",
+   "meta": {
+    "title": "formatting ranges with std::format",
+    "paper": "P2286R8",
+    "macro": "__cpp_lib_format_ranges"
+   },
+   "results": {
+    "c++23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    },
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "ranges_to",
+   "lang": "c++",
+   "bundle": "library23.cpp",
+   "meta": {
+    "title": "std::ranges::to and container append_range",
+    "paper": "P1206R7",
+    "macro": "__cpp_lib_ranges_to_container, __cpp_lib_containers_ranges"
+   },
+   "results": {
+    "c++23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    },
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "views_zip",
+   "lang": "c++",
+   "bundle": "library23.cpp",
+   "meta": {
+    "title": "views::zip",
+    "paper": "P2321R2",
+    "macro": "__cpp_lib_ranges_zip"
+   },
+   "results": {
+    "c++23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    },
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "views_zip_transform",
+   "lang": "c++",
+   "bundle": "library23.cpp",
+   "meta": {
+    "title": "views::zip_transform",
+    "paper": "P2321R2",
+    "macro": "__cpp_lib_ranges_zip"
+   },
+   "results": {
+    "c++23": {
+     "status": "compile",
+     "variant": "",
+     "diag": "views_zip_transform.cxx23.cpp:11:27: error: no member named 'zip_transform' in namespace 'std::ranges::views'"
+    },
+    "c++26": {
+     "status": "compile",
+     "variant": "",
+     "diag": "views_zip_transform.cxx26.cpp:11:27: error: no member named 'zip_transform' in namespace 'std::ranges::views'"
+    }
+   }
+  },
+  {
+   "id": "views_adjacent",
+   "lang": "c++",
+   "bundle": "library23.cpp",
+   "meta": {
+    "title": "views::adjacent",
+    "paper": "P2321R2",
+    "macro": "__cpp_lib_ranges_zip"
+   },
+   "results": {
+    "c++23": {
+     "status": "compile",
+     "variant": "",
+     "diag": "views_adjacent.cxx23.cpp:10:32: error: no member named 'adjacent' in namespace 'std::ranges::views'"
+    },
+    "c++26": {
+     "status": "compile",
+     "variant": "",
+     "diag": "views_adjacent.cxx26.cpp:10:32: error: no member named 'adjacent' in namespace 'std::ranges::views'"
+    }
+   }
+  },
+  {
+   "id": "views_pairwise_transform",
+   "lang": "c++",
+   "bundle": "library23.cpp",
+   "meta": {
+    "title": "views::pairwise_transform (adjacent_transform)",
+    "paper": "P2321R2",
+    "macro": "__cpp_lib_ranges_zip"
+   },
+   "results": {
+    "c++23": {
+     "status": "compile",
+     "variant": "",
+     "diag": "views_pairwise_transform.cxx23.cpp:10:32: error: no member named 'pairwise_transform' in namespace 'std::ranges::views'"
+    },
+    "c++26": {
+     "status": "compile",
+     "variant": "",
+     "diag": "views_pairwise_transform.cxx26.cpp:10:32: error: no member named 'pairwise_transform' in namespace 'std::ranges::views'"
+    }
+   }
+  },
+  {
+   "id": "views_enumerate",
+   "lang": "c++",
+   "bundle": "library23.cpp",
+   "meta": {
+    "title": "views::enumerate",
+    "paper": "P2164R9",
+    "macro": "__cpp_lib_ranges_enumerate"
+   },
+   "results": {
+    "c++23": {
+     "status": "compile",
+     "variant": "",
+     "diag": "views_enumerate.cxx23.cpp:12:34: error: no member named 'enumerate' in namespace 'std::ranges::views'"
+    },
+    "c++26": {
+     "status": "compile",
+     "variant": "",
+     "diag": "views_enumerate.cxx26.cpp:12:34: error: no member named 'enumerate' in namespace 'std::ranges::views'"
+    }
+   }
+  },
+  {
+   "id": "views_cartesian_product",
+   "lang": "c++",
+   "bundle": "library23.cpp",
+   "meta": {
+    "title": "views::cartesian_product",
+    "paper": "P2374R4",
+    "macro": "__cpp_lib_ranges_cartesian_product"
+   },
+   "results": {
+    "c++23": {
+     "status": "compile",
+     "variant": "",
+     "diag": "views_cartesian_product.cxx23.cpp:10:34: error: no member named 'cartesian_product' in namespace 'std::ranges::views'"
+    },
+    "c++26": {
+     "status": "compile",
+     "variant": "",
+     "diag": "views_cartesian_product.cxx26.cpp:10:34: error: no member named 'cartesian_product' in namespace 'std::ranges::views'"
+    }
+   }
+  },
+  {
+   "id": "views_chunk",
+   "lang": "c++",
+   "bundle": "library23.cpp",
+   "meta": {
+    "title": "views::chunk",
+    "paper": "P2442R1",
+    "macro": "__cpp_lib_ranges_chunk"
+   },
+   "results": {
+    "c++23": {
+     "status": "compile",
+     "variant": "",
+     "diag": "views_chunk.cxx23.cpp:8:43: error: no member named 'chunk' in namespace 'std::ranges::views'; did you mean 'chunks'?"
+    },
+    "c++26": {
+     "status": "compile",
+     "variant": "",
+     "diag": "views_chunk.cxx26.cpp:8:43: error: no member named 'chunk' in namespace 'std::ranges::views'; did you mean 'chunks'?"
+    }
+   }
+  },
+  {
+   "id": "views_slide",
+   "lang": "c++",
+   "bundle": "library23.cpp",
+   "meta": {
+    "title": "views::slide",
+    "paper": "P2442R1",
+    "macro": "__cpp_lib_ranges_slide"
+   },
+   "results": {
+    "c++23": {
+     "status": "compile",
+     "variant": "",
+     "diag": "views_slide.cxx23.cpp:8:56: error: no member named 'slide' in namespace 'std::ranges::views'"
+    },
+    "c++26": {
+     "status": "compile",
+     "variant": "",
+     "diag": "views_slide.cxx26.cpp:8:56: error: no member named 'slide' in namespace 'std::ranges::views'"
+    }
+   }
+  },
+  {
+   "id": "views_stride",
+   "lang": "c++",
+   "bundle": "library23.cpp",
+   "meta": {
+    "title": "views::stride",
+    "paper": "P1899R3",
+    "macro": "__cpp_lib_ranges_stride"
+   },
+   "results": {
+    "c++23": {
+     "status": "compile",
+     "variant": "",
+     "diag": "views_stride.cxx23.cpp:8:44: error: no member named 'stride' in namespace 'std::ranges::views'; did you mean 'strided'?"
+    },
+    "c++26": {
+     "status": "compile",
+     "variant": "",
+     "diag": "views_stride.cxx26.cpp:8:44: error: no member named 'stride' in namespace 'std::ranges::views'; did you mean 'strided'?"
+    }
+   }
+  },
+  {
+   "id": "views_chunk_by",
+   "lang": "c++",
+   "bundle": "library23.cpp",
+   "meta": {
+    "title": "views::chunk_by",
+    "paper": "P2443R1",
+    "macro": "__cpp_lib_ranges_chunk_by"
+   },
+   "results": {
+    "c++23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    },
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "views_join_with",
+   "lang": "c++",
+   "bundle": "library23.cpp",
+   "meta": {
+    "title": "views::join_with",
+    "paper": "P2441R2",
+    "macro": "__cpp_lib_ranges_join_with"
+   },
+   "results": {
+    "c++23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    },
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "views_repeat",
+   "lang": "c++",
+   "bundle": "library23.cpp",
+   "meta": {
+    "title": "views::repeat",
+    "paper": "P2474R2",
+    "macro": "__cpp_lib_ranges_repeat"
+   },
+   "results": {
+    "c++23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    },
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "views_as_rvalue",
+   "lang": "c++",
+   "bundle": "library23.cpp",
+   "meta": {
+    "title": "views::as_rvalue",
+    "paper": "P2446R2",
+    "macro": "__cpp_lib_ranges_as_rvalue"
+   },
+   "results": {
+    "c++23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    },
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "views_as_const",
+   "lang": "c++",
+   "bundle": "library23.cpp",
+   "meta": {
+    "title": "views::as_const",
+    "paper": "P2278R4",
+    "macro": "__cpp_lib_ranges_as_const"
+   },
+   "results": {
+    "c++23": {
+     "status": "compile",
+     "variant": "",
+     "diag": "views_as_const.cxx23.cpp:12:23: error: no member named 'as_const' in namespace 'std::ranges::views'; did you mean 'std::as_const'?"
+    },
+    "c++26": {
+     "status": "compile",
+     "variant": "",
+     "diag": "views_as_const.cxx26.cpp:12:23: error: no member named 'as_const' in namespace 'std::ranges::views'; did you mean 'std::as_const'?"
+    }
+   }
+  },
+  {
+   "id": "ranges_fold_left",
+   "lang": "c++",
+   "bundle": "library23.cpp",
+   "meta": {
+    "title": "ranges::fold_left",
+    "paper": "P2322R6",
+    "macro": "__cpp_lib_ranges_fold"
+   },
+   "results": {
+    "c++23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    },
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "ranges_fold_left_first",
+   "lang": "c++",
+   "bundle": "library23.cpp",
+   "meta": {
+    "title": "ranges::fold_left_first",
+    "paper": "P2322R6",
+    "macro": "__cpp_lib_ranges_fold"
+   },
+   "results": {
+    "c++23": {
+     "status": "compile",
+     "variant": "",
+     "diag": "ranges_fold_left_first.cxx23.cpp:10:25: error: no member named 'fold_left_first' in namespace 'std::ranges'"
+    },
+    "c++26": {
+     "status": "compile",
+     "variant": "",
+     "diag": "ranges_fold_left_first.cxx26.cpp:10:25: error: no member named 'fold_left_first' in namespace 'std::ranges'"
+    }
+   }
+  },
+  {
+   "id": "ranges_fold_right",
+   "lang": "c++",
+   "bundle": "library23.cpp",
+   "meta": {
+    "title": "ranges::fold_right",
+    "paper": "P2322R6",
+    "macro": "__cpp_lib_ranges_fold"
+   },
+   "results": {
+    "c++23": {
+     "status": "compile",
+     "variant": "",
+     "diag": "ranges_fold_right.cxx23.cpp:11:23: error: no member named 'fold_right' in namespace 'std::ranges'"
+    },
+    "c++26": {
+     "status": "compile",
+     "variant": "",
+     "diag": "ranges_fold_right.cxx26.cpp:11:23: error: no member named 'fold_right' in namespace 'std::ranges'"
+    }
+   }
+  },
+  {
+   "id": "ranges_contains",
+   "lang": "c++",
+   "bundle": "library23.cpp",
+   "meta": {
+    "title": "ranges::contains, contains_subrange",
+    "paper": "P2302R4",
+    "macro": "__cpp_lib_ranges_contains"
+   },
+   "results": {
+    "c++23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    },
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "ranges_starts_ends_with",
+   "lang": "c++",
+   "bundle": "library23.cpp",
+   "meta": {
+    "title": "ranges::starts_with, ends_with",
+    "paper": "P1659R3",
+    "macro": "__cpp_lib_ranges_starts_ends_with"
+   },
+   "results": {
+    "c++23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    },
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "ranges_find_last",
+   "lang": "c++",
+   "bundle": "library23.cpp",
+   "meta": {
+    "title": "ranges::find_last",
+    "paper": "P1223R5",
+    "macro": "__cpp_lib_ranges_find_last"
+   },
+   "results": {
+    "c++23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    },
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "ranges_iota",
+   "lang": "c++",
+   "bundle": "library23.cpp",
+   "meta": {
+    "title": "ranges::iota",
+    "paper": "P2440R1",
+    "macro": "__cpp_lib_ranges_iota"
+   },
+   "results": {
+    "c++23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    },
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "optional_monadic",
+   "lang": "c++",
+   "bundle": "library23.cpp",
+   "meta": {
+    "title": "std::optional and_then / transform / or_else",
+    "paper": "P0798R8",
+    "macro": "__cpp_lib_optional"
+   },
+   "results": {
+    "c++23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    },
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "move_only_function",
+   "lang": "c++",
+   "bundle": "library23.cpp",
+   "meta": {
+    "title": "std::move_only_function",
+    "paper": "P0288R9",
+    "macro": "__cpp_lib_move_only_function"
+   },
+   "results": {
+    "c++23": {
+     "status": "compile",
+     "variant": "",
+     "diag": "move_only_function.cxx23.cpp:11:8: error: no member named 'move_only_function' in namespace 'std'"
+    },
+    "c++26": {
+     "status": "compile",
+     "variant": "",
+     "diag": "move_only_function.cxx26.cpp:11:8: error: no member named 'move_only_function' in namespace 'std'"
+    }
+   }
+  },
+  {
+   "id": "out_ptr",
+   "lang": "c++",
+   "bundle": "library23.cpp",
+   "meta": {
+    "title": "std::out_ptr / inout_ptr for C APIs",
+    "paper": "P1132R8",
+    "macro": "__cpp_lib_out_ptr"
+   },
+   "results": {
+    "c++23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    },
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "stacktrace",
+   "lang": "c++",
+   "bundle": "library23.cpp",
+   "meta": {
+    "title": "std::stacktrace",
+    "paper": "P0881R7",
+    "macro": "__cpp_lib_stacktrace",
+    "libs": "| -lstdc++exp | -lstdc++_libbacktrace"
+   },
+   "results": {
+    "c++23": {
+     "status": "compile",
+     "variant": "",
+     "diag": "stacktrace.cxx23.cpp:7:10: fatal error: 'stacktrace' file not found"
+    },
+    "c++26": {
+     "status": "compile",
+     "variant": "",
+     "diag": "stacktrace.cxx26.cpp:7:10: fatal error: 'stacktrace' file not found"
+    }
+   }
+  },
+  {
+   "id": "generator",
+   "lang": "c++",
+   "bundle": "library23.cpp",
+   "meta": {
+    "title": "std::generator",
+    "paper": "P2502R2",
+    "macro": "__cpp_lib_generator"
+   },
+   "results": {
+    "c++23": {
+     "status": "compile",
+     "variant": "",
+     "diag": "generator.cxx23.cpp:6:10: fatal error: 'generator' file not found"
+    },
+    "c++26": {
+     "status": "compile",
+     "variant": "",
+     "diag": "generator.cxx26.cpp:6:10: fatal error: 'generator' file not found"
+    }
+   }
+  },
+  {
+   "id": "flat_map",
+   "lang": "c++",
+   "bundle": "library23.cpp",
+   "meta": {
+    "title": "std::flat_map / std::flat_set",
+    "paper": "P0429R9, P1222R4",
+    "macro": "__cpp_lib_flat_map, __cpp_lib_flat_set"
+   },
+   "results": {
+    "c++23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    },
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "spanstream",
+   "lang": "c++",
+   "bundle": "library23.cpp",
+   "meta": {
+    "title": "std::spanstream",
+    "paper": "P0448R4",
+    "macro": "__cpp_lib_spanstream"
+   },
+   "results": {
+    "c++23": {
+     "status": "compile",
+     "variant": "",
+     "diag": "spanstream.cxx23.cpp:7:10: fatal error: 'spanstream' file not found"
+    },
+    "c++26": {
+     "status": "compile",
+     "variant": "",
+     "diag": "spanstream.cxx26.cpp:7:10: fatal error: 'spanstream' file not found"
+    }
+   }
+  },
+  {
+   "id": "utility23",
+   "lang": "c++",
+   "bundle": "library23.cpp",
+   "meta": {
+    "title": "unreachable, to_underlying, byteswap, forward_like, invoke_r",
+    "paper": "P0627R6, P1682R3, P1272R4, P2445R1, P2136R3",
+    "macro": "__cpp_lib_unreachable, __cpp_lib_to_underlying, __cpp_lib_byteswap, __cpp_lib_forward_like, __cpp_lib_invoke_r"
+   },
+   "results": {
+    "c++23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    },
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "constexpr_cmath",
+   "lang": "c++",
+   "bundle": "library23.cpp",
+   "meta": {
+    "title": "constexpr <cmath> basics (fabs, floor, fmax, copysign, isnan)",
+    "paper": "P0533R9",
+    "macro": "__cpp_lib_constexpr_cmath"
+   },
+   "results": {
+    "c++23": {
+     "status": "compile",
+     "variant": "",
+     "diag": "constexpr_cmath.cxx23.cpp:7:15: error: static assertion expression is not an integral constant expression"
+    },
+    "c++26": {
+     "status": "compile",
+     "variant": "",
+     "diag": "constexpr_cmath.cxx26.cpp:7:15: error: static assertion expression is not an integral constant expression"
+    }
+   }
+  },
+  {
+   "id": "string23",
+   "lang": "c++",
+   "bundle": "library23.cpp",
+   "meta": {
+    "title": "string::contains, resize_and_overwrite",
+    "paper": "P1679R3, P1072R10",
+    "macro": "__cpp_lib_string_contains, __cpp_lib_string_resize_and_overwrite"
+   },
+   "results": {
+    "c++23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    },
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "start_lifetime_as",
+   "lang": "c++",
+   "bundle": "library23.cpp",
+   "meta": {
+    "title": "std::start_lifetime_as",
+    "paper": "P2590R2",
+    "macro": "__cpp_lib_start_lifetime_as"
+   },
+   "results": {
+    "c++23": {
+     "status": "compile",
+     "variant": "",
+     "diag": "start_lifetime_as.cxx23.cpp:16:17: error: no member named 'start_lifetime_as' in namespace 'std'"
+    },
+    "c++26": {
+     "status": "compile",
+     "variant": "",
+     "diag": "start_lifetime_as.cxx26.cpp:16:17: error: no member named 'start_lifetime_as' in namespace 'std'"
+    }
+   }
+  },
+  {
+   "id": "bind_back",
+   "lang": "c++",
+   "bundle": "library23.cpp",
+   "meta": {
+    "title": "std::bind_back",
+    "paper": "P2387R3",
+    "macro": "__cpp_lib_bind_back"
+   },
+   "results": {
+    "c++23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    },
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "constexpr_unique_ptr",
+   "lang": "c++",
+   "bundle": "library23.cpp",
+   "meta": {
+    "title": "constexpr std::unique_ptr",
+    "paper": "P2273R3",
+    "macro": "__cpp_lib_constexpr_memory"
+   },
+   "results": {
+    "c++23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    },
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "threads20",
+   "lang": "c++",
+   "bundle": "library23.cpp",
+   "meta": {
+    "title": "jthread, stop_token, barrier, latch, counting_semaphore, atomic wait",
+    "paper": "P0660R10, P1135R6",
+    "std": "c++20",
+    "macro": "__cpp_lib_jthread, __cpp_lib_barrier, __cpp_lib_latch, __cpp_lib_semaphore, __cpp_lib_atomic_wait"
+   },
+   "results": {
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    },
+    "c++23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "format_float",
+   "lang": "c++",
+   "bundle": "library23.cpp",
+   "meta": {
+    "title": "std::format of floating point (needs to_chars in the library)",
+    "paper": "P0645R10",
+    "std": "c++20",
+    "macro": "__cpp_lib_format"
+   },
+   "results": {
+    "c++23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    },
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "from_chars_double",
+   "lang": "c++",
+   "bundle": "library23.cpp",
+   "meta": {
+    "title": "std::from_chars for double",
+    "paper": "P0067R5",
+    "std": "c++20",
+    "macro": "__cpp_lib_to_chars"
+   },
+   "results": {
+    "c++23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    },
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "from_chars_float",
+   "lang": "c++",
+   "bundle": "library23.cpp",
+   "meta": {
+    "title": "std::from_chars for float",
+    "paper": "P0067R5",
+    "std": "c++20",
+    "macro": "__cpp_lib_to_chars"
+   },
+   "results": {
+    "c++23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    },
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "to_chars_double",
+   "lang": "c++",
+   "bundle": "library23.cpp",
+   "meta": {
+    "title": "std::to_chars for double",
+    "paper": "P0067R5",
+    "std": "c++20",
+    "macro": "__cpp_lib_to_chars"
+   },
+   "results": {
+    "c++23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    },
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "to_chars_float",
+   "lang": "c++",
+   "bundle": "library23.cpp",
+   "meta": {
+    "title": "std::to_chars for float",
+    "paper": "P0067R5",
+    "std": "c++20",
+    "macro": "__cpp_lib_to_chars"
+   },
+   "results": {
+    "c++23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    },
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "filesystem_utf8",
+   "lang": "c++",
+   "bundle": "library23.cpp",
+   "meta": {
+    "title": "std::filesystem with UTF-8 (u8) file names",
+    "paper": "P0218R1, P0482R6",
+    "std": "c++20",
+    "macro": "__cpp_lib_filesystem, __cpp_lib_char8_t"
+   },
+   "results": {
+    "c++23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    },
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "parallel_algorithms",
+   "lang": "c++",
+   "bundle": "library23.cpp",
+   "meta": {
+    "title": "parallel algorithms (execution::par / par_unseq); prints the threads used",
+    "paper": "P0024R2",
+    "std": "c++20",
+    "macro": "__cpp_lib_execution, __cpp_lib_parallel_algorithm",
+    "libs": "| -ltbb",
+    "inspect": "imports"
+   },
+   "results": {
+    "c++23": {
+     "status": "compile",
+     "variant": "",
+     "diag": "parallel_algorithms.cxx23.cpp:20:33: error: no member named 'par_unseq' in namespace 'std::execution'"
+    },
+    "c++26": {
+     "status": "compile",
+     "variant": "",
+     "diag": "parallel_algorithms.cxx26.cpp:20:33: error: no member named 'par_unseq' in namespace 'std::execution'"
+    }
+   }
+  },
+  {
+   "id": "hardware_interference_size",
+   "lang": "c++",
+   "bundle": "library23.cpp",
+   "meta": {
+    "title": "std::hardware_destructive_interference_size",
+    "paper": "P0154R1",
+    "std": "c++20",
+    "macro": "__cpp_lib_hardware_interference_size"
+   },
+   "results": {
+    "c++23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    },
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "assume_aligned",
+   "lang": "c++",
+   "bundle": "library23.cpp",
+   "meta": {
+    "title": "std::assume_aligned",
+    "paper": "P1007R3",
+    "std": "c++20",
+    "macro": "__cpp_lib_assume_aligned"
+   },
+   "results": {
+    "c++23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    },
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "source_location",
+   "lang": "c++",
+   "bundle": "library23.cpp",
+   "meta": {
+    "title": "std::source_location",
+    "paper": "P1208R6",
+    "std": "c++20",
+    "macro": "__cpp_lib_source_location"
+   },
+   "results": {
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    },
+    "c++23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "hardening",
+   "lang": "c++",
+   "bundle": "library23.cpp",
+   "meta": {
+    "title": "library hardening stops vector[] out of range (vendor switches)",
+    "paper": "P3471R4 (vendor modes)",
+    "flags": "-D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST -D_GLIBCXX_ASSERTIONS -D_MSVC_STL_HARDENING=1",
+    "expect": "abnormal"
+   },
+   "results": {
+    "c++26": {
+     "status": "pass",
+     "variant": "-D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST -D_GLIBCXX_ASSERTIONS -D_MSVC_STL_HARDENING=1",
+     "exit": -5,
+     "stdout": ""
+    },
+    "c++23": {
+     "status": "pass",
+     "variant": "-D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST -D_GLIBCXX_ASSERTIONS -D_MSVC_STL_HARDENING=1",
+     "exit": -5,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "simd_vec",
+   "lang": "c++",
+   "bundle": "library26.cpp",
+   "meta": {
+    "title": "std::simd::vec (<simd>, C++26 names)",
+    "paper": "P1928R15, P3287R3",
+    "std": "c++26",
+    "macro": "__cpp_lib_simd"
+   },
+   "results": {
+    "c++26": {
+     "status": "compile",
+     "variant": "",
+     "diag": "simd_vec.cxx26.cpp:8:10: fatal error: 'simd' file not found"
+    }
+   }
+  },
+  {
+   "id": "simd_draft_names",
+   "lang": "c++",
+   "bundle": "library26.cpp",
+   "meta": {
+    "title": "std::simd<float> (<simd>, names of P1928 before P3287)",
+    "paper": "P1928R15",
+    "std": "c++26"
+   },
+   "results": {
+    "c++26": {
+     "status": "compile",
+     "variant": "",
+     "diag": "simd_draft_names.cxx26.cpp:6:10: fatal error: 'simd' file not found"
+    }
+   }
+  },
+  {
+   "id": "experimental_simd",
+   "lang": "c++",
+   "bundle": "library26.cpp",
+   "meta": {
+    "title": "std::experimental::simd (Parallelism TS 2)",
+    "paper": "N4808",
+    "macro": "__cpp_lib_experimental_parallel_simd"
+   },
+   "results": {
+    "c++23": {
+     "status": "compile",
+     "variant": "",
+     "diag": "experimental_simd.cxx23.cpp:8:23: error: expected namespace name"
+    },
+    "c++26": {
+     "status": "compile",
+     "variant": "",
+     "diag": "experimental_simd.cxx26.cpp:8:23: error: expected namespace name"
+    }
+   }
+  },
+  {
+   "id": "submdspan",
+   "lang": "c++",
+   "bundle": "library26.cpp",
+   "meta": {
+    "title": "std::submdspan, full_extent, strided_slice",
+    "paper": "P2630R4",
+    "std": "c++26",
+    "macro": "__cpp_lib_submdspan"
+   },
+   "results": {
+    "c++26": {
+     "status": "compile",
+     "variant": "",
+     "diag": "submdspan.cxx26.cpp:12:19: error: no member named 'submdspan' in namespace 'std'; did you mean 'mdspan'?"
+    }
+   }
+  },
+  {
+   "id": "mdspan_padded",
+   "lang": "c++",
+   "bundle": "library26.cpp",
+   "meta": {
+    "title": "std::layout_right_padded / layout_left_padded",
+    "paper": "P2642R6",
+    "std": "c++26"
+   },
+   "results": {
+    "c++26": {
+     "status": "compile",
+     "variant": "",
+     "diag": "mdspan_padded.cxx26.cpp:10:8: error: no member named 'layout_right_padded' in namespace 'std'"
+    }
+   }
+  },
+  {
+   "id": "aligned_accessor",
+   "lang": "c++",
+   "bundle": "library26.cpp",
+   "meta": {
+    "title": "std::aligned_accessor for mdspan",
+    "paper": "P2897R7",
+    "std": "c++26",
+    "macro": "__cpp_lib_aligned_accessor"
+   },
+   "results": {
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "dims",
+   "lang": "c++",
+   "bundle": "library26.cpp",
+   "meta": {
+    "title": "std::dims",
+    "paper": "P2389R2",
+    "std": "c++26"
+   },
+   "results": {
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "saturation_arithmetic",
+   "lang": "c++",
+   "bundle": "library26.cpp",
+   "meta": {
+    "title": "add_sat, sub_sat, saturate_cast",
+    "paper": "P0543R3",
+    "std": "c++26",
+    "macro": "__cpp_lib_saturation_arithmetic"
+   },
+   "results": {
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "inplace_vector",
+   "lang": "c++",
+   "bundle": "library26.cpp",
+   "meta": {
+    "title": "std::inplace_vector",
+    "paper": "P0843R14",
+    "std": "c++26",
+    "macro": "__cpp_lib_inplace_vector"
+   },
+   "results": {
+    "c++26": {
+     "status": "compile",
+     "variant": "",
+     "diag": "inplace_vector.cxx26.cpp:7:10: fatal error: 'inplace_vector' file not found"
+    }
+   }
+  },
+  {
+   "id": "linalg",
+   "lang": "c++",
+   "bundle": "library26.cpp",
+   "meta": {
+    "title": "std::linalg (BLAS-like on mdspan)",
+    "paper": "P1673R13",
+    "std": "c++26",
+    "macro": "__cpp_lib_linalg"
+   },
+   "results": {
+    "c++26": {
+     "status": "compile",
+     "variant": "",
+     "diag": "linalg.cxx26.cpp:7:10: fatal error: 'linalg' file not found"
+    }
+   }
+  },
+  {
+   "id": "views_concat",
+   "lang": "c++",
+   "bundle": "library26.cpp",
+   "meta": {
+    "title": "views::concat",
+    "paper": "P2542R8",
+    "std": "c++26",
+    "macro": "__cpp_lib_ranges_concat"
+   },
+   "results": {
+    "c++26": {
+     "status": "compile",
+     "variant": "",
+     "diag": "views_concat.cxx26.cpp:13:16: error: no member named 'concat' in namespace 'std::ranges::views'; did you mean 'wcsncat'?"
+    }
+   }
+  },
+  {
+   "id": "views_indices",
+   "lang": "c++",
+   "bundle": "library26.cpp",
+   "meta": {
+    "title": "views::indices",
+    "paper": "P3060R3",
+    "std": "c++26",
+    "macro": "__cpp_lib_ranges_indices"
+   },
+   "results": {
+    "c++26": {
+     "status": "compile",
+     "variant": "",
+     "diag": "views_indices.cxx26.cpp:10:28: error: no member named 'indices' in namespace 'std::ranges::views'"
+    }
+   }
+  },
+  {
+   "id": "function_ref",
+   "lang": "c++",
+   "bundle": "library26.cpp",
+   "meta": {
+    "title": "std::function_ref",
+    "paper": "P0792R14",
+    "std": "c++26",
+    "macro": "__cpp_lib_function_ref"
+   },
+   "results": {
+    "c++26": {
+     "status": "compile",
+     "variant": "",
+     "diag": "function_ref.cxx26.cpp:8:23: error: no template named 'function_ref' in namespace 'std'; did you mean 'function'?"
+    }
+   }
+  },
+  {
+   "id": "copyable_function",
+   "lang": "c++",
+   "bundle": "library26.cpp",
+   "meta": {
+    "title": "std::copyable_function",
+    "paper": "P2548R6",
+    "std": "c++26",
+    "macro": "__cpp_lib_copyable_function"
+   },
+   "results": {
+    "c++26": {
+     "status": "compile",
+     "variant": "",
+     "diag": "copyable_function.cxx26.cpp:9:8: error: no member named 'copyable_function' in namespace 'std'"
+    }
+   }
+  },
+  {
+   "id": "optional_ref",
+   "lang": "c++",
+   "bundle": "library26.cpp",
+   "meta": {
+    "title": "std::optional<T&>",
+    "paper": "P2988R12",
+    "std": "c++26"
+   },
+   "results": {
+    "c++26": {
+     "status": "compile",
+     "variant": "",
+     "diag": "optional:602:17: error: static assertion failed due to requirement '!is_reference_v<int &>': instantiation of optional with a reference type is ill-formed"
+    }
+   }
+  },
+  {
+   "id": "optional_range",
+   "lang": "c++",
+   "bundle": "library26.cpp",
+   "meta": {
+    "title": "std::optional as a range",
+    "paper": "P3168R2",
+    "std": "c++26",
+    "macro": "__cpp_lib_optional_range_support"
+   },
+   "results": {
+    "c++26": {
+     "status": "compile",
+     "variant": "",
+     "diag": "optional_range.cxx26.cpp:11:14: error: invalid range expression of type 'std::optional<int>'; no viable 'begin' function available"
+    }
+   }
+  },
+  {
+   "id": "runtime_format",
+   "lang": "c++",
+   "bundle": "library26.cpp",
+   "meta": {
+    "title": "std::runtime_format",
+    "paper": "P2918R2",
+    "std": "c++26"
+   },
+   "results": {
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "println_blank",
+   "lang": "c++",
+   "bundle": "library26.cpp",
+   "meta": {
+    "title": "std::println() with no arguments",
+    "paper": "P3142R0",
+    "std": "c++26"
+   },
+   "results": {
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "cxx_stdckdint",
+   "lang": "c++",
+   "bundle": "library26.cpp",
+   "meta": {
+    "title": "<stdckdint.h> ckd_add / ckd_mul in C++",
+    "paper": "P3370R1",
+    "std": "c++26",
+    "macro": "__cpp_lib_stdckdint"
+   },
+   "results": {
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "text_encoding",
+   "lang": "c++",
+   "bundle": "library26.cpp",
+   "meta": {
+    "title": "std::text_encoding",
+    "paper": "P1885R12",
+    "std": "c++26",
+    "macro": "__cpp_lib_text_encoding"
+   },
+   "results": {
+    "c++26": {
+     "status": "compile",
+     "variant": "",
+     "diag": "text_encoding.cxx26.cpp:7:10: fatal error: 'text_encoding' file not found"
+    }
+   }
+  },
+  {
+   "id": "debugging",
+   "lang": "c++",
+   "bundle": "library26.cpp",
+   "meta": {
+    "title": "std::is_debugger_present / breakpoint",
+    "paper": "P2546R5",
+    "std": "c++26",
+    "macro": "__cpp_lib_debugging"
+   },
+   "results": {
+    "c++26": {
+     "status": "compile",
+     "variant": "",
+     "diag": "debugging.cxx26.cpp:7:10: fatal error: 'debugging' file not found"
+    }
+   }
+  },
+  {
+   "id": "execution_senders",
+   "lang": "c++",
+   "bundle": "library26.cpp",
+   "meta": {
+    "title": "std::execution senders and receivers",
+    "paper": "P2300R10",
+    "std": "c++26",
+    "macro": "__cpp_lib_senders"
+   },
+   "results": {
+    "c++26": {
+     "status": "compile",
+     "variant": "",
+     "diag": "execution_senders.cxx26.cpp:11:19: error: no member named 'just' in namespace 'std::execution'"
+    }
+   }
+  },
+  {
+   "id": "hive",
+   "lang": "c++",
+   "bundle": "library26.cpp",
+   "meta": {
+    "title": "std::hive",
+    "paper": "P0447R28",
+    "std": "c++26",
+    "macro": "__cpp_lib_hive"
+   },
+   "results": {
+    "c++26": {
+     "status": "compile",
+     "variant": "",
+     "diag": "hive.cxx26.cpp:7:10: fatal error: 'hive' file not found"
+    }
+   }
+  },
+  {
+   "id": "philox_engine",
+   "lang": "c++",
+   "bundle": "library26.cpp",
+   "meta": {
+    "title": "std::philox_engine (counter-based random numbers)",
+    "paper": "P2075R6",
+    "std": "c++26",
+    "macro": "__cpp_lib_philox_engine"
+   },
+   "results": {
+    "c++26": {
+     "status": "compile",
+     "variant": "",
+     "diag": "philox_engine.cxx26.cpp:9:8: error: no member named 'philox4x32' in namespace 'std'"
+    }
+   }
+  },
+  {
+   "id": "is_within_lifetime",
+   "lang": "c++",
+   "bundle": "library26.cpp",
+   "meta": {
+    "title": "std::is_within_lifetime",
+    "paper": "P2641R4",
+    "std": "c++26",
+    "macro": "__cpp_lib_is_within_lifetime"
+   },
+   "results": {
+    "c++26": {
+     "status": "compile",
+     "variant": "",
+     "diag": "is_within_lifetime.cxx26.cpp:10:15: error: no member named 'is_within_lifetime' in namespace 'std'"
+    }
+   }
+  },
+  {
+   "id": "span_at",
+   "lang": "c++",
+   "bundle": "library26.cpp",
+   "meta": {
+    "title": "std::span::at",
+    "paper": "P2821R5",
+    "std": "c++26",
+    "macro": "__cpp_lib_span"
+   },
+   "results": {
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "atomic_fetch_max",
+   "lang": "c++",
+   "bundle": "library26.cpp",
+   "meta": {
+    "title": "atomic fetch_max / fetch_min",
+    "paper": "P0493R5",
+    "std": "c++26",
+    "macro": "__cpp_lib_atomic_min_max"
+   },
+   "results": {
+    "c++26": {
+     "status": "compile",
+     "variant": "",
+     "diag": "atomic_fetch_max.cxx26.cpp:10:5: error: no member named 'fetch_max' in 'std::atomic<int>'"
+    }
+   }
+  },
+  {
+   "id": "c23_version",
+   "lang": "c",
+   "bundle": "c23.c",
+   "meta": {
+    "title": "__STDC_VERSION__ is 202311L"
+   },
+   "results": {
+    "c23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "c23_nullptr",
+   "lang": "c",
+   "bundle": "c23.c",
+   "meta": {
+    "title": "nullptr and nullptr_t"
+   },
+   "results": {
+    "c23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "c23_constexpr",
+   "lang": "c",
+   "bundle": "c23.c",
+   "meta": {
+    "title": "constexpr objects"
+   },
+   "results": {
+    "c23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "c23_typeof",
+   "lang": "c",
+   "bundle": "c23.c",
+   "meta": {
+    "title": "typeof and typeof_unqual"
+   },
+   "results": {
+    "c23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "c23_keywords",
+   "lang": "c",
+   "bundle": "c23.c",
+   "meta": {
+    "title": "bool/true/false, static_assert, alignas, alignof, thread_local as keywords"
+   },
+   "results": {
+    "c23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "c23_auto",
+   "lang": "c",
+   "bundle": "c23.c",
+   "meta": {
+    "title": "auto type inference"
+   },
+   "results": {
+    "c23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "c23_attributes",
+   "lang": "c",
+   "bundle": "c23.c",
+   "meta": {
+    "title": "[[nodiscard(\"...\")]], [[maybe_unused]], [[deprecated]], [[fallthrough]], [[noreturn]]"
+   },
+   "results": {
+    "c23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "c23_empty_initializer",
+   "lang": "c",
+   "bundle": "c23.c",
+   "meta": {
+    "title": "empty initializer = {}"
+   },
+   "results": {
+    "c23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "c23_literals",
+   "lang": "c",
+   "bundle": "c23.c",
+   "meta": {
+    "title": "binary literals and digit separators"
+   },
+   "results": {
+    "c23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "c23_enum_underlying",
+   "lang": "c",
+   "bundle": "c23.c",
+   "meta": {
+    "title": "enumerations with a fixed underlying type"
+   },
+   "results": {
+    "c23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "c23_bitint",
+   "lang": "c",
+   "bundle": "c23.c",
+   "meta": {
+    "title": "_BitInt(N)"
+   },
+   "results": {
+    "c23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "c23_embed",
+   "lang": "c",
+   "bundle": "c23.c",
+   "meta": {
+    "title": "#embed"
+   },
+   "results": {
+    "c23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "c23_stdckdint",
+   "lang": "c",
+   "bundle": "c23.c",
+   "meta": {
+    "title": "<stdckdint.h> ckd_add / ckd_mul (checked sizes)"
+   },
+   "results": {
+    "c23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "c23_stdbit",
+   "lang": "c",
+   "bundle": "c23.c",
+   "meta": {
+    "title": "<stdbit.h> bit utilities"
+   },
+   "results": {
+    "c23": {
+     "status": "compile",
+     "variant": "",
+     "diag": "c23_stdbit.c23.c:4:10: fatal error: 'stdbit.h' file not found"
+    }
+   }
+  },
+  {
+   "id": "c23_unreachable",
+   "lang": "c",
+   "bundle": "c23.c",
+   "meta": {
+    "title": "unreachable() from <stddef.h>"
+   },
+   "results": {
+    "c23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "c23_memset_explicit",
+   "lang": "c",
+   "bundle": "c23.c",
+   "meta": {
+    "title": "memset_explicit"
+   },
+   "results": {
+    "c23": {
+     "status": "compile",
+     "variant": "",
+     "diag": "c23_memset_explicit.c23.c:7:9: error: use of undeclared identifier 'memset_explicit'"
+    }
+   }
+  },
+  {
+   "id": "c23_strdup",
+   "lang": "c",
+   "bundle": "c23.c",
+   "meta": {
+    "title": "strdup / strndup in <string.h>"
+   },
+   "results": {
+    "c23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "c23_va_start",
+   "lang": "c",
+   "bundle": "c23.c",
+   "meta": {
+    "title": "va_start with one argument, variadic without a named parameter"
+   },
+   "results": {
+    "c23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "c23_unnamed_parameters",
+   "lang": "c",
+   "bundle": "c23.c",
+   "meta": {
+    "title": "unnamed parameters in function definitions"
+   },
+   "results": {
+    "c23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "c23_labels",
+   "lang": "c",
+   "bundle": "c23.c",
+   "meta": {
+    "title": "labels before declarations and at the end of blocks"
+   },
+   "results": {
+    "c23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "c23_elifdef",
+   "lang": "c",
+   "bundle": "c23.c",
+   "meta": {
+    "title": "#elifdef / #elifndef"
+   },
+   "results": {
+    "c23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "c23_free_sized",
+   "lang": "c",
+   "bundle": "c23.c",
+   "meta": {
+    "title": "free_sized / free_aligned_sized"
+   },
+   "results": {
+    "c23": {
+     "status": "compile",
+     "variant": "",
+     "diag": "c23_free_sized.c23.c:7:3: error: use of undeclared identifier 'free_sized'"
+    }
+   }
+  },
+  {
+   "id": "c23_strfromd",
+   "lang": "c",
+   "bundle": "c23.c",
+   "meta": {
+    "title": "strfromd / strfromf"
+   },
+   "results": {
+    "c23": {
+     "status": "compile",
+     "variant": "",
+     "diag": "c23_strfromd.c23.c:8:9: error: use of undeclared identifier 'strfromd'"
+    }
+   }
+  },
+  {
+   "id": "c11_threads",
+   "lang": "c",
+   "bundle": "c23.c",
+   "meta": {
+    "title": "<threads.h> (C11 threads, optional in C23)"
+   },
+   "results": {
+    "c23": {
+     "status": "compile",
+     "variant": "",
+     "diag": "c11_threads.c23.c:4:10: fatal error: 'threads.h' file not found"
+    }
+   }
+  },
+  {
+   "id": "c_setjmp_longjmp",
+   "lang": "c",
+   "bundle": "c23.c",
+   "meta": {
+    "title": "setjmp / longjmp (how libjpeg reports errors)"
+   },
+   "results": {
+    "c23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  }
+ ],
+ "macros": {
+  "__cpp_explicit_this_parameter": {
+   "c++23": "202110",
+   "c++26": "202110"
+  },
+  "__cpp_multidimensional_subscript": {
+   "c++23": "202211",
+   "c++26": "202211"
+  },
+  "__cpp_if_consteval": {
+   "c++23": "202106",
+   "c++26": "202106"
+  },
+  "__cpp_static_call_operator": {
+   "c++23": "202207",
+   "c++26": "202207"
+  },
+  "__cpp_auto_cast": {
+   "c++23": "202110",
+   "c++26": "202110"
+  },
+  "__has_cpp_attribute(assume)": {
+   "c++23": "202207",
+   "c++26": "202207"
+  },
+  "__cpp_size_t_suffix": {
+   "c++23": "202011",
+   "c++26": "202011"
+  },
+  "__cpp_constexpr": {
+   "c++23": "202211",
+   "c++26": "202406"
+  },
+  "__cpp_consteval": {
+   "c++23": "202211",
+   "c++26": "202211"
+  },
+  "__STDCPP_FLOAT16_T__": {
+   "c++23": "-",
+   "c++26": "-"
+  },
+  "__STDCPP_BFLOAT16_T__": {
+   "c++23": "-",
+   "c++26": "-"
+  },
+  "__cpp_pack_indexing": {
+   "c++23": "202311",
+   "c++26": "202311"
+  },
+  "__cpp_deleted_function": {
+   "c++23": "202403",
+   "c++26": "202403"
+  },
+  "__cpp_placeholder_variables": {
+   "c++23": "202306",
+   "c++26": "202306"
+  },
+  "__cpp_structured_bindings": {
+   "c++23": "202411",
+   "c++26": "202411"
+  },
+  "__cpp_static_assert": {
+   "c++23": "202306",
+   "c++26": "202306"
+  },
+  "__cpp_pp_embed": {
+   "c++23": "-",
+   "c++26": "-"
+  },
+  "__cpp_contracts": {
+   "c++23": "-",
+   "c++26": "-"
+  },
+  "__cpp_impl_reflection": {
+   "c++23": "-",
+   "c++26": "-"
+  },
+  "__cpp_lib_reflection": {
+   "c++23": "-",
+   "c++26": "-"
+  },
+  "__cpp_expansion_statements": {
+   "c++23": "-",
+   "c++26": "-"
+  },
+  "__cpp_trivial_union": {
+   "c++23": "-",
+   "c++26": "-"
+  },
+  "__cpp_lib_mdspan": {
+   "c++23": "202207",
+   "c++26": "202406"
+  },
+  "__cpp_lib_expected": {
+   "c++23": "202211",
+   "c++26": "202211"
+  },
+  "__cpp_lib_print": {
+   "c++23": "202207",
+   "c++26": "202207"
+  },
+  "__cpp_lib_format_ranges": {
+   "c++23": "202207",
+   "c++26": "202207"
+  },
+  "__cpp_lib_ranges_to_container": {
+   "c++23": "202202",
+   "c++26": "202202"
+  },
+  "__cpp_lib_containers_ranges": {
+   "c++23": "202202",
+   "c++26": "202202"
+  },
+  "__cpp_lib_ranges_zip": {
+   "c++23": "-",
+   "c++26": "-"
+  },
+  "__cpp_lib_ranges_enumerate": {
+   "c++23": "-",
+   "c++26": "-"
+  },
+  "__cpp_lib_ranges_cartesian_product": {
+   "c++23": "-",
+   "c++26": "-"
+  },
+  "__cpp_lib_ranges_chunk": {
+   "c++23": "-",
+   "c++26": "-"
+  },
+  "__cpp_lib_ranges_slide": {
+   "c++23": "-",
+   "c++26": "-"
+  },
+  "__cpp_lib_ranges_stride": {
+   "c++23": "-",
+   "c++26": "-"
+  },
+  "__cpp_lib_ranges_chunk_by": {
+   "c++23": "202202",
+   "c++26": "202202"
+  },
+  "__cpp_lib_ranges_join_with": {
+   "c++23": "202202",
+   "c++26": "202202"
+  },
+  "__cpp_lib_ranges_repeat": {
+   "c++23": "202207",
+   "c++26": "202207"
+  },
+  "__cpp_lib_ranges_as_rvalue": {
+   "c++23": "202207",
+   "c++26": "202207"
+  },
+  "__cpp_lib_ranges_as_const": {
+   "c++23": "-",
+   "c++26": "-"
+  },
+  "__cpp_lib_ranges_fold": {
+   "c++23": "-",
+   "c++26": "-"
+  },
+  "__cpp_lib_ranges_contains": {
+   "c++23": "202207",
+   "c++26": "202207"
+  },
+  "__cpp_lib_ranges_starts_ends_with": {
+   "c++23": "202106",
+   "c++26": "202106"
+  },
+  "__cpp_lib_ranges_find_last": {
+   "c++23": "202207",
+   "c++26": "202207"
+  },
+  "__cpp_lib_ranges_iota": {
+   "c++23": "202202",
+   "c++26": "202202"
+  },
+  "__cpp_lib_optional": {
+   "c++23": "202110",
+   "c++26": "202110"
+  },
+  "__cpp_lib_move_only_function": {
+   "c++23": "-",
+   "c++26": "-"
+  },
+  "__cpp_lib_out_ptr": {
+   "c++23": "202106",
+   "c++26": "202311"
+  },
+  "__cpp_lib_stacktrace": {
+   "c++23": "-",
+   "c++26": "-"
+  },
+  "__cpp_lib_generator": {
+   "c++23": "-",
+   "c++26": "-"
+  },
+  "__cpp_lib_flat_map": {
+   "c++23": "202207",
+   "c++26": "202207"
+  },
+  "__cpp_lib_flat_set": {
+   "c++23": "202207",
+   "c++26": "202207"
+  },
+  "__cpp_lib_spanstream": {
+   "c++23": "-",
+   "c++26": "-"
+  },
+  "__cpp_lib_unreachable": {
+   "c++23": "202202",
+   "c++26": "202202"
+  },
+  "__cpp_lib_to_underlying": {
+   "c++23": "202102",
+   "c++26": "202102"
+  },
+  "__cpp_lib_byteswap": {
+   "c++23": "202110",
+   "c++26": "202110"
+  },
+  "__cpp_lib_forward_like": {
+   "c++23": "202207",
+   "c++26": "202207"
+  },
+  "__cpp_lib_invoke_r": {
+   "c++23": "202106",
+   "c++26": "202106"
+  },
+  "__cpp_lib_constexpr_cmath": {
+   "c++23": "-",
+   "c++26": "-"
+  },
+  "__cpp_lib_string_contains": {
+   "c++23": "202011",
+   "c++26": "202011"
+  },
+  "__cpp_lib_string_resize_and_overwrite": {
+   "c++23": "202110",
+   "c++26": "202110"
+  },
+  "__cpp_lib_start_lifetime_as": {
+   "c++23": "-",
+   "c++26": "-"
+  },
+  "__cpp_lib_bind_back": {
+   "c++23": "202202",
+   "c++26": "202202"
+  },
+  "__cpp_lib_constexpr_memory": {
+   "c++23": "202202",
+   "c++26": "202202"
+  },
+  "__cpp_lib_jthread": {
+   "c++23": "201911",
+   "c++26": "201911"
+  },
+  "__cpp_lib_barrier": {
+   "c++23": "201907",
+   "c++26": "201907"
+  },
+  "__cpp_lib_latch": {
+   "c++23": "201907",
+   "c++26": "201907"
+  },
+  "__cpp_lib_semaphore": {
+   "c++23": "201907",
+   "c++26": "201907"
+  },
+  "__cpp_lib_atomic_wait": {
+   "c++23": "201907",
+   "c++26": "201907"
+  },
+  "__cpp_lib_format": {
+   "c++23": "202110",
+   "c++26": "202110"
+  },
+  "__cpp_lib_to_chars": {
+   "c++23": "-",
+   "c++26": "-"
+  },
+  "__cpp_lib_filesystem": {
+   "c++23": "201703",
+   "c++26": "201703"
+  },
+  "__cpp_lib_char8_t": {
+   "c++23": "201907",
+   "c++26": "201907"
+  },
+  "__cpp_lib_execution": {
+   "c++23": "-",
+   "c++26": "-"
+  },
+  "__cpp_lib_parallel_algorithm": {
+   "c++23": "-",
+   "c++26": "-"
+  },
+  "__cpp_lib_hardware_interference_size": {
+   "c++23": "201703",
+   "c++26": "201703"
+  },
+  "__cpp_lib_assume_aligned": {
+   "c++23": "201811",
+   "c++26": "201811"
+  },
+  "__cpp_lib_source_location": {
+   "c++23": "201907",
+   "c++26": "201907"
+  },
+  "__cpp_lib_simd": {
+   "c++23": "-",
+   "c++26": "-"
+  },
+  "__cpp_lib_experimental_parallel_simd": {
+   "c++23": "-",
+   "c++26": "-"
+  },
+  "__cpp_lib_submdspan": {
+   "c++23": "-",
+   "c++26": "-"
+  },
+  "__cpp_lib_aligned_accessor": {
+   "c++23": "-",
+   "c++26": "202411"
+  },
+  "__cpp_lib_saturation_arithmetic": {
+   "c++23": "-",
+   "c++26": "202311"
+  },
+  "__cpp_lib_inplace_vector": {
+   "c++23": "-",
+   "c++26": "-"
+  },
+  "__cpp_lib_linalg": {
+   "c++23": "-",
+   "c++26": "-"
+  },
+  "__cpp_lib_ranges_concat": {
+   "c++23": "-",
+   "c++26": "-"
+  },
+  "__cpp_lib_ranges_indices": {
+   "c++23": "-",
+   "c++26": "-"
+  },
+  "__cpp_lib_function_ref": {
+   "c++23": "-",
+   "c++26": "-"
+  },
+  "__cpp_lib_copyable_function": {
+   "c++23": "-",
+   "c++26": "-"
+  },
+  "__cpp_lib_optional_range_support": {
+   "c++23": "-",
+   "c++26": "-"
+  },
+  "__cpp_lib_stdckdint": {
+   "c++23": "-",
+   "c++26": "-"
+  },
+  "__cpp_lib_text_encoding": {
+   "c++23": "-",
+   "c++26": "-"
+  },
+  "__cpp_lib_debugging": {
+   "c++23": "-",
+   "c++26": "-"
+  },
+  "__cpp_lib_senders": {
+   "c++23": "-",
+   "c++26": "-"
+  },
+  "__cpp_lib_hive": {
+   "c++23": "-",
+   "c++26": "-"
+  },
+  "__cpp_lib_philox_engine": {
+   "c++23": "-",
+   "c++26": "-"
+  },
+  "__cpp_lib_is_within_lifetime": {
+   "c++23": "-",
+   "c++26": "-"
+  },
+  "__cpp_lib_span": {
+   "c++23": "202002",
+   "c++26": "202002"
+  },
+  "__cpp_lib_atomic_min_max": {
+   "c++23": "-",
+   "c++26": "-"
+  },
+  "__cplusplus": {
+   "c++23": "202302",
+   "c++26": "202400"
+  },
+  "__cpp_modules": {
+   "c++23": "1",
+   "c++26": "1"
+  },
+  "__cpp_lib_modules": {
+   "c++23": "202207",
+   "c++26": "202207"
+  },
+  "__cpp_concepts": {
+   "c++23": "202002",
+   "c++26": "202002"
+  },
+  "__cpp_lib_ranges": {
+   "c++23": "202406",
+   "c++26": "202406"
+  },
+  "__cpp_lib_bit_cast": {
+   "c++23": "201806",
+   "c++26": "201806"
+  },
+  "__cpp_lib_math_constants": {
+   "c++23": "201907",
+   "c++26": "201907"
+  }
+ },
+ "import_std": {
+  "c++23": {
+   "status": "skip",
+   "note": "no libc++.modules.json for the SDK's libc++ in /Applications/Xcode_26.6.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib, /Applications/Xcode_26.6.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/lib"
+  },
+  "c++26": {
+   "status": "skip",
+   "note": "no libc++.modules.json for the SDK's libc++ in /Applications/Xcode_26.6.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib, /Applications/Xcode_26.6.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/lib"
+  }
+ }
+}
