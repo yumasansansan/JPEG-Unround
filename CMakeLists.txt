@@ -107,10 +107,17 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 # Sanitizers are not for Release builds: the sanitize presets configure
 # RelWithDebInfo.
 #
-# The tests run with the environment below. LeakSanitizer comes with the address
-# sanitizer and is asked for on Linux, where it runs. On Windows the address
-# sanitizer's runtime is a DLL beside the compiler, where a test does not look
-# for it, so the tests have its directory put at the front of PATH.
+# The tests run with the environment below. A sanitizer that finds something
+# ends the program with an exit status (abort_on_error=0), as it does by default
+# everywhere but on Apple's systems, where it calls abort(): CTest takes a
+# program that a signal ended for one that crashed, whatever its output says, so
+# a test that passes only on the report of a mistake made on purpose (tests/)
+# could not pass there, and a real finding would read as a crash rather than as
+# the report it is. LeakSanitizer comes with the address sanitizer and is asked
+# for on Linux, where it runs; asking for it elsewhere only makes the address
+# sanitizer refuse to start. On Windows the address sanitizer's runtime is a DLL
+# beside the compiler, where a test does not look for it, so the tests have its
+# directory put at the front of PATH.
 set(UNROUND_SANITIZER_LIST "")
 set(UNROUND_SANITIZER_TEST_ENVIRONMENT "")
 set(UNROUND_SANITIZER_TEST_PATH "")
@@ -138,12 +145,17 @@ if(UNROUND_SANITIZERS)
   add_compile_options("-fsanitize=${UNROUND_SANITIZER_OPTION}" -fno-sanitize-recover=all -fno-omit-frame-pointer)
   add_link_options("-fsanitize=${UNROUND_SANITIZER_OPTION}")
 
-  list(APPEND UNROUND_SANITIZER_TEST_ENVIRONMENT "UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1")
-  if("address" IN_LIST UNROUND_SANITIZER_LIST AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    list(APPEND UNROUND_SANITIZER_TEST_ENVIRONMENT "ASAN_OPTIONS=detect_leaks=1")
+  list(APPEND UNROUND_SANITIZER_TEST_ENVIRONMENT "UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1:abort_on_error=0")
+  if("address" IN_LIST UNROUND_SANITIZER_LIST)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+      list(APPEND UNROUND_SANITIZER_TEST_ENVIRONMENT "ASAN_OPTIONS=abort_on_error=0:detect_leaks=1")
+    else()
+      list(APPEND UNROUND_SANITIZER_TEST_ENVIRONMENT "ASAN_OPTIONS=abort_on_error=0")
+    endif()
   endif()
   if("thread" IN_LIST UNROUND_SANITIZER_LIST)
-    list(APPEND UNROUND_SANITIZER_TEST_ENVIRONMENT "TSAN_OPTIONS=halt_on_error=1:second_deadlock_stack=1")
+    list(APPEND UNROUND_SANITIZER_TEST_ENVIRONMENT
+      "TSAN_OPTIONS=halt_on_error=1:second_deadlock_stack=1:abort_on_error=0")
   endif()
   if(CMAKE_SYSTEM_NAME STREQUAL "Windows" AND "address" IN_LIST UNROUND_SANITIZER_LIST)
     execute_process(
