@@ -8,6 +8,11 @@
 # kept as an artifact and shown in the summary of the run. The build and test
 # jobs of the implementations will follow.
 #
+# macOS is probed twice: on macos-26 with the Xcode 26 SDK, for macOS 26.0, and
+# on xcode-27 (a public preview of GitHub's, macOS 27 with the Xcode 27 SDK),
+# for macOS 26.0 and 27.0. What the newer SDK's headers bring shows for 26.0
+# already; what needs macOS 27's own libc++ shows only for 27.0.
+#
 # The toolchain comes from ci/setup.sh, as in ADLplug-Next. The one action,
 # actions/upload-artifact, is pinned to the commit of its release.
 
@@ -37,7 +42,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-2025-vs2026, ubuntu-26.04, macos-26]
+        include:
+          - { os: windows-2025-vs2026, macos_targets: "" }
+          - { os: ubuntu-26.04, macos_targets: "" }
+          - { os: macos-26, macos_targets: "26.0" }
+          - { os: xcode-27, macos_targets: "26.0 27.0" }
 
     steps:
       - name: Check out
@@ -53,6 +62,8 @@ jobs:
         run: bash ci/setup.sh
 
       - name: Probe the toolchain
+        env:
+          UNROUND_MACOS_TARGETS: ${{ matrix.macos_targets }}
         run: bash ci/probe.sh probe-reports
 
       - name: Keep the reports

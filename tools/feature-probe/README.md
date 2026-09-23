@@ -38,14 +38,18 @@ bash ci/probe.sh probe-reports
 ```
 
 On macOS, `run.py` compiles against the SDK (`xcrun --show-sdk-path`) for the
-deployment target given with `--macos-min`, 26.0 by default: JPEG-Unround
-supports macOS 26.0 and later, and the SDK's libc++ marks some features as
-available only from a given version (floating-point `std::from_chars` from 26.0).
-The std module for `import std` has to be the one of the SDK's libc++, so it is
-looked for in Xcode and the SDK, never taken from the LLVM toolchain, whose
-`std.cppm` needs newer headers than the SDK's. CI runs the whole set on all
-three systems (the `probe` job of `.github/workflows/ci.yml`) and keeps the
-reports as an artifact.
+deployment target given with `--macos-min`, 26.0 by default: the SDK's libc++
+marks some features as available only from a given version (floating-point
+`std::from_chars` from 26.0). `ci/probe.sh` measures every deployment target
+that `UNROUND_MACOS_TARGETS` names (26.0 when unset) and names its reports after
+the SDK and the target, such as `report-macos-arm64-sdk27.0-min26.0.md`: what a
+newer SDK's headers bring shows for the older target already, and what needs
+the newer system's own libc++ shows only for the newer target. The std module
+for `import std` has to be the one of the SDK's libc++, so it is looked for in
+Xcode and the SDK, never taken from the LLVM toolchain, whose `std.cppm` needs
+newer headers than the SDK's. CI runs the whole set on all three systems, macOS
+with Xcode 26 and with the Xcode 27 preview (the `probe` job of
+`.github/workflows/ci.yml`), and keeps the reports as an artifact.
 
 ## Writing a probe
 
