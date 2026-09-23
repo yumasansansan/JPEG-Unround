@@ -48,7 +48,7 @@ in_environment() {
 }
 
 cd python
-in_environment python --version
+in_environment python -c "import sys, sysconfig; gil = 'free-threaded' if sysconfig.get_config_var('Py_GIL_DISABLED') else 'with the GIL'; print(sys.version.split()[0], gil)"
 in_environment ruff check
 in_environment ruff format --check
 in_environment mypy

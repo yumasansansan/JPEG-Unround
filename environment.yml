@@ -10,11 +10,18 @@
 # systems test the same thing. jpeglib is on PyPI alone; the tests use it as a
 # reader of JPEG files independent of this project's own, and everything it
 # depends on comes from conda-forge above.
+#
+# The Python is CPython with the GIL (python_abi *_cp314). conda-forge has a
+# free-threaded build of the same version (*_cp314t) as well, and left to itself
+# the solver took that one on macOS; jpeglib has wheels only for the stable ABI,
+# which a free-threaded Python does not load, and pip then tried to build it from
+# source and failed.
 name: jpeg-unround
 channels:
   - conda-forge
 dependencies:
   - python=3.14.7
+  - python_abi=3.14=*_cp314
   - numpy=2.5.3
   - scipy=1.18.1
   - scikit-image=0.26.0
