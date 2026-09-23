@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 Yuma Kakei <yumasansansan@gmail.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# LLD links on every system, as it does the C and C++ of the project: lld-link
+# for Windows, and on the other systems Clang as the linker driver with
+# -fuse-ld=lld (ld.lld on Linux, ld64.lld on macOS).
+
+[target.x86_64-pc-windows-msvc]
+linker = "lld-link"
+
+[target.aarch64-pc-windows-msvc]
+linker = "lld-link"
+
+[target.x86_64-unknown-linux-gnu]
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+
+[target.aarch64-unknown-linux-gnu]
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+
+[target.aarch64-apple-darwin]
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=lld"]

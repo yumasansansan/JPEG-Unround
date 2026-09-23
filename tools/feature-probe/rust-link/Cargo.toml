@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: 2026 Yuma Kakei <yumasansansan@gmail.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Probes the way the Rust implementation will link: rustc with LLD as the
+# linker (.cargo/config.toml), against a static library of C23 compiled by the
+# same Clang as the rest of the project, in which setjmp/longjmp stays inside C
+# as it has to around libjpeg. No crate is fetched.
+
+[package]
+name = "unround-probe-rust-link"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "GPL-3.0-or-later"
+
+[profile.release]
+lto = "thin"

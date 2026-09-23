@@ -1,0 +1,23 @@
+# Build trees
+/build/
+/out/
+
+# Rust
+target/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# Image data and the sources of the tools compared against
+/data/
+/third_party/
+
+# A local draft of the next commit message
+/COMMIT_MSG.txt
+
+.DS_Store
