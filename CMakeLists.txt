@@ -246,14 +246,30 @@ else()
   endif()
 endif()
 
+# Text on Windows is UTF-8 as it is everywhere else. A program runs there with a
+# code page, in which main() gets its arguments and in which fopen(),
+# std::ifstream and std::filesystem::path take a name given as char; it is the
+# code page of the system's language unless the program's manifest names one
+# (932 on Japanese Windows, 1252 on English), and most of Unicode is not in it.
+# Every program of this project names UTF-8 (cmake/utf8.manifest), which
+# Windows 10 1903 and later honour, and the C++ implementation then handles
+# arguments and names as the UTF-8 that they are on Linux and macOS; a test
+# (cpp/tests/test_utf8_arguments.cpp) checks it. The standard libraries of Rust
+# and Python take both from Windows in UTF-16 and need nothing of the kind.
+set(UNROUND_UTF8_MANIFEST "${CMAKE_CURRENT_SOURCE_DIR}/cmake/utf8.manifest")
+
 # Gives a target of this project its language standards, warnings and
-# hardening.
+# hardening, and a program its manifest on Windows.
 function(unround_target_defaults target)
   set_target_properties("${target}" PROPERTIES
     C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
     CXX_STANDARD 26 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
   target_compile_options("${target}" PRIVATE ${UNROUND_WARNING_FLAGS} ${UNROUND_HARDENING_FLAGS})
   target_compile_definitions("${target}" PRIVATE ${UNROUND_DEFINITIONS})
+  get_target_property(type "${target}" TYPE)
+  if(CMAKE_SYSTEM_NAME STREQUAL "Windows" AND type STREQUAL "EXECUTABLE")
+    target_sources("${target}" PRIVATE "${UNROUND_UTF8_MANIFEST}")
+  endif()
 endfunction()
 
 if(UNROUND_BUILD_TESTS)

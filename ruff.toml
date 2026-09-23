@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: 2026 Yuma Kakei <yumasansansan@gmail.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# The Python outside the package -- scripts/, experiments/ and ci/ -- is held to
+# the rules of the package (python/pyproject.toml).
+extend = "python/pyproject.toml"
+src = ["python/src", "scripts", "experiments", "ci"]
+# The feature probes are not held to these rules yet.
+extend-exclude = ["tools"]
+
+# Command-line programs print, run the tools they are pointed at, and compare with
+# the numbers of formats and of the rules of their task.
+[lint.extend-per-file-ignores]
+"scripts/**" = ["T201", "S603", "S607", "PLR2004"]
+"experiments/**" = ["T201", "S603", "S607", "PLR2004"]
+"ci/**" = ["T201", "S603", "S607", "PLR2004"]

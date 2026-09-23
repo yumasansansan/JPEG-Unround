@@ -34,7 +34,9 @@
 
 include(ExternalProject)
 
-set(UNROUND_LIBJPEG_SOURCE "${PROJECT_SOURCE_DIR}/extern/libjpeg-turbo")
+# The submodule is found from this file, so that the build of the tools compared
+# against (scripts/comparison-tools) can take libjpeg-turbo from here as well.
+cmake_path(SET UNROUND_LIBJPEG_SOURCE NORMALIZE "${CMAKE_CURRENT_LIST_DIR}/../extern/libjpeg-turbo")
 if(NOT EXISTS "${UNROUND_LIBJPEG_SOURCE}/CMakeLists.txt")
   message(FATAL_ERROR
     "extern/libjpeg-turbo is empty. Check out the submodules: "

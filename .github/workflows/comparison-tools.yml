@@ -1,0 +1,63 @@
+# SPDX-FileCopyrightText: 2026 Yuma Kakei <yumasansansan@gmail.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Builds the tools that JPEG-Unround is compared against -- jpeg2png, jpegqs,
+# knusperli and mozjpeg's cjpeg -- on each of the three systems, and runs each
+# on a small JPEG file (scripts/comparison-tools.sh). Comparisons are made on a
+# machine of one's own, where the same script builds them; this workflow keeps
+# the script working everywhere, macOS included, which has no machine of its
+# own but CI's. It runs when what the build depends on changes, and by hand.
+#
+# The toolchain comes from ci/setup.sh, as for the build of JPEG-Unround.
+
+name: Comparison tools
+
+on:
+  push:
+    paths:
+      - scripts/comparison-tools.sh
+      - scripts/comparison-tools/**
+      - cmake/Libjpeg.cmake
+      - cmake/LLVMToolchain.cmake
+      - extern/**
+      - ci/setup.sh
+      - .github/workflows/comparison-tools.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: comparison tools (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025-vs2026, ubuntu-26.04, macos-26]
+
+    steps:
+      - name: Check out
+        run: |
+          git config --global core.autocrlf false
+          git -c init.defaultBranch=main init --quiet
+          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          git fetch --no-tags --quiet --depth 1 origin "$GITHUB_SHA"
+          git checkout --quiet --detach "$GITHUB_SHA"
+          git submodule update --init --depth 1 --jobs 4
+          git log -1 --format='%H %s'
+
+      - name: Set up the toolchain
+        run: bash ci/setup.sh
+
+      - name: Build, test and install the tools
+        run: bash scripts/comparison-tools.sh

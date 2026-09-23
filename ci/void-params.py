@@ -287,6 +287,16 @@ class Finding:
     lambda_introducer: bool
 
 
+@dataclass(frozen=True)
+class Source:
+    """A file under check, with the compile command that checks it and the language to name, if any."""
+
+    path: Path
+    text: str
+    command: Command
+    language: str | None
+
+
 class Checker:
     def __init__(self, commands: list[Command], scratch: Path) -> None:
         self.commands = commands
@@ -309,13 +319,14 @@ class Checker:
 
         return max(same_language, key=shared), ("c++" if cxx else "c")
 
-    def compile(self, command: Command, language: str | None, source: Path, text: str) -> tuple[str, Path]:
+    def compile(self, source: Source, text: str) -> tuple[str, Path]:
+        """Compiles text in place of the source, and returns what the compiler said and where the copy was."""
         directory = Path(tempfile.mkdtemp(dir=self.scratch))
-        copy = directory / source.name
+        copy = directory / source.path.name
         copy.write_text(text, encoding="utf-8", newline="")
         result = subprocess.run(
-            syntax_only(command, source, copy, language),
-            cwd=command.directory,
+            syntax_only(source.command, source.path, copy, source.language),
+            cwd=source.command.directory,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -325,12 +336,10 @@ class Checker:
         self.compilations += 1
         return result.stdout + result.stderr, copy
 
-    def erred(
-        self, command: Command, language: str | None, path: Path, text: str, chosen: list[Candidate], *, doubled: bool
-    ) -> list[bool]:
+    def erred(self, source: Source, chosen: list[Candidate], *, doubled: bool) -> list[bool]:
         """Whether the compiler reports an error inside each chosen candidate once it is changed."""
-        changed, spans = modified(text, chosen, doubled=doubled)
-        output, copy = self.compile(command, language, path, changed)
+        changed, spans = modified(source.text, chosen, doubled=doubled)
+        output, copy = self.compile(source, changed)
         offsets = error_offsets(output, copy, changed)
         return [any(start <= offset <= end for offset in offsets) for start, end in spans]
 
@@ -338,22 +347,23 @@ class Checker:
         text = path.read_text(encoding="utf-8")
         candidates = candidates_of(text, cxx=path.suffix in CXX_SUFFIXES)
         command, language = self.command_for(path)
+        source = Source(path, text, command, language)
 
-        output, _ = self.compile(command, language, path, text)
+        output, _ = self.compile(source, text)
         if ERROR.search(output):
             message = f"{path} does not compile as it is, so nothing can be told from it:\n{output}"
             raise SystemExit(message)
         if not candidates:
             return []
 
-        read = self.erred(command, language, path, text, candidates, doubled=True)
+        read = self.erred(source, candidates, doubled=True)
         active = [candidate for candidate, error in zip(candidates, read, strict=True) if error]
         if not active:
             return []
-        called = self.erred(command, language, path, text, active, doubled=False)
+        called = self.erred(source, active, doubled=False)
         findings = []
         for candidate in (candidate for candidate, error in zip(active, called, strict=True) if not error):
-            if not self.erred(command, language, path, text, [candidate], doubled=False)[0]:
+            if not self.erred(source, [candidate], doubled=False)[0]:
                 line = text.count("\n", 0, candidate.span_start) + 1
                 column = candidate.span_start - (text.rfind("\n", 0, candidate.span_start) + 1) + 1
                 findings.append(Finding(path, line, column, candidate.lambda_introducer))
