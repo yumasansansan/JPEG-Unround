@@ -22,11 +22,12 @@ import numpy.typing as npt
 from unround import dct
 from unround.model import Problem, excess
 
-__all__ = ["blocking_effect_factor", "consistency", "mse", "psnr", "psnr_b", "quantize"]
+__all__ = ["blocking_effect_factor", "consistency", "mse", "picture_excess", "psnr", "psnr_b", "quantize"]
 
 type Array = npt.NDArray[np.float64]
 
 _HALF: Final = 0.5
+_AXES: Final = 2  # a picture's: height and width
 
 
 def _integers(*arrays: npt.NDArray[np.generic]) -> bool:
@@ -122,15 +123,29 @@ def quantize(picture: npt.ArrayLike) -> npt.NDArray[np.uint8]:
     return np.asarray(np.clip(rounded, 0.0, 255.0), dtype=np.uint8)
 
 
-def consistency(problem: Problem, picture: npt.ArrayLike) -> tuple[float, float]:
-    """The share of coefficients within their intervals, and the largest excess in steps.
+def picture_excess(problem: Problem, picture: npt.ArrayLike) -> Array:
+    """How far each coefficient of a picture lies outside its interval, in steps (0 inside).
 
-    picture has the picture's samples (without the level shift). It is padded to the
-    canvas as libjpeg's encoder pads a component, repeating the last column and row, and
-    so this tells whether a file that encoded it would be read as the same one.
+    picture has the picture's samples, (height, width), no larger than the canvas. It is
+    padded to the canvas as libjpeg's encoder pads a component, repeating the last column
+    and row: the coefficients are those that a file that encoded it would hold. Where the
+    picture is not whole blocks, the blocks at its right and bottom edges hold the
+    repeated samples, not the canvas's own.
     """
     samples = np.asarray(picture, dtype=np.float64)
     rows, columns = problem.shape
+    if samples.ndim != _AXES or not (0 < samples.shape[0] <= rows and 0 < samples.shape[1] <= columns):
+        message = f"a picture of {samples.shape} does not fit a canvas of {problem.shape}"
+        raise ValueError(message)
     padded = np.pad(samples, ((0, rows - samples.shape[0]), (0, columns - samples.shape[1])), mode="edge")
-    outside = excess(problem, dct.forward(padded - 128.0))
+    return excess(problem, dct.forward(padded))
+
+
+def consistency(problem: Problem, picture: npt.ArrayLike) -> tuple[float, float]:
+    """The share of coefficients within their intervals, and the largest excess in steps.
+
+    The picture is padded as picture_excess() pads it, and so this tells whether a file that
+    encoded it would be read as the same one.
+    """
+    outside = picture_excess(problem, picture)
     return float(np.count_nonzero(outside == 0.0)) / outside.size, float(outside.max())

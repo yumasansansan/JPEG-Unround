@@ -123,6 +123,8 @@ def centres(coefficients: npt.ArrayLike, quant_table: npt.ArrayLike, scale: npt.
     The centre of the level q with the step Q is sign(q) (|q| - delta / Q) Q, where delta
     comes from the scale of its frequency, which scales() estimates unless it is given.
     The level 0 has the centre 0, and the DC coefficient the centre of its interval, q Q.
+    These are the coefficients of the level-shifted canvas; unround.model adds the level
+    shift to DC.
     Each centre lies within its interval in floating point too: |q| - delta / Q rounds to
     within [|q| - 1/2, |q|], and so does its product with Q to within the interval.
     """

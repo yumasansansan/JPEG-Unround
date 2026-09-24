@@ -27,18 +27,18 @@ ANNEX_K: npt.NDArray[np.int64] = np.array(
 
 
 def picture(rows: int, columns: int, seed: int) -> Array:
-    """A level-shifted canvas: a ramp, a bright disc with a sharp edge, and a little noise."""
+    """A canvas of samples about 128: a ramp, a bright disc with a sharp edge, and a little noise."""
     rng = np.random.default_rng(seed)
     y, x = np.mgrid[0:rows, 0:columns].astype(np.float64)
     ramp = 90.0 * (x / max(columns - 1, 1)) - 60.0 * (y / max(rows - 1, 1))
     centre_y, centre_x = rng.uniform(0.3, 0.7) * rows, rng.uniform(0.3, 0.7) * columns
     disc = np.where((y - centre_y) ** 2 + (x - centre_x) ** 2 < (0.25 * min(rows, columns)) ** 2, 70.0, 0.0)
-    return np.asarray(ramp + disc + rng.normal(0.0, 2.0, size=(rows, columns)) - 20.0, dtype=np.float64)
+    return np.asarray(ramp + disc + rng.normal(0.0, 2.0, size=(rows, columns)) + 108.0, dtype=np.float64)
 
 
 def levels(canvas: Array, table: npt.ArrayLike) -> npt.NDArray[np.int64]:
-    """The quantized levels of a canvas, rounded to the nearest as an encoder would."""
-    return np.rint(dct.forward(canvas) / np.asarray(table, dtype=np.float64)).astype(np.int64)
+    """The quantized levels of a canvas of samples, level-shifted and rounded to the nearest as an encoder would."""
+    return np.rint(dct.forward(canvas - 128.0) / np.asarray(table, dtype=np.float64)).astype(np.int64)
 
 
 def problem(

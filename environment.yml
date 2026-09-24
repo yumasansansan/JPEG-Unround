@@ -26,6 +26,7 @@ dependencies:
   - scipy=1.18.1
   - scikit-image=0.26.0
   - pillow=12.3.0
+  - tifffile=2026.9.15  # a reader of the binary64 TIFF files, independent of this project's writer
   - matplotlib-base=3.11.2
   - pytest=9.1.1
   - hypothesis=6.168.0

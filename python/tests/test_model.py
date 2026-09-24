@@ -30,9 +30,11 @@ def test_the_intervals_and_the_weights() -> None:
     levels[0, 0, 0, 0], levels[0, 0, 2, 1] = 3, -2
     table = np.full((8, 8), 10)
     problem = model.make_problem(levels, table, mu=0.5, slack=0.25)
-    # Every one of these is exact in binary floating point.
-    assert problem.lower[0, 0, 0, 0] == 22.5
-    assert problem.upper[0, 0, 0, 0] == 37.5
+    # Every one of these is exact in binary floating point. The DC interval carries the level
+    # shift, 8 x 128.
+    assert problem.lower[0, 0, 0, 0] == 22.5 + 1024.0
+    assert problem.upper[0, 0, 0, 0] == 37.5 + 1024.0
+    assert problem.centres[0, 0, 0, 0] == 30.0 + 1024.0
     assert problem.lower[0, 0, 2, 1] == -27.5
     assert problem.upper[0, 0, 2, 1] == -12.5
     assert problem.weights[0, 0] == 0.0
@@ -46,6 +48,7 @@ def test_without_slack_the_intervals_are_exact() -> None:
     levels = np.array([-2048, -1, 0, 1, 2047])[np.newaxis, :, np.newaxis, np.newaxis] * np.ones((1, 1, 8, 8), int)
     problem = model.make_problem(levels, np.full((8, 8), 255), mu=1.0)
     exact = (levels.astype(object) * 2 - 1) * 255
+    exact[:, :, 0, 0] += 2 * 1024
     assert [float(value) / 2 for value in exact.ravel()] == problem.lower.ravel().tolist()
 
 

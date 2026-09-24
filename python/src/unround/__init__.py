@@ -15,9 +15,22 @@ that all three implementations share; unround.decode reconstructs a greyscale fi
   results      what the solvers return
   metrics      PSNR, PSNR-B, and consistency with the intervals
   decode       a greyscale file, reconstructed by one of the methods
+  tiff         the result in binary64, written bit for bit
 """
 
-from unround import dct, decode, jpegio, laplace, metrics, model, operators, pdhg, results, subgradient
+from unround import dct, decode, jpegio, laplace, metrics, model, operators, pdhg, results, subgradient, tiff
 
-__all__ = ["dct", "decode", "jpegio", "laplace", "metrics", "model", "operators", "pdhg", "results", "subgradient"]
+__all__ = [
+    "dct",
+    "decode",
+    "jpegio",
+    "laplace",
+    "metrics",
+    "model",
+    "operators",
+    "pdhg",
+    "results",
+    "subgradient",
+    "tiff",
+]
 __version__ = "0.1.0"

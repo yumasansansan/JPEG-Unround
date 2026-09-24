@@ -9,13 +9,13 @@ import pytest
 from PIL import Image
 
 import synthetic
-from unround import decode, jpegio, model, pdhg, subgradient
+from unround import dct, decode, jpegio, model, pdhg, subgradient
 
 METHODS: list[decode.Method] = ["mmse", "tv", "tgv", "subgradient"]
 
 
 def grey_file(height: int = 21, width: int = 30, quality: int = 30) -> bytes:
-    samples = np.clip(synthetic.picture(height, width, seed=50) + 128.0, 0.0, 255.0).astype(np.uint8)
+    samples = np.clip(synthetic.picture(height, width, seed=50), 0.0, 255.0).astype(np.uint8)
     stream = io.BytesIO()
     Image.fromarray(samples).save(stream, format="JPEG", quality=quality)
     return stream.getvalue()
@@ -33,7 +33,12 @@ def test_each_method_keeps_the_intervals(method: decode.Method) -> None:
     assert model.excess(decoded.problem, decoded.coefficients).max() == 0.0
     assert (decoded.result is None) == (method == "mmse")
     component = jpegio.read(data).components[0]
-    np.testing.assert_array_equal(decoded.problem.lower, (component.coefficients - 0.5) * component.quant_table)
+    lower = (component.coefficients - 0.5) * component.quant_table
+    lower[:, :, 0, 0] += 1024.0
+    np.testing.assert_array_equal(decoded.problem.lower, lower)
+    # The picture is the solver's canvas itself, cut to the picture: no operation between.
+    canvas = dct.inverse(decoded.coefficients)
+    np.testing.assert_array_equal(decoded.picture.view(np.uint64), canvas[:21, :30].view(np.uint64))
 
 
 def test_the_mmse_decoder_is_the_centres() -> None:
@@ -45,7 +50,9 @@ def test_slack_widens_the_intervals() -> None:
     data = grey_file()
     decoded = decode.decode(data, decode.Settings(method="mmse", slack=0.5))
     component = jpegio.read(data).components[0]
-    np.testing.assert_array_equal(decoded.problem.upper, (component.coefficients + 1.0) * component.quant_table)
+    upper = (component.coefficients + 1.0) * component.quant_table
+    upper[:, :, 0, 0] += 1024.0
+    np.testing.assert_array_equal(decoded.problem.upper, upper)
 
 
 def test_colour_files_are_not_decoded_yet() -> None:

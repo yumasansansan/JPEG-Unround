@@ -18,14 +18,22 @@ the intervals without slack, $(q - \tfrac12) Q$, which binary64 holds exactly fo
 levels and steps of 16 bits; the coefficients of the series of 2.2, computed in
 rationals; and, for pictures of integers, the sums and means of the metrics. A
 rational enters floating point once, rounded to the nearest double. With a slack
-$s$, the ends are $((q - \tfrac12) - s) Q$ and $((q + \tfrac12) + s) Q$, in that
-order, so that every implementation rounds them alike.
+$s$, the ends are $((q - \tfrac12) - s) Q$ and $((q + \tfrac12) + s) Q$, with
+1024 added to those of DC last (1.1), in that order, so that every
+implementation rounds them alike.
 
 What needs floating point (the basis of the DCT, square roots, logarithms and
 exponentials, and the iterations) is computed in binary64 at least; binary32 is
 not used. A constant is the double nearest to its value, as the cosines of 1.1
 are. The tests take their tolerances from bounds of rounding error, and check
 what holds exactly in exact arithmetic.
+
+The result can be written in binary64, and is then the last iterate's canvas
+itself, cut to the picture, to the last bit: no operation stands between the
+computation and the file. The canvas holds the samples in their own units (0 to
+255 for 8-bit files), not level-shifted (1.1) and not normalized, and the file
+is a TIFF with 64-bit IEEE floating-point samples. Output of 8 or 16 bits is
+rounded from it.
 
 ## 1. What a JPEG file says about a component
 
@@ -39,8 +47,14 @@ coefficients cover, $H = 8\,B_y$ rows of $W = 8\,B_x$ samples. The picture is
 the top-left $h \times w$ of it. The encoder filled the samples beyond the
 picture itself (libjpeg repeats the last row and column); here they are free
 variables, which the regularizer alone decides, and they are cut off at the
-end. The unknown is the canvas $x \in \mathbb{R}^{H \times W}$, level-shifted:
-the sample value less 128.
+end. The unknown is the canvas $x \in \mathbb{R}^{H \times W}$ of the samples
+themselves.
+
+JPEG transforms the samples level-shifted, $D(x - 128)$. The shift is constant
+over a block, and so moves only its DC coefficient, by exactly
+$8 \times 128 = 1024$ ($C_{0,n} = \sqrt{1/8}$). It is added to the DC
+interval and the DC centre below, which are exact rationals; the samples are
+never shifted, and the canvas is the result as it is.
 
 $D$ is the orthonormal two-dimensional DCT-II of every 8×8 block. Within a
 block, with $C_{k,n} = \gamma_k \cos\bigl(\pi (2n+1) k / 16\bigr)$,
@@ -70,16 +84,18 @@ $y$ is the canvas that it was given.
 
 ### 1.2 The quantization constraint set
 
-The coefficient lies within half a step of $q_k Q_k$. With a slack
-$s \ge 0$, in steps, the interval of coefficient $k$ is
+The coefficient of the level-shifted canvas lies within half a step of
+$q_k Q_k$. With a slack $s \ge 0$, in steps, the interval of coefficient $k$ of
+the canvas is
 
-$$ a_k = (q_k - \tfrac12 - s)\,Q_k, \qquad b_k = (q_k + \tfrac12 + s)\,Q_k, $$
+$$ a_k = (q_k - \tfrac12 - s)\,Q_k + 1024\,[k \text{ is DC}], \qquad
+   b_k = (q_k + \tfrac12 + s)\,Q_k + 1024\,[k \text{ is DC}], $$
 
-and the **quantization constraint set** (QCS) is
+the level shift of 1.1 in the DC interval, and the **quantization constraint set** (QCS) is
 $\mathcal{C} = \{x : a \le D x \le b\}$. Because $D$ is orthogonal and the
 box is a product of intervals, the projection onto $\mathcal{C}$ is
 
-$$ P_{\mathcal{C}}(x) = D^\top \operatorname{clip}(D x, a, b). $$
+$$ P_{\mathcal{C}}(x) = D^\top \mathrm{clip}(D x, a, b). $$
 
 Every output of JPEG-Unround lies in $\mathcal{C}$: the coefficients of the
 floating-point result are within their intervals, to $10^{-4} Q_k$, checked
@@ -126,7 +142,7 @@ $\beta^\ast = 0$: the distribution has collapsed onto 0.
 
 When $\beta \gg Q$, $t^\ast$ is close to 1 and $\log(1/t^\ast)$ would lose
 digits to cancellation. From $t^\ast \ge \tfrac12$ on, it is taken as
-$-\operatorname{log1p}(-(1 - t^\ast))$ with
+$-\mathrm{log1p}(-(1 - t^\ast))$ with
 
 $$ 1 - t^\ast = \frac{8 S (n_0 + n_1)}{\bigl(\sqrt{D} + 2S - n_0\bigr)\bigl(n_0 + \sqrt{D}\bigr)}, \qquad
    D = n_0^2 + 4 A S, $$
@@ -148,7 +164,7 @@ Bins below 0 mirror it, and the bin of 0, being symmetric, has mean 0. So the
 **MMSE centre** of a coefficient is its interval's centre moved towards 0 by a
 fraction of the step that depends on $\rho = Q/\beta$ alone:
 
-$$ \hat c_k = \operatorname{sign}(q_k)\,\bigl(|q_k| Q_k - \delta_k\bigr), \qquad
+$$ \hat c_k = \mathrm{sign}(q_k)\,\bigl(|q_k| Q_k - \delta_k\bigr), \qquad
    \frac{\delta}{Q} = \frac12 - \frac1\rho + \frac{1}{e^\rho - 1}
    \in \bigl[0, \tfrac12\bigr), $$
 
@@ -176,7 +192,8 @@ The MAP estimate under the same model would be the end of the interval nearest
 0, which is worse in mean square: the centres are the conditional means.
 
 The DC coefficient does not follow a Laplace distribution. Its centre is the
-centre of its interval, $q_0 Q_0$, and the data term below leaves it out.
+centre of its interval, $q_0 Q_0 + 1024$, and the data term below leaves it
+out.
 
 ### 2.3 The MMSE decoder
 
@@ -199,13 +216,13 @@ $$ (\partial_x x)_{i,j} = \begin{cases} x_{i,j+1} - x_{i,j} & j < W - 1 \\ 0 & j
    \nabla x = (\partial_x x, \partial_y x), $$
 
 and $\partial_y$ likewise down the columns. The divergence is its negative
-adjoint, $\operatorname{div} = -\nabla^\top$, which is the backward difference
+adjoint, $\mathrm{div} = -\nabla^\top$, which is the backward difference
 
 $$ (\delta_x f)_{i,j} = f_{i,j}\,[j < W - 1] - f_{i,j-1}\,[j > 0], \qquad
-   \operatorname{div}(p_1, p_2) = \delta_x p_1 + \delta_y p_2, $$
+   \mathrm{div}(p_1, p_2) = \delta_x p_1 + \delta_y p_2, $$
 
 where $[\cdot]$ is 1 when its condition holds and 0 otherwise. So
-$\langle \nabla x, p \rangle = -\langle x, \operatorname{div} p \rangle$.
+$\langle \nabla x, p \rangle = -\langle x, \mathrm{div}\, p \rangle$.
 
 ### 3.2 The symmetrized gradient
 
@@ -220,9 +237,9 @@ differences of 3.1, and its negative adjoint, the divergence of a tensor field,
 the forward differences:
 
 $$ \mathcal{E} w = \bigl(\delta_x w_1,\ \delta_y w_2,\ \tfrac12 (\delta_y w_1 + \delta_x w_2)\bigr), \qquad
-   \operatorname{div}_2 r = (\partial_x r_{11} + \partial_y r_{12},\ \partial_x r_{12} + \partial_y r_{22}). $$
+   \mathrm{div}_2 r = (\partial_x r_{11} + \partial_y r_{12},\ \partial_x r_{12} + \partial_y r_{22}). $$
 
-Then $\langle \mathcal{E} w, r \rangle = -\langle w, \operatorname{div}_2 r \rangle$,
+Then $\langle \mathcal{E} w, r \rangle = -\langle w, \mathrm{div}_2 r \rangle$,
 because $\delta_x = -\partial_x^\top$. This is the discretization of Bredies,
 Kunisch and Pock. The norm of a tensor, and the projection of a tensor field
 onto a ball, are $|\cdot|_F$ of that inner product, off-diagonal counted twice.
@@ -252,9 +269,9 @@ where $\iota$ is 0 on its set and $+\infty$ off it. $G$ is separable in the
 coefficients, and so are its proximal map and its conjugate.
 
 **Proximal map.** For $\tau > 0$ and $e = D v$,
-$\operatorname{prox}_{\tau G}(v) = D^\top \zeta$ with
+$\mathrm{prox}_{\tau G}(v) = D^\top \zeta$ with
 
-$$ \zeta_k = \operatorname{clip}\!\left(\frac{e_k + \tau \mu \omega_k \hat c_k}{1 + \tau \mu \omega_k},\ a_k,\ b_k\right), $$
+$$ \zeta_k = \mathrm{clip}\!\left(\frac{e_k + \tau \mu \omega_k \hat c_k}{1 + \tau \mu \omega_k},\ a_k,\ b_k\right), $$
 
 since a strictly convex quadratic of one variable, restricted to an interval,
 is least at the clipped unconstrained minimizer.
@@ -263,7 +280,7 @@ is least at the clipped unconstrained minimizer.
 $G^\ast(\xi) = \sum_k g_k^\ast(s_k)$ with, where $m_k = \mu \omega_k > 0$,
 
 $$ g_k^\ast(s) = s\, c^\ast - \frac{m_k}{2} (c^\ast - \hat c_k)^2, \qquad
-   c^\ast = \operatorname{clip}(\hat c_k + s / m_k,\ a_k,\ b_k), $$
+   c^\ast = \mathrm{clip}(\hat c_k + s / m_k,\ a_k,\ b_k), $$
 
 and where $m_k = 0$ (DC, or $\mu = 0$), $g_k^\ast(s) = \max(s\, a_k,\ s\, b_k)$.
 Both are finite everywhere, because the intervals are bounded.
@@ -293,42 +310,65 @@ problem $\min_z \max_y \langle K z, y \rangle + G(z) - F^\ast(y)$, where
 $F^\ast$ is the indicator of the dual ball of the norm. The method of
 Chambolle and Pock, with $\sigma \tau \|K\|^2 < 1$, is
 
-$$ y^{n+1} = \operatorname{prox}_{\sigma F^\ast}\bigl(y^n + \sigma K \bar z^n\bigr), \quad
-   z^{n+1} = \operatorname{prox}_{\tau G}\bigl(z^n - \tau K^\top y^{n+1}\bigr), \quad
+$$ y^{n+1} = \mathrm{prox}_{\sigma F^\ast}\bigl(y^n + \sigma K \bar z^n\bigr), \quad
+   z^{n+1} = \mathrm{prox}_{\tau G}\bigl(z^n - \tau K^\top y^{n+1}\bigr), \quad
    \bar z^{n+1} = 2 z^{n+1} - z^n. $$
 
 The proximal map of the indicator of a ball is the projection onto it, pixel
 by pixel: $y \mapsto y / \max(1, |y| / \alpha)$.
 
-**Total variation.** $K = \nabla$, $y = p$, $K^\top p = -\operatorname{div} p$:
+**Total variation.** $K = \nabla$, $y = p$, $K^\top p = -\mathrm{div}\, p$:
 
-$$ p \leftarrow \operatorname{proj}_{\alpha}\bigl(p + \sigma \nabla \bar x\bigr), \qquad
-   x^+ \leftarrow \operatorname{prox}_{\tau G}\bigl(x + \tau \operatorname{div} p\bigr), \qquad
+$$ p \leftarrow \mathrm{proj}_{\alpha}\bigl(p + \sigma \nabla \bar x\bigr), \qquad
+   x^+ \leftarrow \mathrm{prox}_{\tau G}\bigl(x + \tau \mathrm{div}\, p\bigr), \qquad
    \bar x \leftarrow 2 x^+ - x. $$
 
 **TGV.** $z = (x, w)$, $y = (p, r)$,
-$K^\top (p, r) = (-\operatorname{div} p,\ -p - \operatorname{div}_2 r)$, and
+$K^\top (p, r) = (-\mathrm{div}\, p,\ -p - \mathrm{div}_2 r)$, and
 $G$ does not depend on $w$, whose proximal map is the identity:
 
 $$ \begin{aligned}
-p &\leftarrow \operatorname{proj}_{\alpha_1}\bigl(p + \sigma (\nabla \bar x - \bar w)\bigr), &
-r &\leftarrow \operatorname{proj}_{\alpha_0, F}\bigl(r + \sigma \mathcal{E} \bar w\bigr), \\
-x^+ &\leftarrow \operatorname{prox}_{\tau G}\bigl(x + \tau \operatorname{div} p\bigr), &
-w^+ &\leftarrow w + \tau (p + \operatorname{div}_2 r),
+p &\leftarrow \mathrm{proj}_{\alpha_1}\bigl(p + \sigma (\nabla \bar x - \bar w)\bigr), &
+r &\leftarrow \mathrm{proj}_{\alpha_0, F}\bigl(r + \sigma \mathcal{E} \bar w\bigr), \\
+x^+ &\leftarrow \mathrm{prox}_{\tau G}\bigl(x + \tau \mathrm{div}\, p\bigr), &
+w^+ &\leftarrow w + \tau (p + \mathrm{div}_2 r),
 \end{aligned} $$
 
 then $\bar x = 2 x^+ - x$ and $\bar w = 2 w^+ - w$.
 
 **Steps.** With $L^2$ the bound of 3.3 (8 for TV, 11.37 for TGV) and a ratio
 $\kappa = \tau / \sigma$, the steps are $\tau = \sqrt{0.99\, \kappa} / L$ and
-$\sigma = \sqrt{0.99 / \kappa} / L$, so that $\sigma \tau L^2 = 0.99$. The
-samples are in grey levels and the dual variables within $\alpha$, so a ratio
-above 1 lets the picture move faster.
+$\sigma = \sqrt{0.99 / \kappa} / L$, so that $\sigma \tau L^2 = 0.99$.
+
+**The ratio.** For the averages $Z^N, Y^N$ of the first $N$ iterates, Theorem 1
+of Chambolle and Pock bounds the gap at a saddle point $(z^\ast, y^\ast)$:
+
+$$ \mathcal{L}(Z^N, y^\ast) - \mathcal{L}(z^\ast, Y^N) \le \frac{1}{N}
+   \Bigl(\frac{\|z^\ast - z^0\|^2}{2\tau} + \frac{\|y^\ast - y^0\|^2}{2\sigma}\Bigr)
+   = \frac{L}{2N\sqrt{0.99}} \Bigl(\frac{\|z^\ast - z^0\|^2}{\sqrt{\kappa}}
+   + \|y^\ast - y^0\|^2 \sqrt{\kappa}\Bigr), $$
+
+with $\mathcal{L}(z, y) = \langle K z, y \rangle + G(z) - F^\ast(y)$. The bound is
+least at
+
+$$ \kappa^\ast = \frac{\|z^\ast - z^0\|^2}{\|y^\ast - y^0\|^2}: $$
+
+the ratio is that of squared distances, of the primal start from the solution
+(in grey levels, and grey levels per sample for $w$) over the dual one's (in
+units of $\alpha$). Neither is known before solving, and the bound is far from
+tight: on the tuning images, $\kappa^\ast$ taken from the last points of long
+runs is 2 to 540 for TV and 150 to 2900 for TGV, while the ratios that bring the
+gap down fastest are 10 to 30 for TV and 3 to 10 for TGV. The default ratio
+(6.5) is the one measured to stop soonest.
 
 **Start.** $x$ is the MMSE decoder's output (2.3), $w = \nabla x$, and the
-dual variables are 0.
+dual variables are 0. (Starting $w$ at 0 instead puts it 3 to 10 times nearer
+the solution's $w$, which is small across the jumps of the picture, and divides
+the bound's $\kappa^\ast$ by 10 to 100. On two tuning files the gap then fell
+no faster with the ratios 300 to 3000, and with the default ratio 3 at most 15
+per cent sooner on one file and no sooner on the other.)
 
-Every iterate $x$ is an output of $\operatorname{prox}_{\tau G}$, and so lies in
+Every iterate $x$ is an output of $\mathrm{prox}_{\tau G}$, and so lies in
 $\mathcal{C}$. The coefficients $\zeta$ of the last one are kept: the result is
 $D^\top \zeta$, whose coefficients are $\zeta$ to rounding error.
 
@@ -342,30 +382,30 @@ how far $z$ is from the least value, and it is 0 at a saddle point.
 
 ### 6.1 Total variation: in closed form
 
-$-K^\top p = \operatorname{div} p$, and every iterate has $|p| \le \alpha$, so
+$-K^\top p = \mathrm{div}\, p$, and every iterate has $|p| \le \alpha$, so
 
-$$ \operatorname{gap}(x, p) = \alpha \|\nabla x\|_{2,1} + G(x) + G^\ast(\operatorname{div} p), $$
+$$ \mathrm{gap}(x, p) = \alpha \|\nabla x\|_{2,1} + G(x) + G^\ast(\mathrm{div}\, p), $$
 
 with $G^\ast$ of 4.1: finite, and in closed form.
 
 ### 6.2 TGV: a feasible dual
 
-Here $-K^\top(p, r) = (\operatorname{div} p,\ p + \operatorname{div}_2 r)$, and
+Here $-K^\top(p, r) = (\mathrm{div}\, p,\ p + \mathrm{div}_2 r)$, and
 $G$ does not depend on $w$, so the dual is finite only where
-$p = -\operatorname{div}_2 r$: at the iterates of the method it is
+$p = -\mathrm{div}_2 r$: at the iterates of the method it is
 $-\infty$, and the gap $+\infty$. The pair is made feasible by scaling:
 
-$$ \theta = \min\Bigl(1,\ \frac{\alpha_1}{\max_{i,j} |(\operatorname{div}_2 r)_{i,j}|}\Bigr), \qquad
-   \tilde r = \theta r, \qquad \tilde p = -\operatorname{div}_2 \tilde r. $$
+$$ \theta = \min\Bigl(1,\ \frac{\alpha_1}{\max_{i,j} |(\mathrm{div}_2 r)_{i,j}|}\Bigr), \qquad
+   \tilde r = \theta r, \qquad \tilde p = -\mathrm{div}_2 \tilde r. $$
 
 Then $|\tilde p| \le \alpha_1$, $|\tilde r|_F \le \alpha_0$ and
-$\tilde p + \operatorname{div}_2 \tilde r = 0$, so
+$\tilde p + \mathrm{div}_2 \tilde r = 0$, so
 
-$$ \operatorname{gap}(x, w, r) = P(x, w) + G^\ast(\operatorname{div} \tilde p)
-   = P(x, w) + G^\ast(-\operatorname{div} \operatorname{div}_2 \tilde r) $$
+$$ \mathrm{gap}(x, w, r) = P(x, w) + G^\ast(\mathrm{div}\, \tilde p)
+   = P(x, w) + G^\ast(-\mathrm{div}\, \mathrm{div}_2 \tilde r) $$
 
 is an upper bound of $P(x, w) - P^\ast$. At a saddle point
-$p = -\operatorname{div}_2 r$ already, $\theta = 1$, and the gap is 0.
+$p = -\mathrm{div}_2 r$ already, $\theta = 1$, and the gap is 0.
 
 ### 6.3 TGV: a partial gap
 
@@ -375,8 +415,8 @@ $L(z, y) = \langle K z, y \rangle + G(z) - F^\ast(y)$, bounds $P(z) - P^\ast$
 when $B$ contains the primal part of a saddle point. With
 $B = \{(x, w) : |w_{i,j}| \le \varrho\}$,
 
-$$ \mathcal{G}_B(x, w, p, r) = P(x, w) + G^\ast(\operatorname{div} p)
-   + \varrho\, \|p + \operatorname{div}_2 r\|_{2,1}. $$
+$$ \mathcal{G}_B(x, w, p, r) = P(x, w) + G^\ast(\mathrm{div}\, p)
+   + \varrho\, \|p + \mathrm{div}_2 r\|_{2,1}. $$
 
 It needs no change of the iterates, but only holds for a $\varrho$ at least as
 large as the solution's $w$, which is not known beforehand.
@@ -387,6 +427,56 @@ The gaps are sums over the canvas. They are divided by its number of samples,
 so that the tolerance is in the units of the objective per sample and does not
 depend on the size of the picture.
 
+A gap bounds how far the objective is above its least value, not how far the
+iterate is from the point where it is least. $P$ is strongly convex only in the
+AC coefficients, with the modulus $\mu \omega_k = \mu / Q_k^2$ (4.1): with $c^\ast$
+the least point, $0 \in \partial P(c^\ast)$ gives
+$P(c) - P^\ast \ge \frac{\mu}{2} \sum_{k\ \mathrm{AC}} \omega_k (c_k - c^\ast_k)^2$,
+and so a gap of $\varepsilon$ per sample bounds
+
+$$ \frac{1}{N} \sum_{k\ \mathrm{AC}} \Bigl(\frac{c_k - c^\ast_k}{Q_k}\Bigr)^2 \le \frac{2 \varepsilon}{\mu}. $$
+
+At $\varepsilon = 10^{-2}$ and $\mu = 10^{-3}$ that allows the coefficients
+$\sqrt{20} \approx 4.5$ steps from the least point on average: more than their
+intervals are wide. The least point is unique in its AC coefficients, but the
+objective is almost flat around it: on the tuning images, the iterates of TV
+still move by hundredths to tenths of a grey level (RMS) thousands of
+iterations after the objective, and the PSNR of the result, have settled. The
+tolerance is therefore chosen by how much stopping changes the result.
+
+### 6.5 The defaults
+
+*In `unround/pdhg.py` (`TV_RATIO`, `TV_TOLERANCE`, `TV_ITERATIONS`, and those of
+TGV), chosen on the tuning images by `experiments/phase1_tuning.py`
+(`experiments/results/phase1-tuning.md`).*
+
+A tolerance was accepted when stopping where the gap per sample first falls
+within it changed, on every tuning file, the PSNR of the binary64 result by at
+most 0.01 dB and the SSIM of its 8-bit samples by at most $10^{-4}$, against
+the last point of a much longer run. The ratio is the one whose accepted
+tolerance stopped the files in the fewest iterations in all, and the most
+iterations allowed is twice the most a tuning file took, rounded up to 1, 2 or
+5 times a power of ten.
+
+| | $\tau / \sigma$ | gap per sample | most iterations |
+|---|---|---|---|
+| TV | 30 | $5 \cdot 10^{-4}$ | 20000 |
+| TGV | 3 | $10^{-2}$ | 20000 |
+
+TV at these defaults stopped the tuning files after 930 to 5310 iterations
+(median 1815), within 0.0083 dB of PSNR and $6.4 \cdot 10^{-5}$ of SSIM of the
+long runs; with the ratios 10 and 20 no tolerance tried was accepted. For TGV
+no tolerance that every file reached within 8000 iterations was accepted: at
+$10^{-2}$, reached after 1600 to 7300 iterations, the results were within
+0.084 dB of 8000-iteration runs, which themselves still moved by up to 0.025 dB
+over their last 1300 iterations. That is TGV's default until its convergence
+is improved.
+
+These are for $\alpha = 1$ (for TGV $\alpha_1 = 1$, with $\alpha_0 = 2 \alpha_1$).
+The dual variables are in units of $\alpha$ and the objective scales with it,
+so with another weight the ratio is divided by $\alpha^2$ and the tolerance
+multiplied by $\alpha$.
+
 ## 7. A subgradient method of jpeg2png's kind
 
 *Implemented in `unround/subgradient.py`, to compare with.*
@@ -396,7 +486,7 @@ subgradient steps, a step length that falls as $1/\sqrt{n}$, and the
 extrapolation of FISTA. The same scheme, applied to the objective $P$ of 4.2:
 
 $$ \begin{aligned}
-g &= -\alpha \operatorname{div}\bigl(\nabla y / |\nabla y|\bigr) + D^\top \bigl(\mu\, \omega\, (D y - \hat c)\bigr)
+g &= -\alpha \mathrm{div}\bigl(\nabla y / |\nabla y|\bigr) + D^\top \bigl(\mu\, \omega\, (D y - \hat c)\bigr)
    && (\text{0 where } \nabla y = 0), \\
 x^{n+1} &= P_{\mathcal{C}}\bigl(y^n - h_n\, g / \|g\|\bigr), \qquad h_n = \frac{\sqrt{N}/2}{\sqrt{1 + n}}, \\
 t_{n+1} &= \tfrac12 \bigl(1 + \sqrt{1 + 4 t_n^2}\bigr), \qquad

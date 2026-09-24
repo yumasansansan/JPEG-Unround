@@ -9,10 +9,14 @@ its proximal map (prox) and its conjugate (conjugate). The objectives of TV and
 TGV, and the duality gaps that tell how far an iterate is from their least
 value, are written with them.
 
-Canvases are level-shifted samples, shape (H, W), and coefficients have the shape
-(H // 8, W // 8, 8, 8) (unround.dct). A primal point is kept as its coefficients c,
-which lie in their intervals, with its canvas x = D^T c and, for TGV, its vector
-field w; a dual point is the vector field p and, for TGV, the tensor field r.
+Canvases hold the samples themselves, shape (H, W), and coefficients have the
+shape (H // 8, W // 8, 8, 8) (unround.dct). JPEG's level shift, D(x - 128), moves
+only the DC coefficient of a block, by 8 x 128 = 1024 exactly; it is added to the
+DC intervals and centres, so that nothing is added to or taken from the samples,
+and the result is the canvas itself (docs/math.md, 1.1). A primal point is kept as
+its coefficients c, which lie in their intervals, with its canvas x = D^T c and,
+for TGV, its vector field w; a dual point is the vector field p and, for TGV, the
+tensor field r.
 """
 
 from dataclasses import dataclass
@@ -25,6 +29,7 @@ from unround import dct, laplace
 from unround.operators import div, div2, grad, sym_grad, tensor_norms, vector_norms
 
 __all__ = [
+    "LEVEL_SHIFT_DC",
     "TGV",
     "TV",
     "Dual",
@@ -49,14 +54,19 @@ type Array = npt.NDArray[np.float64]
 
 _LEVEL_AXES: Final = 4  # block rows, block columns, v, u
 
+LEVEL_SHIFT_DC: Final = 1024.0
+"""What the level shift of 128 adds to the DC coefficient of a block: 128 times 8, exactly."""
+
 
 @dataclass(frozen=True, slots=True, eq=False)
 class Problem:
     """A component to reconstruct.
 
     lower and upper are the ends of the coefficients' intervals, and centres their MMSE
-    centres, each of shape (rows, columns, 8, 8). steps are the quantization steps Q and
-    weights the weights of the data term, mu / Q^2 for AC and 0 for DC, each of shape (8, 8).
+    centres, each of shape (rows, columns, 8, 8), for a canvas of samples that are not
+    level-shifted: those of DC include LEVEL_SHIFT_DC. steps are the quantization steps Q
+    and weights the weights of the data term, mu / Q^2 for AC and 0 for DC, each of shape
+    (8, 8).
     """
 
     lower: Array
@@ -123,7 +133,9 @@ def make_problem(
 
     mu weights the data term, and slack widens every interval by that many steps on each
     side (docs/math.md, 1.2). scale is the Laplace scale of each frequency, which
-    unround.laplace.scales() estimates unless it is given.
+    unround.laplace.scales() estimates unless it is given. The ends are
+    ((q - 1/2) - slack) Q and ((q + 1/2) + slack) Q, in that order, and those of DC and its
+    centre have LEVEL_SHIFT_DC added; without slack every one of them is exact.
     """
     if not mu >= 0.0 or not slack >= 0.0:
         message = f"mu and slack are at least 0, not {mu} and {slack}"
@@ -139,13 +151,12 @@ def make_problem(
         raise ValueError(message)
     weights = mu / (steps * steps)
     weights[0, 0] = 0.0
-    return Problem(
-        lower=(levels - 0.5 - slack) * steps,
-        upper=(levels + 0.5 + slack) * steps,
-        centres=laplace.centres(coefficients, quant_table, scale),
-        steps=steps,
-        weights=weights,
-    )
+    lower = ((levels - 0.5) - slack) * steps
+    upper = ((levels + 0.5) + slack) * steps
+    centres = laplace.centres(coefficients, quant_table, scale)
+    for bound in (lower, upper, centres):
+        bound[:, :, 0, 0] += LEVEL_SHIFT_DC
+    return Problem(lower=lower, upper=upper, centres=centres, steps=steps, weights=weights)
 
 
 def clip(problem: Problem, coefficients: Array) -> Array:

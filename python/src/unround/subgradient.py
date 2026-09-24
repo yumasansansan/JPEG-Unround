@@ -18,13 +18,13 @@ import numpy.typing as npt
 from unround import dct
 from unround.model import TV, Primal, Problem, clip, tv_objective
 from unround.operators import div, grad, vector_norms
-from unround.pdhg import start
+from unround.pdhg import Initial, first_coefficients, start
 from unround.results import Recorder, Result
 
 __all__ = ["Options", "solve_tv", "subgradient"]
 
 type Array = npt.NDArray[np.float64]
-type Observer = Callable[[int, Primal], None]
+type Observer = Callable[[int, Primal, float], None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,16 +52,16 @@ def solve_tv(
     weights: TV,
     options: Options | None = None,
     *,
-    first: Array | None = None,
+    first: Initial | None = None,
     observe: Observer | None = None,
 ) -> Result:
     """Minimizes the TV model's objective within the quantization constraint set.
 
-    options are Options() unless given. first are the coefficients to start from, the MMSE
-    centres unless given. The history's dual values are -inf: the method has none.
+    options are Options() unless given. first is where to start, the MMSE centres unless
+    given. The history's dual values are -inf: the method has none.
     """
     options = Options() if options is None else options
-    point = start(problem, first)
+    point = start(problem, first_coefficients(first, with_w=False))
     coefficients, canvas = point.coefficients, point.canvas
     extrapolated = canvas
     momentum = 1.0
@@ -88,7 +88,7 @@ def solve_tv(
             point = Primal(coefficients=coefficients, canvas=canvas)
             recorder.record(iteration, (tv_objective(problem, weights, point), -math.inf))
             if observe is not None:
-                observe(iteration, point)
+                observe(iteration, point, math.inf)
     return Result(
         primal=Primal(coefficients=coefficients, canvas=canvas),
         dual=None,

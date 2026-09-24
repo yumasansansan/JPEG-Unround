@@ -42,9 +42,10 @@ class Settings:
 class Decoded:
     """A reconstructed component.
 
-    picture is the picture's samples, (height, width), with the level shift undone and
-    neither clamped nor rounded; coefficients are those of the whole canvas, each within
-    its interval. result is the solver's, None for the MMSE decoder.
+    picture is the picture's samples, (height, width), in binary64: the solver's canvas
+    itself, cut to the picture, neither clamped nor rounded, nor changed by any operation
+    (unround.tiff writes it bit for bit). coefficients are those of the whole canvas, each
+    within its interval. result is the solver's, None for the MMSE decoder.
     """
 
     picture: Array
@@ -71,7 +72,7 @@ def decode_component(component: jpegio.Component, settings: Settings | None = No
         case "subgradient":
             result = subgradient.solve_tv(problem, settings.tv, settings.subgradient)
             point = result.primal
-    picture = point.canvas[: component.height, : component.width] + 128.0
+    picture = point.canvas[: component.height, : component.width]
     return Decoded(picture=picture, coefficients=point.coefficients, problem=problem, result=result)
 
 

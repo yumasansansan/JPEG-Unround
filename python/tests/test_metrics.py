@@ -15,7 +15,7 @@ import pytest
 
 import rounding
 import synthetic
-from unround import dct, metrics
+from unround import dct, metrics, model
 
 
 def exact_psnr(ratio: Fraction) -> Decimal:
@@ -80,15 +80,13 @@ def test_quantize_rounds_half_away_from_zero_exactly_and_clamps() -> None:
 
 def test_consistency() -> None:
     problem, canvas = synthetic.problem(seed=41)
-    centres = dct.inverse(problem.centres) + 128.0
+    centres = dct.inverse(problem.centres)
     # The centres lie within their intervals exactly, and the picture of their canvas is
-    # within the round trip of the DCT, and the rounding of the level shift, of them. That is
-    # far less than the distance of any centre from the ends of its interval here, and so
-    # every coefficient of the picture is inside.
+    # within the round trip of the DCT of them. That is far less than the distance of any
+    # centre from the ends of its interval here, and so every coefficient of the picture is
+    # inside.
     distance = np.minimum(problem.centres - problem.lower, problem.upper - problem.centres)
-    shift = dct.blocks(np.full(problem.shape, 2.0 * 128.0 * rounding.U))
-    reach = rounding.roundtrip_error(problem.centres) + np.abs(dct.BASIS) @ shift @ np.abs(dct.BASIS).T
-    assert np.all(distance > reach)
+    assert np.all(distance > rounding.roundtrip_error(problem.centres))
     share, largest = metrics.consistency(problem, centres)
     assert share == 1.0
     assert largest == 0.0
@@ -96,3 +94,18 @@ def test_consistency() -> None:
     assert share < 1.0
     assert largest > 0.0
     assert canvas.shape == problem.shape
+
+
+def test_the_excess_of_a_picture_pads_it_as_an_encoder_would() -> None:
+    problem, _ = synthetic.problem(seed=42)  # a canvas of 16 x 24
+    canvas = dct.inverse(problem.centres)
+    # Whole blocks: the picture is the canvas.
+    whole = metrics.picture_excess(problem, canvas)
+    np.testing.assert_array_equal(whole, model.excess(problem, dct.forward(canvas)))
+    # Cut: the last row and column repeated to the canvas.
+    cut = canvas[:13, :20]
+    padded = np.pad(cut, ((0, 3), (0, 4)), mode="edge")
+    np.testing.assert_array_equal(metrics.picture_excess(problem, cut), model.excess(problem, dct.forward(padded)))
+    for shape in ((17, 24), (16, 25), (0, 8), (16,)):
+        with pytest.raises(ValueError, match="does not fit"):
+            metrics.picture_excess(problem, np.zeros(shape))

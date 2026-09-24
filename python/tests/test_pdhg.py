@@ -8,12 +8,14 @@ measurement on these problems, kept as a check that the method still does as wel
 each threshold is about ten times what was measured.
 """
 
+import dataclasses
+
 import numpy as np
 import pytest
 
 import rounding
 import synthetic
-from unround import dct, model, pdhg, subgradient
+from unround import dct, model, operators, pdhg, subgradient
 from unround.model import TGV, TV, Dual, Primal
 
 
@@ -26,6 +28,22 @@ def test_the_steps_keep_their_ratio_and_their_product() -> None:
         assert abs(tau * sigma * pdhg.TGV_NORM_SQUARED - 0.99) <= 8.0 * rounding.U
     with pytest.raises(ValueError, match="positive"):
         pdhg.steps(8.0, 0.0)
+
+
+def test_the_defaults_scale_with_the_weight() -> None:
+    # What is None is the model's default: the ratio over the weight squared, the tolerance
+    # times it; what is given is kept.
+    tv = pdhg.plan(None, TV(1.0))
+    assert (tv.iterations, tv.tolerance, tv.step_ratio) == (pdhg.TV_ITERATIONS, pdhg.TV_TOLERANCE, pdhg.TV_RATIO)
+    tgv = pdhg.plan(pdhg.Options(), TGV(1.0, 2.0))
+    assert (tgv.iterations, tgv.tolerance, tgv.step_ratio) == (pdhg.TGV_ITERATIONS, pdhg.TGV_TOLERANCE, pdhg.TGV_RATIO)
+    scaled = pdhg.plan(None, TV(4.0))
+    assert scaled.step_ratio == pdhg.TV_RATIO / 16.0
+    assert scaled.tolerance == pdhg.TV_TOLERANCE * 4.0
+    given = pdhg.plan(pdhg.Options(iterations=7, tolerance=0.0, step_ratio=2.5, record_every=3), TGV(0.5, 1.0))
+    assert (given.iterations, given.tolerance, given.step_ratio, given.record_every) == (7, 0.0, 2.5, 3)
+    with pytest.raises(ValueError, match="positive"):
+        pdhg.plan(None, TV(0.0))
 
 
 def test_the_start_is_the_mmse_decoder() -> None:
@@ -47,15 +65,19 @@ def test_tv_converges_within_the_constraint_set(ratio: float, threshold: float) 
     # with 30.
     problem, _ = synthetic.problem(seed=12)
     seen: list[int] = []
+    gaps: list[float] = []
 
-    def observe(iteration: int, point: Primal) -> None:
+    def observe(iteration: int, point: Primal, gap: float) -> None:
         seen.append(iteration)
+        gaps.append(gap)
         assert within_the_set(problem, point)
 
-    options = pdhg.Options(iterations=4000, step_ratio=ratio, record_every=200)
+    options = pdhg.Options(iterations=4000, tolerance=0.0, step_ratio=ratio, record_every=200)
     result = pdhg.solve_tv(problem, TV(1.0), options, observe=observe)
     history = result.history
     assert seen == list(range(200, 4001, 200))
+    # The observer is given the gap per sample of each record, as the tolerance is compared with.
+    assert gaps == list(history.gap[1:] / problem.samples)
     assert np.all(model.excess(problem, result.primal.coefficients) == 0.0)
     assert np.all(np.diff(history.seconds) >= 0.0)
     assert history.gap[-1] / problem.samples < threshold
@@ -81,7 +103,8 @@ def test_tgv_converges_within_the_constraint_set() -> None:
     # scaling of the dual 1. The gaps here are at least 0.07, and the values about 3e3, far
     # above their rounding: a gap below 0 could only be an error of the formulas.
     problem, _ = synthetic.problem(seed=14)
-    result = pdhg.solve_tgv(problem, TGV(1.0, 2.0), pdhg.Options(iterations=6000, step_ratio=10.0, record_every=500))
+    options = pdhg.Options(iterations=6000, tolerance=0.0, step_ratio=10.0, record_every=500)
+    result = pdhg.solve_tgv(problem, TGV(1.0, 2.0), options)
     history = result.history
     assert np.all(history.gap > 0.0)
     assert history.gap[-1] / problem.samples < 2e-3
@@ -94,12 +117,34 @@ def test_tgv_converges_within_the_constraint_set() -> None:
     assert result.dual.r is not None
 
 
+def test_tgv_starts_from_the_field_given() -> None:
+    # No iteration: the one record is the objective at the start, with w as given, or the
+    # gradient of the start's canvas; and the field given is not changed.
+    problem, _ = synthetic.problem(seed=17)
+    options = pdhg.Options(iterations=0)
+    begin = pdhg.start(problem)
+    zero = np.zeros((2, *problem.shape))
+    result = pdhg.solve_tgv(problem, TGV(), options, first=pdhg.Initial(w=zero))
+    assert result.history.primal[0] == model.tgv_objective(problem, TGV(), dataclasses.replace(begin, w=zero))
+    assert result.primal.w is not None
+    assert result.primal.w is not zero
+    np.testing.assert_array_equal(zero, 0.0)
+    default = pdhg.solve_tgv(problem, TGV(), options)
+    gradient = operators.grad(begin.canvas)
+    assert default.history.primal[0] == model.tgv_objective(problem, TGV(), dataclasses.replace(begin, w=gradient))
+    with pytest.raises(ValueError, match="shape"):
+        pdhg.solve_tgv(problem, TGV(), options, first=pdhg.Initial(w=np.zeros(problem.shape)))
+    with pytest.raises(ValueError, match="TV has no field w"):
+        pdhg.solve_tv(problem, TV(), options, first=pdhg.Initial(w=zero))
+
+
 def test_the_partial_gap_is_recorded_for_tgv() -> None:
     problem, _ = synthetic.problem(seed=15)
-    result = pdhg.solve_tgv(problem, TGV(), pdhg.Options(iterations=20, record_every=10, partial_radius=100.0))
+    options = pdhg.Options(iterations=20, tolerance=0.0, record_every=10, partial_radius=100.0)
+    result = pdhg.solve_tgv(problem, TGV(), options)
     assert result.history.partial_gap.shape == (3,)
     assert np.all(np.isfinite(result.history.partial_gap))
-    no_radius = pdhg.solve_tv(problem, TV(), pdhg.Options(iterations=20, record_every=10))
+    no_radius = pdhg.solve_tv(problem, TV(), pdhg.Options(iterations=20, tolerance=0.0, record_every=10))
     assert np.all(np.isnan(no_radius.history.partial_gap))
 
 
@@ -110,7 +155,8 @@ def test_tv_reaches_below_the_subgradient_method() -> None:
     # method's (measured: 3167.97 against 3169.95).
     problem, _ = synthetic.problem(seed=16)
     weights = TV(1.0)
-    primal_dual = pdhg.solve_tv(problem, weights, pdhg.Options(iterations=300, step_ratio=10.0, record_every=300))
+    options = pdhg.Options(iterations=300, tolerance=0.0, step_ratio=10.0, record_every=300)
+    primal_dual = pdhg.solve_tv(problem, weights, options)
     stepped = subgradient.solve_tv(problem, weights, subgradient.Options(iterations=300, record_every=300))
     assert primal_dual.history.dual[-1] < stepped.history.primal[-1]
     assert primal_dual.history.primal[-1] < stepped.history.primal[-1]

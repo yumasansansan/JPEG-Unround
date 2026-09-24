@@ -32,16 +32,48 @@ from unround.model import (
 from unround.operators import div, div2, grad, project_tensors, project_vectors, sym_grad
 from unround.results import Recorder, Result
 
-__all__ = ["TGV_NORM_SQUARED", "TV_NORM_SQUARED", "Options", "solve_tgv", "solve_tv", "start", "steps"]
+__all__ = [
+    "TGV_ITERATIONS",
+    "TGV_NORM_SQUARED",
+    "TGV_RATIO",
+    "TGV_TOLERANCE",
+    "TV_ITERATIONS",
+    "TV_NORM_SQUARED",
+    "TV_RATIO",
+    "TV_TOLERANCE",
+    "Initial",
+    "Options",
+    "Plan",
+    "plan",
+    "solve_tgv",
+    "solve_tv",
+    "start",
+    "steps",
+]
 
 type Array = npt.NDArray[np.float64]
-type Observer = Callable[[int, Primal], None]
+type Observer = Callable[[int, Primal, float], None]
 
 TV_NORM_SQUARED: Final = 8.0
 """A bound of ||grad||^2 (docs/math.md, 3.3)."""
 
 TGV_NORM_SQUARED: Final = 0.5 * (17.0 + math.sqrt(33.0))
 """A bound of ||K||^2 for TGV's K(x, w) = (grad x - w, E w) (docs/math.md, 3.3)."""
+
+# The models' defaults, chosen on the tuning images (docs/math.md, 6.5), for the weight
+# alpha of TV, or alpha1 of TGV, of 1.
+TV_RATIO: Final = 30.0
+"""tau / sigma for TV, over alpha squared."""
+TGV_RATIO: Final = 3.0
+"""tau / sigma for TGV, over alpha1 squared."""
+TV_TOLERANCE: Final = 5e-4
+"""The gap per sample at which TV stops, times alpha."""
+TGV_TOLERANCE: Final = 1e-2
+"""The gap per sample at which TGV stops, times alpha1."""
+TV_ITERATIONS: Final = 20000
+"""The most iterations of TV."""
+TGV_ITERATIONS: Final = 20000
+"""The most iterations of TGV."""
 
 _THETA: Final = 0.99
 
@@ -51,17 +83,66 @@ class Options:
     """How long a solver runs, the ratio of its steps, and how often it records.
 
     iterations is the most iterations. The solver stops earlier when the duality gap per
-    sample is at most tolerance (0: it never does). step_ratio is tau / sigma. Every
-    record_every iterations, and after the last, the solver records the primal and dual
-    values, and checks the tolerance. partial_radius, for TGV, also records the partial
-    gap of that radius (docs/math.md, 6.3).
+    sample is at most tolerance (0: it never does). step_ratio is tau / sigma. Where they
+    are None, they are the model's defaults (plan()). Every record_every iterations, and
+    after the last, the solver records the primal and dual values, and checks the
+    tolerance. partial_radius, for TGV, also records the partial gap of that radius
+    (docs/math.md, 6.3).
     """
 
-    iterations: int = 1000
-    tolerance: float = 0.0
-    step_ratio: float = 1.0
+    iterations: int | None = None
+    tolerance: float | None = None
+    step_ratio: float | None = None
     record_every: int = 10
     partial_radius: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class Plan:
+    """What a solver does: its Options, with the model's defaults in place of None."""
+
+    iterations: int
+    tolerance: float
+    step_ratio: float
+    record_every: int
+    partial_radius: float | None
+
+
+def plan(options: Options | None, weights: TV | TGV) -> Plan:
+    """The options with the model's defaults in place of None (docs/math.md, 5 and 6.4).
+
+    The defaults were chosen with the weight alpha of TV, or alpha1 of TGV, of 1. The dual
+    variables are in its units and the objective scales with it, so the ratio of the steps
+    is the default over its square and the tolerance the default times it.
+    """
+    options = Options() if options is None else options
+    if isinstance(weights, TV):
+        iterations, tolerance, ratio, alpha = TV_ITERATIONS, TV_TOLERANCE, TV_RATIO, weights.alpha
+    else:
+        iterations, tolerance, ratio, alpha = TGV_ITERATIONS, TGV_TOLERANCE, TGV_RATIO, weights.alpha1
+    if not alpha > 0.0:
+        message = f"the weight of the first-order term is positive, not {alpha}"
+        raise ValueError(message)
+    return Plan(
+        iterations=iterations if options.iterations is None else options.iterations,
+        tolerance=tolerance * alpha if options.tolerance is None else options.tolerance,
+        step_ratio=ratio / (alpha * alpha) if options.step_ratio is None else options.step_ratio,
+        record_every=options.record_every,
+        partial_radius=options.partial_radius,
+    )
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class Initial:
+    """Where a solver starts, where not at its default.
+
+    coefficients are clipped to their intervals, and are the MMSE centres unless given. w
+    is TGV's field w, shape (2, H, W), and is the gradient of the start's canvas unless
+    given; TV has no w.
+    """
+
+    coefficients: Array | None = None
+    w: Array | None = None
 
 
 def steps(norm_squared: float, ratio: float) -> tuple[float, float]:
@@ -78,7 +159,17 @@ def start(problem: Problem, coefficients: Array | None = None) -> Primal:
     return Primal(coefficients=chosen, canvas=dct.inverse(chosen))
 
 
-def _due(iteration: int, options: Options) -> bool:
+def first_coefficients(first: Initial | None, *, with_w: bool) -> Array | None:
+    """The coefficients to start from, of first; and a check that it gives w only where the model has one."""
+    if first is None:
+        return None
+    if first.w is not None and not with_w:
+        message = "TV has no field w to start from"
+        raise ValueError(message)
+    return first.coefficients
+
+
+def _due(iteration: int, options: Plan) -> bool:
     return iteration == options.iterations or (options.record_every > 0 and iteration % options.record_every == 0)
 
 
@@ -87,17 +178,18 @@ def solve_tv(
     weights: TV,
     options: Options | None = None,
     *,
-    first: Array | None = None,
+    first: Initial | None = None,
     observe: Observer | None = None,
 ) -> Result:
     """Minimizes alpha ||grad x||_{2,1} + G(x) (docs/math.md, 4.2 and 5).
 
-    options are Options() unless given. first are the coefficients to start from, the MMSE
-    centres unless given. observe is called with each recorded iteration and its point.
+    options are Options() unless given, with the defaults of TV (plan()). first is where to
+    start, the MMSE centres unless given. observe is called with each recorded iteration,
+    its point and its gap per sample, which is what the tolerance is compared with.
     """
-    options = Options() if options is None else options
-    tau, sigma = steps(TV_NORM_SQUARED, options.step_ratio)
-    point = start(problem, first)
+    settled = plan(options, weights)
+    tau, sigma = steps(TV_NORM_SQUARED, settled.step_ratio)
+    point = start(problem, first_coefficients(first, with_w=False))
     coefficients, canvas = point.coefficients, point.canvas
     extrapolated = canvas
     p = np.zeros((2, *problem.shape))
@@ -105,7 +197,7 @@ def solve_tv(
     recorder.record(0, tv_values(problem, weights, point, Dual(p)))
     converged = False
     iteration = 0
-    while iteration < options.iterations and not converged:
+    while iteration < settled.iterations and not converged:
         recorder.resume()
         iteration += 1
         p = project_vectors(p + sigma * grad(extrapolated), weights.alpha)
@@ -114,13 +206,14 @@ def solve_tv(
         extrapolated = 2.0 * following_canvas - canvas
         coefficients, canvas = following, following_canvas
         recorder.pause()
-        if _due(iteration, options):
+        if _due(iteration, settled):
             point = Primal(coefficients=coefficients, canvas=canvas)
             values = tv_values(problem, weights, point, Dual(p))
             recorder.record(iteration, values)
-            converged = values[0] - values[1] <= options.tolerance * problem.samples
+            gap = (values[0] - values[1]) / problem.samples
+            converged = gap <= settled.tolerance
             if observe is not None:
-                observe(iteration, point)
+                observe(iteration, point, gap)
     return Result(
         primal=Primal(coefficients=coefficients, canvas=canvas),
         dual=Dual(p),
@@ -135,37 +228,43 @@ def solve_tgv(
     weights: TGV,
     options: Options | None = None,
     *,
-    first: Array | None = None,
+    first: Initial | None = None,
     observe: Observer | None = None,
 ) -> Result:
     """Minimizes alpha1 ||grad x - w||_{2,1} + alpha0 ||E w||_{F,1} + G(x) (docs/math.md, 4.3 and 5).
 
-    options are Options() unless given. first are the coefficients to start from, the MMSE
-    centres unless given, and w starts as the gradient of their canvas. The gap is that of
-    the feasible dual (6.2).
+    options are Options() unless given, with the defaults of TGV (plan()). first is where to
+    start: the MMSE centres, and w the gradient of their canvas, unless given. The gap is
+    that of the feasible dual (6.2).
     """
-    options = Options() if options is None else options
-    tau, sigma = steps(TGV_NORM_SQUARED, options.step_ratio)
-    point = start(problem, first)
+    settled = plan(options, weights)
+    tau, sigma = steps(TGV_NORM_SQUARED, settled.step_ratio)
+    point = start(problem, first_coefficients(first, with_w=True))
     coefficients, canvas = point.coefficients, point.canvas
-    w = grad(canvas)
+    if first is None or first.w is None:
+        w = grad(canvas)
+    else:
+        w = np.array(first.w, dtype=np.float64)  # a copy: the solver's own
+        if w.shape != (2, *problem.shape):
+            message = f"w is a field of shape {(2, *problem.shape)}, not {w.shape}"
+            raise ValueError(message)
     extrapolated, extrapolated_w = canvas, w
     p = np.zeros((2, *problem.shape))
     r = np.zeros((3, *problem.shape))
     recorder = Recorder()
 
-    def record(iteration: int, point: Primal, dual: Dual) -> bool:
+    def record(iteration: int, point: Primal, dual: Dual) -> float:
         primal_value, dual_value, theta = tgv_values(problem, weights, point, dual)
         partial = np.nan
-        if options.partial_radius is not None:
-            partial = tgv_partial_gap(problem, weights, point, dual, options.partial_radius)
+        if settled.partial_radius is not None:
+            partial = tgv_partial_gap(problem, weights, point, dual, settled.partial_radius)
         recorder.record(iteration, (primal_value, dual_value), theta, partial)
-        return primal_value - dual_value <= options.tolerance * problem.samples
+        return (primal_value - dual_value) / problem.samples
 
     record(0, Primal(coefficients=coefficients, canvas=canvas, w=w), Dual(p, r))
     converged = False
     iteration = 0
-    while iteration < options.iterations and not converged:
+    while iteration < settled.iterations and not converged:
         recorder.resume()
         iteration += 1
         p = project_vectors(p + sigma * (grad(extrapolated) - extrapolated_w), weights.alpha1)
@@ -177,11 +276,12 @@ def solve_tgv(
         extrapolated_w = 2.0 * following_w - w
         coefficients, canvas, w = following, following_canvas, following_w
         recorder.pause()
-        if _due(iteration, options):
+        if _due(iteration, settled):
             point = Primal(coefficients=coefficients, canvas=canvas, w=w)
-            converged = record(iteration, point, Dual(p, r))
+            gap = record(iteration, point, Dual(p, r))
+            converged = gap <= settled.tolerance
             if observe is not None:
-                observe(iteration, point)
+                observe(iteration, point, gap)
     return Result(
         primal=Primal(coefficients=coefficients, canvas=canvas, w=w),
         dual=Dual(p, r),

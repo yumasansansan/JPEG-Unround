@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The subgradient method of jpeg2png's kind: its subgradient, and its iterates."""
 
+import math
+
 import numpy as np
 import numpy.typing as npt
 
@@ -53,8 +55,9 @@ def test_the_iterates_stay_within_the_constraint_set_and_go_down() -> None:
     problem, _ = synthetic.problem(seed=33)
     checked: list[int] = []
 
-    def observe(iteration: int, point: Primal) -> None:
+    def observe(iteration: int, point: Primal, gap: float) -> None:
         checked.append(iteration)
+        assert gap == math.inf  # the method has no dual, and no gap
         reach = rounding.roundtrip_error(point.coefficients)
         assert np.all(model.excess(problem, dct.forward(point.canvas)) * problem.steps <= reach)
 
