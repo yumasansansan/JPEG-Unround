@@ -27,9 +27,8 @@ the numbers here are in [phase0-verification.md](phase0-verification.md), which
   of the five sizes have sides that are not multiples of 8, to exercise the
   edges. The pictures are drawn with exactly rounded arithmetic only and are
   byte for byte the same on Windows and Linux, as `scripts/test-images.sha256`
-  records. They are encoded at quality
-  10, 20, 30, 50, 70 and 90, and at 4:4:4, 4:2:2 and 4:2:0 (grey: once), 660
-  files for each encoder:
+  records. They are encoded at quality 10, 20, 30, 50, 70 and 90, and at 4:4:4,
+  4:2:2 and 4:2:0 (grey: once), 660 files for each encoder:
   - libjpeg-turbo 3.2.0's `cjpeg`, the submodule's build;
   - mozjpeg 4.1.5's `cjpeg` with its defaults: progressive, trellis
     quantization, overshoot deringing, quantization table 3.
@@ -85,10 +84,10 @@ have many, round with less). At quality 90 many steps are Q = 2 or 3, and that
 error now and then exceeds Q/2.
 
 The criterion that this check set out with, "every coefficient within its
-interval and an RMS of at most 0.35", holds in those blocks up to quality 70. It cannot hold in blocks
-that the decoder clamps to 0 or 255, since their samples are no longer the
-inverse DCT of q·Q. The synthetic images have many such blocks (black text on
-white). Over all blocks, 98.1–99.7 % of luma coefficients are within their
+interval and an RMS of at most 0.35", holds in those blocks up to quality 70.
+It cannot hold in blocks that the decoder clamps to 0 or 255, since their
+samples are no longer the inverse DCT of q·Q. The synthetic images have many
+such blocks (black text on white). Over all blocks, 98.1–99.7 % of luma coefficients are within their
 interval for libjpeg-turbo and 95.2–99.4 % for mozjpeg; chroma is 99.9–100 %
 for both. The convention is confirmed, and the criterion is restated as: within
 the interval in blocks that are not clamped, up to the 8-bit rounding.

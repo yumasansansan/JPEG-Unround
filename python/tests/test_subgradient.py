@@ -1,0 +1,66 @@
+# SPDX-FileCopyrightText: 2026 Yuma Kakei <yumasansansan@gmail.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""The subgradient method of jpeg2png's kind: its subgradient, and its iterates."""
+
+import numpy as np
+import numpy.typing as npt
+
+import rounding
+import synthetic
+from unround import dct, model, operators, subgradient
+from unround.model import TV, Primal
+
+type Complex = npt.NDArray[np.complex128]
+
+
+def complex_objective(problem: model.Problem, weights: TV, canvas: Complex) -> complex:
+    """The TV objective without the constraint, in complex arithmetic, for the complex step."""
+    gradient = operators.grad(canvas)
+    variation = np.sum(np.sqrt(gradient[0] * gradient[0] + gradient[1] * gradient[1]))
+    coefficients = dct.BASIS @ dct.blocks(canvas) @ dct.BASIS.T  # dct.forward keeps to float64
+    difference = coefficients - problem.centres
+    return complex(weights.alpha * variation + 0.5 * np.sum(problem.weights * difference * difference))
+
+
+def test_the_subgradient_is_the_derivative_where_the_objective_is_smooth() -> None:
+    # The complex step, Im f(x + i h v) / h with h = 1e-20, gives the directional derivative
+    # without the cancellation of a difference quotient: its error is of order h^2 and of the
+    # rounding of the terms. The canvas has no zero gradient but at its last sample, where
+    # both differences are 0 whatever x is, the term is constant, and the subgradient taken
+    # is 0.
+    problem, canvas = synthetic.problem(rows=8, columns=16, seed=31, mu=40.0)
+    rng = np.random.default_rng(32)
+    canvas = canvas + rng.normal(0.0, 5.0, size=canvas.shape)
+    weights = TV(alpha=1.3)
+    direction = subgradient.subgradient(problem, weights, canvas)
+    h = 1e-20
+    for _ in range(10):
+        v = rng.normal(size=canvas.shape)
+        derivative = complex_objective(problem, weights, canvas + 1j * h * v).imag / h
+        inner = float(np.sum(direction * v))
+        # The terms' own derivatives, alpha |grad v| and w |c - centre| |D v|, bound what each
+        # term contributes; each is computed within a few roundings, and both sums within
+        # gamma(n) of the sums of their magnitudes.
+        coefficients = dct.forward(canvas)
+        magnitude = weights.alpha * float(np.sum(operators.vector_norms(operators.grad(v))))
+        magnitude += float(np.sum(problem.weights * np.abs(coefficients - problem.centres) * np.abs(dct.forward(v))))
+        allowance = (rounding.gamma(4 * canvas.size) + 16.0 * rounding.U) * magnitude
+        allowance += rounding.gamma(canvas.size) * float(np.sum(np.abs(direction * v)))
+        assert abs(derivative - inner) <= allowance
+
+
+def test_the_iterates_stay_within_the_constraint_set_and_go_down() -> None:
+    problem, _ = synthetic.problem(seed=33)
+    checked: list[int] = []
+
+    def observe(iteration: int, point: Primal) -> None:
+        checked.append(iteration)
+        reach = rounding.roundtrip_error(point.coefficients)
+        assert np.all(model.excess(problem, dct.forward(point.canvas)) * problem.steps <= reach)
+
+    result = subgradient.solve_tv(problem, TV(), subgradient.Options(iterations=50, record_every=5), observe=observe)
+    assert result.iterations == 50
+    assert checked == list(range(5, 51, 5))
+    assert result.history.primal[-1] < result.history.primal[0]
+    assert not result.converged
+    assert result.dual is None
