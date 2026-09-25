@@ -308,33 +308,43 @@ ramp, $w$ takes up its gradient, and only changes of the ramp cost.
 Both models are $\min_z F(K z) + G(z)$ with $F$ a norm, and so the saddle-point
 problem $\min_z \max_y \langle K z, y \rangle + G(z) - F^\ast(y)$, where
 $F^\ast$ is the indicator of the dual ball of the norm. The method of
-Chambolle and Pock, with $\sigma \tau \|K\|^2 < 1$, is
+Chambolle and Pock, in the form of Condat with a relaxation $\rho$, is
 
-$$ y^{n+1} = \mathrm{prox}_{\sigma F^\ast}\bigl(y^n + \sigma K \bar z^n\bigr), \quad
-   z^{n+1} = \mathrm{prox}_{\tau G}\bigl(z^n - \tau K^\top y^{n+1}\bigr), \quad
-   \bar z^{n+1} = 2 z^{n+1} - z^n. $$
+$$ \tilde z = \mathrm{prox}_{\tau G}\bigl(z^n - \tau K^\top y^n\bigr), \quad
+   \tilde y = \mathrm{prox}_{\sigma F^\ast}\bigl(y^n + \sigma K (2 \tilde z - z^n)\bigr), \quad
+   (z^{n+1}, y^{n+1}) = \rho\, (\tilde z, \tilde y) + (1 - \rho)\, (z^n, y^n). $$
+
+With $\sigma \tau \|K\|^2 < 1$ and $0 < \rho < 2$ the iterates converge to a
+saddle point (Condat, Theorem 3.1, with no smooth term). With $\rho = 1$ this is
+Chambolle and Pock's Algorithm 1, with the dual one step ahead: from $y^0 = 0$
+and an $x^0$ that $\mathrm{prox}_{\tau G}$ leaves as it is (the MMSE decoder's
+output, whose coefficients are the centres), its $\tilde z$ at step $n + 1$ is
+their $z$ at step $n$.
 
 The proximal map of the indicator of a ball is the projection onto it, pixel
 by pixel: $y \mapsto y / \max(1, |y| / \alpha)$.
 
 **Total variation.** $K = \nabla$, $y = p$, $K^\top p = -\mathrm{div}\, p$:
 
-$$ p \leftarrow \mathrm{proj}_{\alpha}\bigl(p + \sigma \nabla \bar x\bigr), \qquad
-   x^+ \leftarrow \mathrm{prox}_{\tau G}\bigl(x + \tau \mathrm{div}\, p\bigr), \qquad
-   \bar x \leftarrow 2 x^+ - x. $$
+$$ \tilde x = \mathrm{prox}_{\tau G}\bigl(x + \tau \mathrm{div}\, p\bigr), \qquad
+   \tilde p = \mathrm{proj}_{\alpha}\bigl(p + \sigma \nabla (2 \tilde x - x)\bigr), $$
+
+then $x \leftarrow \rho \tilde x + (1 - \rho) x$ and
+$p \leftarrow \rho \tilde p + (1 - \rho) p$.
 
 **TGV.** $z = (x, w)$, $y = (p, r)$,
 $K^\top (p, r) = (-\mathrm{div}\, p,\ -p - \mathrm{div}_2 r)$, and
 $G$ does not depend on $w$, whose proximal map is the identity:
 
 $$ \begin{aligned}
-p &\leftarrow \mathrm{proj}_{\alpha_1}\bigl(p + \sigma (\nabla \bar x - \bar w)\bigr), &
-r &\leftarrow \mathrm{proj}_{\alpha_0, F}\bigl(r + \sigma \mathcal{E} \bar w\bigr), \\
-x^+ &\leftarrow \mathrm{prox}_{\tau G}\bigl(x + \tau \mathrm{div}\, p\bigr), &
-w^+ &\leftarrow w + \tau (p + \mathrm{div}_2 r),
+\tilde x &= \mathrm{prox}_{\tau G}\bigl(x + \tau \mathrm{div}\, p\bigr), &
+\tilde w &= w + \tau (p + \mathrm{div}_2 r), \\
+\tilde p &= \mathrm{proj}_{\alpha_1}\bigl(p + \sigma (\nabla \bar x - \bar w)\bigr), &
+\tilde r &= \mathrm{proj}_{\alpha_0, F}\bigl(r + \sigma \mathcal{E} \bar w\bigr),
 \end{aligned} $$
 
-then $\bar x = 2 x^+ - x$ and $\bar w = 2 w^+ - w$.
+with $\bar x = 2 \tilde x - x$ and $\bar w = 2 \tilde w - w$, then each of
+$x, w, p, r$ moves to $\rho$ times its tilde plus $1 - \rho$ times itself.
 
 **Steps.** With $L^2$ the bound of 3.3 (8 for TV, 11.37 for TGV) and a ratio
 $\kappa = \tau / \sigma$, the steps are $\tau = \sqrt{0.99\, \kappa} / L$ and
@@ -368,9 +378,26 @@ the bound's $\kappa^\ast$ by 10 to 100. On two tuning files the gap then fell
 no faster with the ratios 300 to 3000, and with the default ratio 3 at most 15
 per cent sooner on one file and no sooner on the other.)
 
-Every iterate $x$ is an output of $\mathrm{prox}_{\tau G}$, and so lies in
-$\mathcal{C}$. The coefficients $\zeta$ of the last one are kept: the result is
-$D^\top \zeta$, whose coefficients are $\zeta$ to rounding error.
+Every $\tilde x$ is an output of $\mathrm{prox}_{\tau G}$, and so lies in
+$\mathcal{C}$, and every $\tilde p$ (and $\tilde r$) in its ball. With
+$\rho > 1$ the relaxed $x$ and $p$ need not: what is recorded, what the gap is
+taken at, and the result are therefore the tilde points. The coefficients
+$\zeta$ of the last $\tilde x$ are kept: the result is $D^\top \zeta$, whose
+coefficients are $\zeta$ to rounding error.
+
+**What else was tried.** Diagonal preconditioning (Pock and Chambolle) takes a
+step for each variable from the sums of the absolute values of $K$'s rows and
+columns. For TGV's $K$ (with the off-diagonal of $r$ scaled by $\sqrt 2$, where
+its norm counts it twice) those are about 4 for $x$, $3 + \sqrt 2$ for $w$, 3 for
+$p$ and $2 \sqrt 2$ for $r$: nearly the same step for every block, and so
+nearly the method above with a ratio of about 0.7, which is less than the one
+chosen. Adaptive steps (Goldstein, Li and Yuan), which change the ratio to
+keep the primal and dual residuals of an iteration in proportion to one
+another, drove it to 0.08 to 2 with the proportions 1 and 3, and kept it near
+where it started with 0.3; on three tuning files none of them brought the gap
+down faster than the fixed ratio. Starting TGV from TV's solution, with $w = 0$
+and TV's $p$, was no faster either: TV's solution is another picture than
+TGV's. (`experiments/results/phase2-solver.md`.)
 
 ## 6. When to stop: duality gaps
 
@@ -444,33 +471,54 @@ still move by hundredths to tenths of a grey level (RMS) thousands of
 iterations after the objective, and the PSNR of the result, have settled. The
 tolerance is therefore chosen by how much stopping changes the result.
 
+For the same reason what stopping at a gap leaves depends on the path the
+iterates took, and not on the gap alone. Stopped at a gap per sample of
+$2 \cdot 10^{-4}$, a few tuning files still differ from a much longer run by
+0.010 to 0.014 dB of PSNR, whatever the ratio of the steps and the relaxation, and
+smaller tolerances bring that largest difference down only slowly: a bound on
+every file, at that precision, is not what a gap can give. The criterion is
+therefore on the distribution of the differences over the files, in its median
+and its 90th percentile, and the largest difference is reported.
+
 ### 6.5 The defaults
 
-*In `unround/pdhg.py` (`TV_RATIO`, `TV_TOLERANCE`, `TV_ITERATIONS`, and those of
-TGV), chosen on the tuning images by `experiments/phase1_tuning.py`
-(`experiments/results/phase1-tuning.md`).*
+*In `unround/pdhg.py` (`TV_RATIO`, `TV_RELAXATION`, `TV_TOLERANCE`,
+`TV_ITERATIONS`, and those of TGV), chosen on the tuning images by
+`experiments/phase2_solver.py` (`experiments/results/phase2-solver.md`).*
 
-A tolerance was accepted when stopping where the gap per sample first falls
-within it changed, on every tuning file, the PSNR of the binary64 result by at
-most 0.01 dB and the SSIM of its 8-bit samples by at most $10^{-4}$, against
-the last point of a much longer run. The ratio is the one whose accepted
-tolerance stopped the files in the fewest iterations in all, and the most
-iterations allowed is twice the most a tuning file took, rounded up to 1, 2 or
-5 times a power of ten.
+Stopping where the gap per sample first falls within a tolerance changes the
+result, against the last point of a much longer run (TV: $\tau / \sigma = 30$,
+$\rho = 1.5$, 8000 iterations; TGV: 3, 1.9, 12000). A tolerance is accepted when,
+over the tuning files, the change of the PSNR of the binary64 result is at most
+0.001 dB in the median and 0.005 dB in the 90th percentile, and that of the SSIM
+of its 8-bit samples at most $10^{-5}$ and $5 \cdot 10^{-5}$; when every file
+reaches it; and when the longer runs can tell it, their median last gap per
+sample being at most a tenth of it. For each ratio of the steps and relaxation,
+the tolerance is the largest accepted one whose smaller ones are accepted too;
+the pair is the one that then stops the files in the fewest iterations in all;
+and the most iterations allowed is twice the most a tuning file took, rounded
+up to 1, 2 or 5 times a power of ten.
 
-| | $\tau / \sigma$ | gap per sample | most iterations |
-|---|---|---|---|
-| TV | 30 | $5 \cdot 10^{-4}$ | 20000 |
-| TGV | 3 | $10^{-2}$ | 20000 |
+| | $\tau / \sigma$ | $\rho$ | gap per sample | most iterations |
+|---|---|---|---|---|
+| TV | 30 | 1.9 | $2 \cdot 10^{-4}$ | 20000 |
+| TGV | 10 | 1.9 | $10^{-2}$ | 10000 |
 
-TV at these defaults stopped the tuning files after 930 to 5310 iterations
-(median 1815), within 0.0083 dB of PSNR and $6.4 \cdot 10^{-5}$ of SSIM of the
-long runs; with the ratios 10 and 20 no tolerance tried was accepted. For TGV
-no tolerance that every file reached within 8000 iterations was accepted: at
-$10^{-2}$, reached after 1600 to 7300 iterations, the results were within
-0.084 dB of 8000-iteration runs, which themselves still moved by up to 0.025 dB
-over their last 1300 iterations. That is TGV's default until its convergence
-is improved.
+TV at these defaults stopped the tuning files after 1050 to 5070 iterations
+(median 1800). Its PSNR changed by 0.0002 dB in the median, 0.0019 dB in the
+90th percentile and 0.0100 dB at most, and its SSIM by $2.1 \cdot 10^{-6}$,
+$3.7 \cdot 10^{-5}$ and $1.1 \cdot 10^{-4}$. For TGV no tolerance that the longer
+runs tell (from $6.7 \cdot 10^{-3}$) was accepted; the default is the least of
+them that every file reached, with the pair that got there soonest: 1170 to
+4570 iterations (median 2735), and a change of the PSNR of 0.0087 dB in the
+median, 0.093 dB in the 90th percentile and 0.105 dB at most. That is TGV's
+default until its convergence is improved.
+
+Phase 1 chose a tolerance of $5 \cdot 10^{-4}$ for TV, unrelaxed, by the
+largest change over the files, and found it within 0.0083 dB. That was measured
+against long runs that went on from the stops along the same paths; against
+the longer runs above, the same stops differ by 0.0008 dB in the median, 0.0062
+dB in the 90th percentile and 0.014 dB at most.
 
 These are for $\alpha = 1$ (for TGV $\alpha_1 = 1$, with $\alpha_0 = 2 \alpha_1$).
 The dual variables are in units of $\alpha$ and the objective scales with it,
@@ -507,6 +555,13 @@ guarantee and no measure of how far it is from the least value.
 - A. Chambolle, T. Pock. A first-order primal-dual algorithm for convex problems
   with applications to imaging. Journal of Mathematical Imaging and Vision 40,
   2011.
+- L. Condat. A primal-dual splitting method for convex optimization involving
+  Lipschitzian, proximable and linear composite terms. Journal of Optimization
+  Theory and Applications 158, 2013.
+- T. Pock, A. Chambolle. Diagonal preconditioning for first order primal-dual
+  algorithms in convex optimization. ICCV, 2011.
+- T. Goldstein, M. Li, X. Yuan. Adaptive primal-dual splitting methods for
+  statistical learning and image processing. NeurIPS, 2015.
 - F. Alter, S. Durand, J. Froment. Adapted total variation for artifact free
   decompression of JPEG images. Journal of Mathematical Imaging and Vision 23,
   2005.

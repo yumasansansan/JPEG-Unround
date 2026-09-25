@@ -78,6 +78,15 @@ until its convergence is improved. Both are the defaults of `unround.pdhg` for a
 weight α (α1 for TGV) of 1; for another weight the ratio is divided by α² and
 the tolerance multiplied by α. The most iterations allowed is 20000 for both.
 
+**Corrected in Phase 2** ([phase2-solver.md](phase2-solver.md)). The long runs
+that these stops were measured against went on from the stops along the same
+paths, and so understated the change. Against longer runs of the relaxed method,
+nearer the least points, TV's stops at 5·10⁻⁴ differ by 0.0008 dB in the median,
+0.0062 dB in the 90th percentile and 0.014 dB at most, not 0.0083 dB; and no
+tolerance down to 2·10⁻⁴ holds every file to 0.01 dB, with any ratio. Phase 2
+relaxes the method, puts the criterion on the median and the 90th percentile of
+the changes, and chooses the defaults again (docs/math.md, 6.4 and 6.5).
+
 A fixed tolerance fits some files better than others. The gap per sample at
 which the PSNR settles to 0.01 dB differs by a factor of about 400 between the
 tuning files (120 for the gap relative to the primal value). The hardest are

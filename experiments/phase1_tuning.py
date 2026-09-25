@@ -108,6 +108,7 @@ class Run:
     tolerance: float = 0.0
     w_start: str = "gradient"  # TGV's w at the start: the gradient of the start's canvas, or zero
     crossings: tuple[float, ...] = ()  # tolerances at whose first crossing the result is measured
+    relaxation: float = 1.0  # the rho of the relaxed steps; Phase 1's runs were not relaxed
 
 
 def moments(a: float) -> tuple[float, float]:
@@ -242,7 +243,11 @@ def solve(run: Run) -> dict[str, Any]:
                 }
 
     options = pdhg.Options(
-        iterations=run.iterations, tolerance=run.tolerance, step_ratio=run.ratio, record_every=RECORD_EVERY
+        iterations=run.iterations,
+        tolerance=run.tolerance,
+        step_ratio=run.ratio,
+        relaxation=run.relaxation,
+        record_every=RECORD_EVERY,
     )
     started = time.perf_counter()
     if run.model == "tv":
@@ -258,6 +263,7 @@ def solve(run: Run) -> dict[str, Any]:
         "quality": run.case.quality,
         "model": run.model,
         "ratio": run.ratio,
+        "relaxation": run.relaxation,
         "tolerance": run.tolerance,
         "w_start": run.w_start,
         "samples": problem.samples,

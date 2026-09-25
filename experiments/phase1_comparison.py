@@ -56,6 +56,7 @@ SUBGRADIENT_EARLY: Final = 50  # jpeg2png's default
 RECORD_EVERY: Final = 10
 TIMED_ITERATIONS: Final = 100
 TIMED_REPEATS: Final = 3
+TIMED_QUALITY: Final = 50
 STAGES: Final = ["run", "timing", "report"]
 
 
@@ -480,7 +481,7 @@ def main() -> int:
         timed = [
             (options.cache / "timing" / f"{case.image}.json", case)
             for case in chosen
-            if case.encoder == "libjpeg-turbo" and case.quality == 50
+            if case.encoder == "libjpeg-turbo" and case.quality == TIMED_QUALITY
         ]
         common.run_all(timing, timed, 1, label="timing")
     if "report" in options.stages:

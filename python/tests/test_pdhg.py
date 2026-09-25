@@ -35,8 +35,10 @@ def test_the_defaults_scale_with_the_weight() -> None:
     # times it; what is given is kept.
     tv = pdhg.plan(None, TV(1.0))
     assert (tv.iterations, tv.tolerance, tv.step_ratio) == (pdhg.TV_ITERATIONS, pdhg.TV_TOLERANCE, pdhg.TV_RATIO)
+    assert tv.relaxation == pdhg.TV_RELAXATION
     tgv = pdhg.plan(pdhg.Options(), TGV(1.0, 2.0))
     assert (tgv.iterations, tgv.tolerance, tgv.step_ratio) == (pdhg.TGV_ITERATIONS, pdhg.TGV_TOLERANCE, pdhg.TGV_RATIO)
+    assert tgv.relaxation == pdhg.TGV_RELAXATION
     scaled = pdhg.plan(None, TV(4.0))
     assert scaled.step_ratio == pdhg.TV_RATIO / 16.0
     assert scaled.tolerance == pdhg.TV_TOLERANCE * 4.0
@@ -44,6 +46,11 @@ def test_the_defaults_scale_with_the_weight() -> None:
     assert (given.iterations, given.tolerance, given.step_ratio, given.record_every) == (7, 0.0, 2.5, 3)
     with pytest.raises(ValueError, match="positive"):
         pdhg.plan(None, TV(0.0))
+    # The relaxed steps converge for a relaxation in (0, 2) only.
+    assert pdhg.plan(pdhg.Options(relaxation=1.9), TV(1.0)).relaxation == 1.9
+    for relaxation in (0.0, 2.0, -1.0):
+        with pytest.raises(ValueError, match="relaxation"):
+            pdhg.plan(pdhg.Options(relaxation=relaxation), TV(1.0))
 
 
 def test_the_start_is_the_mmse_decoder() -> None:
@@ -89,12 +96,39 @@ def test_tv_converges_within_the_constraint_set(ratio: float, threshold: float) 
     assert np.all(history.gap[:-1] > 0.0)
 
 
-def test_tv_stops_at_its_tolerance() -> None:
-    # Measured: 130 iterations.
+@pytest.mark.parametrize(("relaxation", "threshold"), [(1.5, 3e-5), (1.9, 3e-5)])
+def test_relaxed_tv_keeps_to_the_constraint_set(relaxation: float, threshold: float) -> None:
+    # Measured: a gap per sample of 3.4e-6 with the relaxation 1.5 and 2.8e-6 with 1.9 after
+    # 1000 iterations, against 1.0e-5 without. The current point of a relaxed step may leave
+    # the constraint set; what is observed and returned, the proximal steps' outputs, may not.
+    problem, _ = synthetic.problem(seed=18)
+
+    def observe(iteration: int, point: Primal, gap: float) -> None:  # noqa: ARG001
+        assert within_the_set(problem, point)
+
+    options = pdhg.Options(iterations=1000, tolerance=0.0, step_ratio=30.0, relaxation=relaxation, record_every=100)
+    result = pdhg.solve_tv(problem, TV(1.0), options, observe=observe)
+    history = result.history
+    assert history.gap[-1] / problem.samples < threshold
+    assert np.all(model.excess(problem, result.primal.coefficients) == 0.0)
+    # The dual returned is a projection's output, within the ball up to rounding: dividing by
+    # a norm taken within 2U makes a vector longer by at most 3U, and taking its norm here
+    # adds 2U more, to first order.
+    assert result.dual is not None
+    assert np.all(operators.vector_norms(result.dual.p) <= 1.0 + 6.0 * rounding.U)
+    allowance = rounding.tv_values_error(problem, TV(1.0), result.primal, result.dual)
+    assert history.gap[-1] >= -allowance
+    assert np.all(history.gap[:-1] > 0.0)
+
+
+@pytest.mark.parametrize(("relaxation", "measured"), [(1.0, 130), (1.9, 80)])
+def test_tv_stops_at_its_tolerance(relaxation: float, measured: int) -> None:
+    # Measured: 130 iterations unrelaxed, 80 with the relaxation 1.9.
     problem, _ = synthetic.problem(seed=13)
-    result = pdhg.solve_tv(problem, TV(1.0), pdhg.Options(iterations=5000, tolerance=0.05, step_ratio=10.0))
+    options = pdhg.Options(iterations=5000, tolerance=0.05, step_ratio=10.0, relaxation=relaxation)
+    result = pdhg.solve_tv(problem, TV(1.0), options)
     assert result.converged
-    assert result.iterations == 130
+    assert result.iterations == measured
     assert result.history.gap[-1] <= 0.05 * problem.samples
 
 
@@ -115,6 +149,23 @@ def test_tgv_converges_within_the_constraint_set() -> None:
     assert result.primal.w is not None
     assert result.dual is not None
     assert result.dual.r is not None
+
+
+def test_relaxed_tgv_keeps_to_the_constraint_set() -> None:
+    # Measured: a gap per sample of 1.1e-7 after 6000 iterations with the relaxation 1.9,
+    # against 2.8e-6 without, and the scaling of the dual 1.
+    problem, _ = synthetic.problem(seed=19)
+
+    def observe(iteration: int, point: Primal, gap: float) -> None:  # noqa: ARG001
+        assert within_the_set(problem, point)
+
+    options = pdhg.Options(iterations=6000, tolerance=0.0, step_ratio=10.0, relaxation=1.9, record_every=500)
+    result = pdhg.solve_tgv(problem, TGV(1.0, 2.0), options, observe=observe)
+    history = result.history
+    assert np.all(history.gap > 0.0)
+    assert history.gap[-1] / problem.samples < 1e-6
+    assert history.scaling[-1] > 0.9
+    assert np.all(model.excess(problem, result.primal.coefficients) == 0.0)
 
 
 def test_tgv_starts_from_the_field_given() -> None:
