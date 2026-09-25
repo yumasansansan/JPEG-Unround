@@ -9,6 +9,7 @@ each threshold is about ten times what was measured.
 """
 
 import dataclasses
+import math
 
 import numpy as np
 import pytest
@@ -18,16 +19,35 @@ import synthetic
 from unround import dct, model, operators, pdhg, subgradient
 from unround.model import TGV, TV, Dual, Primal
 
+PARTIAL_RADIUS = 20.0
 
-def test_the_steps_keep_their_ratio_and_their_product() -> None:
+
+@pytest.mark.parametrize(
+    ("norm_squared", "product"), [(pdhg.TGV_NORM_SQUARED, pdhg.STEP_PRODUCT), (8.0, 0.5), (20.0, 0.9)]
+)
+def test_the_steps_keep_their_ratio_and_their_product(norm_squared: float, product: float) -> None:
     # Each step is a square root of a product and a quotient: within 3U, and their quotient
     # and product within 8U.
     for ratio in (0.1, 1.0, 37.0):
-        tau, sigma = pdhg.steps(pdhg.TGV_NORM_SQUARED, ratio)
+        tau, sigma = pdhg.steps(norm_squared, ratio, product)
         assert abs(tau / sigma - ratio) <= 8.0 * rounding.U * ratio
-        assert abs(tau * sigma * pdhg.TGV_NORM_SQUARED - 0.99) <= 8.0 * rounding.U
+        assert abs(tau * sigma * norm_squared - product) <= 8.0 * rounding.U * product
+
+
+@pytest.mark.parametrize(
+    ("norm_squared", "ratio", "product"),
+    [
+        (8.0, 0.0, 0.99),
+        (8.0, math.inf, 0.99),
+        (8.0, math.nan, 0.99),
+        (0.0, 1.0, 0.99),
+        (8.0, 1.0, 1.0),
+        (8.0, 1.0, 0.0),
+    ],
+)
+def test_the_steps_are_refused_out_of_their_ranges(norm_squared: float, ratio: float, product: float) -> None:
     with pytest.raises(ValueError, match="positive"):
-        pdhg.steps(8.0, 0.0)
+        pdhg.steps(norm_squared, ratio, product)
 
 
 def test_the_defaults_scale_with_the_weight() -> None:
@@ -51,6 +71,74 @@ def test_the_defaults_scale_with_the_weight() -> None:
     for relaxation in (0.0, 2.0, -1.0):
         with pytest.raises(ValueError, match="relaxation"):
             pdhg.plan(pdhg.Options(relaxation=relaxation), TV(1.0))
+    # Without the scaling, the defaults are those of the weight 1, whatever the weight.
+    unscaled = pdhg.plan(pdhg.Options(scale_with_weight=False), TV(4.0))
+    assert (unscaled.step_ratio, unscaled.tolerance) == (pdhg.TV_RATIO, pdhg.TV_TOLERANCE)
+    unscaled = pdhg.plan(pdhg.Options(scale_with_weight=False), TGV(0.5, 1.0))
+    assert (unscaled.step_ratio, unscaled.tolerance) == (pdhg.TGV_RATIO, pdhg.TGV_TOLERANCE)
+
+
+def test_the_other_options_have_their_defaults_and_are_kept() -> None:
+    tv, tgv = pdhg.plan(None, TV()), pdhg.plan(None, TGV())
+    assert (tv.norm_squared, tgv.norm_squared) == (pdhg.TV_NORM_SQUARED, pdhg.TGV_NORM_SQUARED)
+    for settled in (tv, tgv):
+        assert (settled.step_product, settled.relative_tolerance, settled.partial_tolerance) == (0.99, 0.0, 0.0)
+        assert settled.partial_radius is None
+    options = pdhg.Options(
+        relative_tolerance=1e-3, partial_tolerance=2e-3, step_product=0.5, norm_squared=12.0, partial_radius=5.0
+    )
+    given = pdhg.plan(options, TGV())
+    assert (given.relative_tolerance, given.partial_tolerance, given.step_product) == (1e-3, 2e-3, 0.5)
+    assert (given.norm_squared, given.partial_radius) == (12.0, 5.0)
+
+
+@pytest.mark.parametrize(
+    ("options", "weights", "match"),
+    [
+        (pdhg.Options(iterations=-1), TV(), "most iterations"),
+        (pdhg.Options(tolerance=-1e-3), TV(), "the tolerance"),
+        (pdhg.Options(relative_tolerance=-1.0), TV(), "relative tolerance"),
+        (pdhg.Options(relative_tolerance=math.nan), TGV(), "relative tolerance"),
+        (pdhg.Options(step_ratio=0.0), TV(), "ratio"),
+        (pdhg.Options(step_ratio=math.inf), TGV(), "ratio"),
+        (pdhg.Options(step_product=1.0), TV(), "product"),
+        (pdhg.Options(step_product=0.0), TGV(), "product"),
+        (pdhg.Options(norm_squared=0.0), TV(), "L\\^2"),
+        (pdhg.Options(norm_squared=math.inf), TGV(), "L\\^2"),
+        (pdhg.Options(record_every=-1), TV(), "records"),
+        (pdhg.Options(partial_radius=-1.0), TGV(), "radius"),
+        (pdhg.Options(partial_tolerance=-1.0, partial_radius=1.0), TGV(), "partial tolerance"),
+        (pdhg.Options(partial_tolerance=1e-3), TGV(), "needs the partial gap's radius"),
+        (pdhg.Options(partial_radius=1.0), TV(), "TV has no partial gap"),
+        (pdhg.Options(partial_tolerance=1e-3), TV(), "TV has no partial gap"),
+        (None, TGV(math.nan, 2.0), "first-order"),
+        (None, TGV(1.0, 0.0), "second-order"),
+    ],
+)
+def test_the_plan_refuses_what_the_method_cannot_run_with(
+    options: pdhg.Options | None, weights: TV | TGV, match: str
+) -> None:
+    with pytest.raises(ValueError, match=match):
+        pdhg.plan(options, weights)
+
+
+def test_the_plan_tells_every_value_out_of_its_range_at_once() -> None:
+    with pytest.raises(ValueError, match=r"most iterations.*product.*records"):
+        pdhg.plan(pdhg.Options(iterations=-1, step_product=2.0, record_every=-1), TV())
+
+
+def test_the_steps_are_those_of_the_options() -> None:
+    # tau and sigma depend on the product and on L^2 through their quotient alone, and a
+    # quarter of the product gives the same steps as four times L^2: dividing by 4 is exact.
+    # The iterates are then the same to the last bit; with the default steps they are not.
+    problem, _ = synthetic.problem(seed=20)
+    base = pdhg.Options(iterations=30, tolerance=0.0, record_every=10)
+    quartered = pdhg.solve_tv(problem, TV(), dataclasses.replace(base, step_product=pdhg.STEP_PRODUCT / 4.0))
+    widened = pdhg.solve_tv(problem, TV(), dataclasses.replace(base, norm_squared=4.0 * pdhg.TV_NORM_SQUARED))
+    default = pdhg.solve_tv(problem, TV(), base)
+    np.testing.assert_array_equal(quartered.primal.canvas, widened.primal.canvas)
+    np.testing.assert_array_equal(quartered.history.primal, widened.history.primal)
+    assert not np.array_equal(quartered.primal.canvas, default.primal.canvas)
 
 
 def test_the_start_is_the_mmse_decoder() -> None:
@@ -132,6 +220,34 @@ def test_tv_stops_at_its_tolerance(relaxation: float, measured: int) -> None:
     assert result.history.gap[-1] <= 0.05 * problem.samples
 
 
+def test_tv_stops_at_its_relative_tolerance() -> None:
+    # The first record whose gap is within the relative tolerance of the primal value stops
+    # the solver; the gap per sample, whose tolerance is 0, stops nothing. The comparisons are
+    # the solver's, of the same doubles: exact. (Measured: 280 iterations.)
+    problem, _ = synthetic.problem(seed=13)
+    options = pdhg.Options(iterations=5000, tolerance=0.0, relative_tolerance=1e-4, step_ratio=10.0)
+    result = pdhg.solve_tv(problem, TV(1.0), options)
+    history = result.history
+    assert result.converged
+    assert history.gap[-1] <= 1e-4 * history.primal[-1]
+    assert np.all(history.gap[1:-1] > 1e-4 * history.primal[1:-1])
+
+
+def test_tgv_stops_at_its_partial_tolerance() -> None:
+    # As for the relative tolerance, with the partial gap per sample. The radius is more than
+    # the largest |w| of the solution (measured: 5.9 after 6000 iterations), and so the partial
+    # gap bounds the distance from the least value. (Measured: 380 iterations.)
+    problem, _ = synthetic.problem(seed=15)
+    options = pdhg.Options(
+        iterations=5000, tolerance=0.0, step_ratio=10.0, partial_radius=PARTIAL_RADIUS, partial_tolerance=1e-2
+    )
+    result = pdhg.solve_tgv(problem, TGV(), options)
+    partial = result.history.partial_gap / problem.samples
+    assert result.converged
+    assert partial[-1] <= 1e-2
+    assert np.all(partial[1:-1] > 1e-2)
+
+
 def test_tgv_converges_within_the_constraint_set() -> None:
     # Measured: a gap per sample of 1.9e-4 after 6000 iterations, from 1.6e-2 after 500, and the
     # scaling of the dual 1. The gaps here are at least 0.07, and the values about 3e3, far
@@ -187,6 +303,51 @@ def test_tgv_starts_from_the_field_given() -> None:
         pdhg.solve_tgv(problem, TGV(), options, first=pdhg.Initial(w=np.zeros(problem.shape)))
     with pytest.raises(ValueError, match="TV has no field w"):
         pdhg.solve_tv(problem, TV(), options, first=pdhg.Initial(w=zero))
+
+
+def test_the_dual_starts_where_given_projected_onto_its_ball() -> None:
+    # No iteration: the dual returned is the start, the projection of what was given, which is
+    # not changed. One iteration from it goes elsewhere than one from 0.
+    problem, _ = synthetic.problem(seed=21)
+    rng = np.random.default_rng(26)
+    p = rng.normal(0.0, 3.0, size=(2, *problem.shape))
+    r = rng.normal(0.0, 3.0, size=(3, *problem.shape))
+    kept_p, kept_r = p.copy(), r.copy()
+    options = pdhg.Options(iterations=0)
+    tv = pdhg.solve_tv(problem, TV(1.5), options, first=pdhg.Initial(p=p))
+    assert tv.dual is not None
+    np.testing.assert_array_equal(tv.dual.p, operators.project_vectors(p, 1.5))
+    tgv = pdhg.solve_tgv(problem, TGV(1.0, 2.0), options, first=pdhg.Initial(p=p, r=r))
+    assert tgv.dual is not None
+    assert tgv.dual.r is not None
+    np.testing.assert_array_equal(tgv.dual.p, operators.project_vectors(p, 1.0))
+    np.testing.assert_array_equal(tgv.dual.r, operators.project_tensors(r, 2.0))
+    np.testing.assert_array_equal(p, kept_p)
+    np.testing.assert_array_equal(r, kept_r)
+    one = dataclasses.replace(options, iterations=1)
+    from_given = pdhg.solve_tv(problem, TV(1.5), one, first=pdhg.Initial(p=p))
+    from_zero = pdhg.solve_tv(problem, TV(1.5), one)
+    assert not np.array_equal(from_given.primal.canvas, from_zero.primal.canvas)
+
+
+def test_a_start_that_the_method_cannot_take_is_refused() -> None:
+    problem, _ = synthetic.problem(seed=21)
+    options = pdhg.Options(iterations=0)
+    vectors, tensors = (2, *problem.shape), (3, *problem.shape)
+    with pytest.raises(ValueError, match="TV has no field w or r"):
+        pdhg.solve_tv(problem, TV(), options, first=pdhg.Initial(r=np.zeros(tensors)))
+    with pytest.raises(ValueError, match="shape"):
+        pdhg.solve_tgv(problem, TGV(), options, first=pdhg.Initial(r=np.zeros(vectors)))
+    with pytest.raises(ValueError, match="shape"):
+        pdhg.solve_tv(problem, TV(), options, first=pdhg.Initial(p=np.zeros(tensors)))
+    with pytest.raises(ValueError, match="finite"):
+        pdhg.solve_tv(problem, TV(), options, first=pdhg.Initial(p=np.full(vectors, np.nan)))
+    with pytest.raises(ValueError, match="finite"):
+        pdhg.solve_tgv(problem, TGV(), options, first=pdhg.Initial(w=np.full(vectors, np.inf)))
+    with pytest.raises(ValueError, match="coefficients"):
+        pdhg.solve_tv(problem, TV(), options, first=pdhg.Initial(coefficients=np.zeros((8, 8))))
+    with pytest.raises(ValueError, match="coefficients"):
+        pdhg.start(problem, np.full(problem.lower.shape, np.nan))
 
 
 def test_the_partial_gap_is_recorded_for_tgv() -> None:

@@ -217,11 +217,11 @@ def start_distances(run: Run, start: Array, result: Result) -> tuple[float, floa
 def solve(run: Run) -> dict[str, Any]:
     """Solves a file, and measures what the run kept."""
     from unround import decode, jpegio, metrics, pdhg  # noqa: PLC0415
-    from unround.model import Primal, make_problem  # noqa: PLC0415
+    from unround.model import Primal  # noqa: PLC0415
 
     settings = decode.Settings()
     component = jpegio.read(run.case.jpeg.read_bytes()).components[0]
-    problem = make_problem(component.coefficients, component.quant_table, mu=settings.mu)
+    problem = decode.component_problem(component, settings)
     original = common.read_original(run.case.original)
     height, width = component.height, component.width
     kept: dict[int, Array] = {}

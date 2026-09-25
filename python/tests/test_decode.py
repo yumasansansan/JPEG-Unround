@@ -10,6 +10,7 @@ from PIL import Image
 
 import synthetic
 from unround import dct, decode, jpegio, model, pdhg, subgradient
+from unround.model import DataTerm
 
 METHODS: list[decode.Method] = ["mmse", "tv", "tgv", "subgradient"]
 
@@ -48,11 +49,25 @@ def test_the_mmse_decoder_is_the_centres() -> None:
 
 def test_slack_widens_the_intervals() -> None:
     data = grey_file()
-    decoded = decode.decode(data, decode.Settings(method="mmse", slack=0.5))
+    decoded = decode.decode(data, decode.Settings(method="mmse", data=DataTerm(slack=0.5)))
     component = jpegio.read(data).components[0]
     upper = (component.coefficients + 1.0) * component.quant_table
     upper[:, :, 0, 0] += 1024.0
     np.testing.assert_array_equal(decoded.problem.upper, upper)
+
+
+def test_the_settings_reach_the_model() -> None:
+    # With the middles as centres, the decoder of the centres is the plain decoder, q Q
+    # without rounding; DC's weight is mu / Q^2 times the weight given.
+    data = grey_file()
+    decoded = decode.decode(data, decode.Settings(method="mmse", data=DataTerm(dc_weight=3.0, centres="midpoint")))
+    component = jpegio.read(data).components[0]
+    middles = component.coefficients.astype(np.float64) * component.quant_table.astype(np.float64)
+    middles[:, :, 0, 0] += 1024.0
+    np.testing.assert_array_equal(decoded.problem.centres, middles)
+    np.testing.assert_array_equal(decoded.coefficients, middles)
+    step = float(component.quant_table[0, 0])
+    assert decoded.problem.weights[0, 0] == (1e-3 / (step * step)) * 3.0
 
 
 def test_colour_files_are_not_decoded_yet() -> None:

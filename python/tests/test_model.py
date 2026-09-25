@@ -7,6 +7,7 @@ within bounds of its rounding, computed from the arrays at hand (rounding.py).
 """
 
 import math
+from typing import Any
 
 import numpy as np
 import numpy.typing as npt
@@ -15,7 +16,7 @@ import pytest
 import rounding
 import synthetic
 from unround import dct, model, operators
-from unround.model import TGV, TV, Dual, Primal
+from unround.model import TGV, TV, DataTerm, Dual, Primal
 
 type Array = npt.NDArray[np.float64]
 
@@ -29,7 +30,7 @@ def test_the_intervals_and_the_weights() -> None:
     levels = np.zeros((1, 1, 8, 8), dtype=np.int64)
     levels[0, 0, 0, 0], levels[0, 0, 2, 1] = 3, -2
     table = np.full((8, 8), 10)
-    problem = model.make_problem(levels, table, mu=0.5, slack=0.25)
+    problem = model.make_problem(levels, table, DataTerm(mu=0.5, slack=0.25))
     # Every one of these is exact in binary floating point. The DC interval carries the level
     # shift, 8 x 128.
     assert problem.lower[0, 0, 0, 0] == 22.5 + 1024.0
@@ -46,7 +47,7 @@ def test_the_intervals_and_the_weights() -> None:
 def test_without_slack_the_intervals_are_exact() -> None:
     # (q - 1/2) Q is exact for integers of the sizes a file holds, and so are the intervals.
     levels = np.array([-2048, -1, 0, 1, 2047])[np.newaxis, :, np.newaxis, np.newaxis] * np.ones((1, 1, 8, 8), int)
-    problem = model.make_problem(levels, np.full((8, 8), 255), mu=1.0)
+    problem = model.make_problem(levels, np.full((8, 8), 255), DataTerm(mu=1.0))
     exact = (levels.astype(object) * 2 - 1) * 255
     exact[:, :, 0, 0] += 2 * 1024
     assert [float(value) / 2 for value in exact.ravel()] == problem.lower.ravel().tolist()
@@ -64,11 +65,47 @@ def test_without_slack_the_intervals_are_exact() -> None:
 )
 def test_make_problem_refuses(levels: Array, table: Array, mu: float, slack: float, match: str) -> None:
     with pytest.raises(ValueError, match=match):
-        model.make_problem(levels, table, mu=mu, slack=slack)
+        model.make_problem(levels, table, DataTerm(mu=mu, slack=slack))
 
 
-def test_the_centres_lie_within_their_intervals_exactly() -> None:
-    problem, _ = synthetic.problem(seed=1)
+@pytest.mark.parametrize(
+    ("options", "match"),
+    [
+        ({"dc_weight": -1.0}, "at least 0"),
+        ({"dc_weight": math.inf}, "finite"),
+        ({"dc_weight": math.nan}, "at least 0"),
+        ({"mu": math.inf}, "finite"),
+        ({"centres": "median"}, "mmse or midpoint"),
+    ],
+)
+def test_make_problem_refuses_the_options_of_g(options: dict[str, Any], match: str) -> None:
+    with pytest.raises(ValueError, match=match):
+        model.make_problem(np.zeros((1, 1, 8, 8)), np.ones((8, 8)), DataTerm(**options))
+    with pytest.raises(ValueError, match="Laplace scale"):
+        model.make_problem(np.zeros((1, 1, 8, 8)), np.ones((8, 8)), DataTerm(centres="midpoint"), scale=np.ones((8, 8)))
+
+
+def test_the_weight_of_dc_and_the_middles() -> None:
+    levels = np.zeros((1, 1, 8, 8), dtype=np.int64)
+    levels[0, 0, 0, 0], levels[0, 0, 2, 1] = 3, -2
+    table = np.full((8, 8), 10)
+    problem = model.make_problem(levels, table, DataTerm(mu=0.5, dc_weight=2.0, centres="midpoint"))
+    # mu / Q^2 rounds once, and doubling it is exact; the middles q Q are exact, and DC's has
+    # the level shift.
+    assert problem.weights[0, 0] == 2.0 * (0.5 / 100.0)
+    assert problem.weights[2, 1] == 0.5 / 100.0
+    assert problem.centres[0, 0, 0, 0] == 30.0 + 1024.0
+    assert problem.centres[0, 0, 2, 1] == -20.0
+    assert problem.centres[0, 0, 1, 1] == 0.0
+    # The MMSE centre of a level that is not 0 lies nearer 0 than the middle.
+    mmse = model.make_problem(levels, table, DataTerm(mu=0.5))
+    assert -20.0 < mmse.centres[0, 0, 2, 1] < -15.0
+    assert mmse.weights[0, 0] == 0.0
+
+
+@pytest.mark.parametrize("centres", ["mmse", "midpoint"])
+def test_the_centres_lie_within_their_intervals_exactly(centres: model.Centres) -> None:
+    problem, _ = synthetic.problem(seed=1, data=DataTerm(centres=centres))
     assert np.all(problem.lower <= problem.centres)
     assert np.all(problem.centres <= problem.upper)
 
@@ -118,9 +155,10 @@ def prox_objective(problem: model.Problem, c: Array, e: Array, tau: float) -> fl
     return 0.5 * float(np.sum((c - e) ** 2)) + tau * model.data_term(problem, c)
 
 
+@pytest.mark.parametrize("dc_weight", [0.0, 1.0])
 @pytest.mark.parametrize("tau", [0.01, 1.0, 1e4])
-def test_the_prox_minimizes_its_objective(tau: float) -> None:
-    problem, canvas = synthetic.problem(seed=3, mu=5.0)
+def test_the_prox_minimizes_its_objective(tau: float, dc_weight: float) -> None:
+    problem, canvas = synthetic.problem(seed=3, data=DataTerm(mu=5.0, dc_weight=dc_weight))
     rng = np.random.default_rng(21)
     e = dct.forward(canvas + rng.normal(0.0, 20.0, size=canvas.shape))
     c = model.prox(problem, e, tau)
@@ -148,9 +186,9 @@ def test_the_prox_minimizes_its_objective(tau: float) -> None:
     assert np.all(np.abs(residual[interior]) <= allowance[interior])
 
 
-@pytest.mark.parametrize("mu", [0.0, 2.0])
-def test_the_conjugate_is_the_largest_of_its_objective(mu: float) -> None:
-    problem, _ = synthetic.problem(rows=8, columns=8, seed=4, mu=mu)
+@pytest.mark.parametrize(("mu", "dc_weight"), [(0.0, 0.0), (2.0, 0.0), (2.0, 1.0)])
+def test_the_conjugate_is_the_largest_of_its_objective(mu: float, dc_weight: float) -> None:
+    problem, _ = synthetic.problem(rows=8, columns=8, seed=4, data=DataTerm(mu=mu, dc_weight=dc_weight))
     rng = np.random.default_rng(22)
     w = np.broadcast_to(problem.weights, problem.lower.shape)
     for _ in range(5):

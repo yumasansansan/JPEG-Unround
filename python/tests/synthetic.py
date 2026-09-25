@@ -6,7 +6,7 @@ import numpy as np
 import numpy.typing as npt
 
 from unround import dct
-from unround.model import Problem, make_problem
+from unround.model import DataTerm, Problem, make_problem
 
 type Array = npt.NDArray[np.float64]
 
@@ -42,9 +42,12 @@ def levels(canvas: Array, table: npt.ArrayLike) -> npt.NDArray[np.int64]:
 
 
 def problem(
-    rows: int = 16, columns: int = 24, seed: int = 1, *, scale: float = 2.0, mu: float = 1e-3
+    rows: int = 16, columns: int = 24, seed: int = 1, *, scale: float = 2.0, data: DataTerm | None = None
 ) -> tuple[Problem, Array]:
-    """A problem, and the canvas whose quantization it is, with the Annex K table times scale."""
+    """A problem, and the canvas whose quantization it is, with the Annex K table times scale.
+
+    data are the options of G, DataTerm() unless given.
+    """
     canvas = picture(rows, columns, seed)
     table = np.maximum(np.rint(ANNEX_K * scale), 1).astype(np.int64)
-    return make_problem(levels(canvas, table), table, mu=mu), canvas
+    return make_problem(levels(canvas, table), table, data), canvas

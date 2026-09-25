@@ -274,12 +274,11 @@ def decode_settings() -> Settings:
 
 def run_trial(trial: Trial) -> dict[str, Any]:
     """Runs a trial of the variants stage."""
-    from unround import jpegio  # noqa: PLC0415
-    from unround.model import make_problem  # noqa: PLC0415
+    from unround import decode, jpegio  # noqa: PLC0415
 
     settings = decode_settings()
     component = jpegio.read(trial.case.jpeg.read_bytes()).components[0]
-    problem = make_problem(component.coefficients, component.quant_table, mu=settings.mu)
+    problem = decode.component_problem(component, settings)
     original = common.read_original(trial.case.original)
     height, width = component.height, component.width
     started = time.perf_counter()

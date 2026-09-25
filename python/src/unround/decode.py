@@ -3,8 +3,9 @@
 """Decoding a greyscale JPEG file: its one component, reconstructed within its intervals.
 
 The component is reconstructed on its canvas of whole blocks by one of the
-methods, and the picture is cut from it. The methods are the MMSE decoder
-(docs/math.md, 2.3), TV and TGV by the primal-dual method (5), and TV by the
+methods, and the picture is cut from it. The methods are the decoder of the
+data term's centres, "mmse" (the MMSE decoder with the default centres,
+docs/math.md, 2.3), TV and TGV by the primal-dual method (5), and TV by the
 subgradient method of jpeg2png's kind (7), which is there to be compared with.
 Colour files, with chroma subsampling, are still to come.
 """
@@ -16,10 +17,10 @@ import numpy as np
 import numpy.typing as npt
 
 from unround import jpegio, pdhg, subgradient
-from unround.model import TGV, TV, Problem, make_problem
+from unround.model import TGV, TV, DataTerm, Problem, make_problem
 from unround.results import Result
 
-__all__ = ["Decoded", "Method", "Settings", "decode", "decode_component"]
+__all__ = ["Decoded", "Method", "Settings", "component_problem", "decode", "decode_component"]
 
 type Array = npt.NDArray[np.float64]
 type Method = Literal["mmse", "tv", "tgv", "subgradient"]
@@ -27,11 +28,14 @@ type Method = Literal["mmse", "tv", "tgv", "subgradient"]
 
 @dataclass(frozen=True, slots=True)
 class Settings:
-    """The method, the model's weights, and the solvers' options."""
+    """The method, the model, and the solvers' options.
+
+    data are the options of G (unround.model.DataTerm), tv and tgv the weights of the
+    models, and pdhg and subgradient the options of the solvers.
+    """
 
     method: Method = "tgv"
-    mu: float = 1e-3
-    slack: float = 0.0
+    data: DataTerm = field(default_factory=DataTerm)
     tv: TV = field(default_factory=TV)
     tgv: TGV = field(default_factory=TGV)
     pdhg: pdhg.Options = field(default_factory=pdhg.Options)
@@ -54,10 +58,16 @@ class Decoded:
     result: Result | None
 
 
+def component_problem(component: jpegio.Component, settings: Settings | None = None) -> Problem:
+    """The problem of one component, with the model of the settings."""
+    settings = Settings() if settings is None else settings
+    return make_problem(component.coefficients, component.quant_table, settings.data)
+
+
 def decode_component(component: jpegio.Component, settings: Settings | None = None) -> Decoded:
     """Reconstructs one component without chroma subsampling."""
     settings = Settings() if settings is None else settings
-    problem = make_problem(component.coefficients, component.quant_table, mu=settings.mu, slack=settings.slack)
+    problem = component_problem(component, settings)
     result: Result | None
     match settings.method:
         case "mmse":

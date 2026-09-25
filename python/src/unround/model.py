@@ -3,7 +3,7 @@
 """The model of one component without chroma subsampling (docs/math.md, 1.2, 4 and 6).
 
 A Problem holds what the file says about the component: the interval of every
-coefficient, the MMSE centres and the weights of the data term. G, the data term
+coefficient, and the centres and the weights of the data term. G, the data term
 with the quantization constraint, is separable in the coefficients, and so are
 its proximal map (prox) and its conjugate (conjugate). The objectives of TV and
 TGV, and the duality gaps that tell how far an iterate is from their least
@@ -19,8 +19,9 @@ for TGV, its vector field w; a dual point is the vector field p and, for TGV, th
 tensor field r.
 """
 
+import math
 from dataclasses import dataclass
-from typing import Final
+from typing import Final, Literal
 
 import numpy as np
 import numpy.typing as npt
@@ -32,6 +33,8 @@ __all__ = [
     "LEVEL_SHIFT_DC",
     "TGV",
     "TV",
+    "Centres",
+    "DataTerm",
     "Dual",
     "Primal",
     "Problem",
@@ -51,6 +54,8 @@ __all__ = [
 ]
 
 type Array = npt.NDArray[np.float64]
+type Centres = Literal["mmse", "midpoint"]
+"""The centres of the data term: the MMSE centres of the Laplace model, or the middles of the intervals."""
 
 _LEVEL_AXES: Final = 4  # block rows, block columns, v, u
 
@@ -62,11 +67,11 @@ LEVEL_SHIFT_DC: Final = 1024.0
 class Problem:
     """A component to reconstruct.
 
-    lower and upper are the ends of the coefficients' intervals, and centres their MMSE
-    centres, each of shape (rows, columns, 8, 8), for a canvas of samples that are not
-    level-shifted: those of DC include LEVEL_SHIFT_DC. steps are the quantization steps Q
-    and weights the weights of the data term, mu / Q^2 for AC and 0 for DC, each of shape
-    (8, 8).
+    lower and upper are the ends of the coefficients' intervals, and centres the centres
+    of the data term, each of shape (rows, columns, 8, 8), for a canvas of samples that are
+    not level-shifted: those of DC include LEVEL_SHIFT_DC. steps are the quantization steps
+    Q and weights the weights of the data term, each of shape (8, 8): mu / Q^2 for AC, and
+    that times the weight of DC (0 by default) for DC.
     """
 
     lower: Array
@@ -121,24 +126,47 @@ class Dual:
     r: Array | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class DataTerm:
+    """The options of G: the weights and the centres of the data term, and the intervals' slack.
+
+    mu weights the data term, and slack widens every interval by that many steps on each
+    side (docs/math.md, 1.2). The weight of an AC coefficient is mu / Q^2, and that of DC
+    dc_weight times mu / Q^2 (4.1). centres are the data term's: "mmse", the MMSE centres
+    of the Laplace model (2.2), or "midpoint", the middles of the intervals, q Q.
+    """
+
+    mu: float = 1e-3
+    slack: float = 0.0
+    dc_weight: float = 0.0
+    centres: Centres = "mmse"
+
+
 def make_problem(
     coefficients: npt.ArrayLike,
     quant_table: npt.ArrayLike,
+    data: DataTerm | None = None,
     *,
-    mu: float,
-    slack: float = 0.0,
     scale: npt.ArrayLike | None = None,
 ) -> Problem:
     """The problem of a component with these quantized levels and quantization table.
 
-    mu weights the data term, and slack widens every interval by that many steps on each
-    side (docs/math.md, 1.2). scale is the Laplace scale of each frequency, which
-    unround.laplace.scales() estimates unless it is given. The ends are
-    ((q - 1/2) - slack) Q and ((q + 1/2) + slack) Q, in that order, and those of DC and its
-    centre have LEVEL_SHIFT_DC added; without slack every one of them is exact.
+    data are the options of G, DataTerm() unless given. scale is the Laplace scale of each
+    frequency for the MMSE centres, which unround.laplace.scales() estimates unless it is
+    given. The ends are ((q - 1/2) - slack) Q and ((q + 1/2) + slack) Q, in that order, and
+    those of DC and its centre have LEVEL_SHIFT_DC added; without slack every one of them
+    is exact, and so is every middle.
     """
-    if not mu >= 0.0 or not slack >= 0.0:
-        message = f"mu and slack are at least 0, not {mu} and {slack}"
+    data = DataTerm() if data is None else data
+    mu, slack, dc_weight = data.mu, data.slack, data.dc_weight
+    if not (0.0 <= mu < math.inf and 0.0 <= slack < math.inf and 0.0 <= dc_weight < math.inf):
+        message = f"mu, slack and the weight of DC are at least 0 and finite, not {mu}, {slack} and {dc_weight}"
+        raise ValueError(message)
+    if data.centres not in {"mmse", "midpoint"}:
+        message = f"the centres are mmse or midpoint, not {data.centres!r}"
+        raise ValueError(message)
+    if data.centres == "midpoint" and scale is not None:
+        message = "a Laplace scale is for the MMSE centres, not the middles"
         raise ValueError(message)
     levels = np.asarray(coefficients, dtype=np.float64)
     steps = np.asarray(quant_table, dtype=np.float64)
@@ -150,10 +178,11 @@ def make_problem(
         message = "a quantization step is at least 1"
         raise ValueError(message)
     weights = mu / (steps * steps)
-    weights[0, 0] = 0.0
+    weights[0, 0] *= dc_weight
     lower = ((levels - 0.5) - slack) * steps
     upper = ((levels + 0.5) + slack) * steps
-    centres = laplace.centres(coefficients, quant_table, scale)
+    # The middles q Q are exact: |q| <= 2^15 and Q < 2^16.
+    centres = laplace.centres(coefficients, quant_table, scale) if data.centres == "mmse" else levels * steps
     for bound in (lower, upper, centres):
         bound[:, :, 0, 0] += LEVEL_SHIFT_DC
     return Problem(lower=lower, upper=upper, centres=centres, steps=steps, weights=weights)
@@ -183,7 +212,7 @@ def prox(problem: Problem, coefficients: Array, tau: float) -> Array:
 
 
 def data_term(problem: Problem, coefficients: Array) -> float:
-    """G at coefficients within their intervals: (mu/2) times the sum of (c - centre)^2 / Q^2 over AC."""
+    """G at coefficients within their intervals: half the sum of weight (c - centre)^2."""
     difference = coefficients - problem.centres
     return 0.5 * float(np.sum(problem.weights * difference * difference))
 

@@ -9,6 +9,10 @@ is the Python reference, for one component without chroma subsampling
 (`python/src/unround/`). Chroma subsampling and the coupling of colour
 components are still to be written here, before they are implemented.
 
+Every value this document gives as a default, of the model, of the steps of
+the solvers and of when they stop, is an option of the implementations: the
+defaults are what is used when nothing else is given.
+
 ## Arithmetic
 
 What is rational is computed exactly, and is the same to the last bit in every
@@ -193,13 +197,17 @@ The MAP estimate under the same model would be the end of the interval nearest
 
 The DC coefficient does not follow a Laplace distribution. Its centre is the
 centre of its interval, $q_0 Q_0 + 1024$, and the data term below leaves it
-out.
+out by default.
+
+The data term can take the middles of the intervals, $q_k Q_k$ (with 1024
+added on DC), as its centres instead. They are exact, and their decoder is the
+plain one, without rounding.
 
 ### 2.3 The MMSE decoder
 
 $x = D^\top \hat c$, with the DC centres as above, is a decoder of its own: the
 coefficients' conditional means. It costs one inverse DCT, lies in
-$\mathcal{C}$, and is the starting point of the solvers below.
+$\mathcal{C}$, and is the default starting point of the solvers below.
 
 ## 3. Finite differences
 
@@ -260,13 +268,18 @@ $$ \|K\|^2 \le \tfrac12 \bigl(17 + \sqrt{33}\bigr) \approx 11.37 < 12. $$
 
 ### 4.1 The data term and the constraint
 
-With $c = D x$, the weights $\omega_k = 1 / Q_k^2$ on AC coefficients and
-$\omega_k = 0$ on DC, and $\mu \ge 0$,
+With $c = D x$, $\mu \ge 0$, the weights $\omega_k = 1 / Q_k^2$ on AC
+coefficients and $\omega_k = \omega_{\mathrm{DC}} / Q_k^2$ on DC with
+$\omega_{\mathrm{DC}} \ge 0$, and the centres $\hat c_k$ (those of 2.2, or the
+middles of the intervals),
 
 $$ G(x) = \frac{\mu}{2} \sum_k \omega_k (c_k - \hat c_k)^2 + \iota_{[a, b]}(c), $$
 
 where $\iota$ is 0 on its set and $+\infty$ off it. $G$ is separable in the
-coefficients, and so are its proximal map and its conjugate.
+coefficients, and so are its proximal map and its conjugate. By default
+$\mu = 10^{-3}$, $\omega_{\mathrm{DC}} = 0$ (DC follows no Laplace model, and its
+centre is only the middle of its interval), the centres are the MMSE ones, and
+there is no slack.
 
 **Proximal map.** For $\tau > 0$ and $e = D v$,
 $\mathrm{prox}_{\tau G}(v) = D^\top \zeta$ with
@@ -282,7 +295,8 @@ $G^\ast(\xi) = \sum_k g_k^\ast(s_k)$ with, where $m_k = \mu \omega_k > 0$,
 $$ g_k^\ast(s) = s\, c^\ast - \frac{m_k}{2} (c^\ast - \hat c_k)^2, \qquad
    c^\ast = \mathrm{clip}(\hat c_k + s / m_k,\ a_k,\ b_k), $$
 
-and where $m_k = 0$ (DC, or $\mu = 0$), $g_k^\ast(s) = \max(s\, a_k,\ s\, b_k)$.
+and where $m_k = 0$ (DC with $\omega_{\mathrm{DC}} = 0$, or $\mu = 0$),
+$g_k^\ast(s) = \max(s\, a_k,\ s\, b_k)$.
 Both are finite everywhere, because the intervals are bounded.
 
 ### 4.2 Total variation
@@ -317,9 +331,9 @@ $$ \tilde z = \mathrm{prox}_{\tau G}\bigl(z^n - \tau K^\top y^n\bigr), \quad
 With $\sigma \tau \|K\|^2 < 1$ and $0 < \rho < 2$ the iterates converge to a
 saddle point (Condat, Theorem 3.1, with no smooth term). With $\rho = 1$ this is
 Chambolle and Pock's Algorithm 1, with the dual one step ahead: from $y^0 = 0$
-and an $x^0$ that $\mathrm{prox}_{\tau G}$ leaves as it is (the MMSE decoder's
-output, whose coefficients are the centres), its $\tilde z$ at step $n + 1$ is
-their $z$ at step $n$.
+and an $x^0$ that $\mathrm{prox}_{\tau G}$ leaves as it is (the default start,
+whose coefficients are the centres), its $\tilde z$ at step $n + 1$ is their $z$
+at step $n$.
 
 The proximal map of the indicator of a ball is the projection onto it, pixel
 by pixel: $y \mapsto y / \max(1, |y| / \alpha)$.
@@ -346,16 +360,19 @@ $$ \begin{aligned}
 with $\bar x = 2 \tilde x - x$ and $\bar w = 2 \tilde w - w$, then each of
 $x, w, p, r$ moves to $\rho$ times its tilde plus $1 - \rho$ times itself.
 
-**Steps.** With $L^2$ the bound of 3.3 (8 for TV, 11.37 for TGV) and a ratio
-$\kappa = \tau / \sigma$, the steps are $\tau = \sqrt{0.99\, \kappa} / L$ and
-$\sigma = \sqrt{0.99 / \kappa} / L$, so that $\sigma \tau L^2 = 0.99$.
+**Steps.** With $L^2$ a bound of $\|K\|^2$, a ratio $\kappa = \tau / \sigma$ and
+a product $\vartheta$ in $(0, 1)$, the steps are
+$\tau = \sqrt{\vartheta \kappa} / L$ and $\sigma = \sqrt{\vartheta / \kappa} / L$,
+so that $\sigma \tau L^2 = \vartheta$. By default $L^2$ is the bound of 3.3 (8 for
+TV, 11.37 for TGV) and $\vartheta = 0.99$; with an $L^2$ below $\|K\|^2$ the
+condition above need not hold, nor the convergence.
 
 **The ratio.** For the averages $Z^N, Y^N$ of the first $N$ iterates, Theorem 1
 of Chambolle and Pock bounds the gap at a saddle point $(z^\ast, y^\ast)$:
 
 $$ \mathcal{L}(Z^N, y^\ast) - \mathcal{L}(z^\ast, Y^N) \le \frac{1}{N}
    \Bigl(\frac{\|z^\ast - z^0\|^2}{2\tau} + \frac{\|y^\ast - y^0\|^2}{2\sigma}\Bigr)
-   = \frac{L}{2N\sqrt{0.99}} \Bigl(\frac{\|z^\ast - z^0\|^2}{\sqrt{\kappa}}
+   = \frac{L}{2N\sqrt{\vartheta}} \Bigl(\frac{\|z^\ast - z^0\|^2}{\sqrt{\kappa}}
    + \|y^\ast - y^0\|^2 \sqrt{\kappa}\Bigr), $$
 
 with $\mathcal{L}(z, y) = \langle K z, y \rangle + G(z) - F^\ast(y)$. The bound is
@@ -371,8 +388,10 @@ runs is 2 to 540 for TV and 150 to 2900 for TGV, while the ratios that bring the
 gap down fastest are 10 to 30 for TV and 3 to 10 for TGV. The default ratio
 (6.5) is the one measured to stop soonest.
 
-**Start.** $x$ is the MMSE decoder's output (2.3), $w = \nabla x$, and the
-dual variables are 0. (Starting $w$ at 0 instead puts it 3 to 10 times nearer
+**Start.** By default $x$ is the MMSE decoder's output (2.3), $w = \nabla x$, and
+the dual variables are 0. Any start can be given instead: its coefficients are
+clipped to their intervals, and its $p$ and $r$ projected onto their balls.
+(Starting $w$ at 0 puts it 3 to 10 times nearer
 the solution's $w$, which is small across the jumps of the picture, and divides
 the bound's $\kappa^\ast$ by 10 to 100. On two tuning files the gap then fell
 no faster with the ratios 300 to 3000, and with the default ratio 3 at most 15
@@ -448,7 +467,19 @@ $$ \mathcal{G}_B(x, w, p, r) = P(x, w) + G^\ast(\mathrm{div}\, p)
 It needs no change of the iterates, but only holds for a $\varrho$ at least as
 large as the solution's $w$, which is not known beforehand.
 
-### 6.4 What is compared with the tolerance
+### 6.4 When the solvers stop
+
+Every few iterations (ten by default) a solver takes the gap, and it stops at
+the first of these where one of the following holds, each tolerance of 0
+turning its test off; or else after the most iterations allowed (6.5).
+
+- The gap per sample is at most a tolerance $\varepsilon$ (by default that of 6.5).
+- The gap is at most $\varepsilon_{\mathrm{rel}} P(z)$, which bounds
+  $(P(z) - P^\ast) / P(z)$ by $\varepsilon_{\mathrm{rel}}$ ($P \ge 0$). Off by
+  default.
+- For TGV, the partial gap of 6.3 per sample is at most its own tolerance. It
+  bounds how far $P$ is from $P^\ast$ only if its radius $\varrho$ is at least the
+  solution's largest $|w|$. Off by default.
 
 The gaps are sums over the canvas. They are divided by its number of samples,
 so that the tolerance is in the units of the objective per sample and does not
@@ -456,8 +487,9 @@ depend on the size of the picture.
 
 A gap bounds how far the objective is above its least value, not how far the
 iterate is from the point where it is least. $P$ is strongly convex only in the
-AC coefficients, with the modulus $\mu \omega_k = \mu / Q_k^2$ (4.1): with $c^\ast$
-the least point, $0 \in \partial P(c^\ast)$ gives
+AC coefficients (and in DC where $\omega_{\mathrm{DC}} > 0$, which the bound below
+leaves out), with the modulus $\mu \omega_k = \mu / Q_k^2$ (4.1): with $c^\ast$ the
+least point, $0 \in \partial P(c^\ast)$ gives
 $P(c) - P^\ast \ge \frac{\mu}{2} \sum_{k\ \mathrm{AC}} \omega_k (c_k - c^\ast_k)^2$,
 and so a gap of $\varepsilon$ per sample bounds
 
@@ -523,7 +555,8 @@ dB in the 90th percentile and 0.014 dB at most.
 These are for $\alpha = 1$ (for TGV $\alpha_1 = 1$, with $\alpha_0 = 2 \alpha_1$).
 The dual variables are in units of $\alpha$ and the objective scales with it,
 so with another weight the ratio is divided by $\alpha^2$ and the tolerance
-multiplied by $\alpha$.
+multiplied by $\alpha$, unless that scaling is turned off. Neither applies to a
+ratio or a tolerance that is given.
 
 ## 7. A subgradient method of jpeg2png's kind
 
@@ -531,20 +564,23 @@ multiplied by $\alpha$.
 
 jpeg2png minimizes a non-smooth objective within $\mathcal{C}$ by normalized
 subgradient steps, a step length that falls as $1/\sqrt{n}$, and the
-extrapolation of FISTA. The same scheme, applied to the objective $P$ of 4.2:
+extrapolation of FISTA. The same scheme, applied to the objective $P$ of 4.2,
+with a step $\eta$ and a decay $\beta$:
 
 $$ \begin{aligned}
 g &= -\alpha \mathrm{div}\bigl(\nabla y / |\nabla y|\bigr) + D^\top \bigl(\mu\, \omega\, (D y - \hat c)\bigr)
    && (\text{0 where } \nabla y = 0), \\
-x^{n+1} &= P_{\mathcal{C}}\bigl(y^n - h_n\, g / \|g\|\bigr), \qquad h_n = \frac{\sqrt{N}/2}{\sqrt{1 + n}}, \\
+x^{n+1} &= P_{\mathcal{C}}\bigl(y^n - h_n\, g / \|g\|\bigr), \qquad h_n = \frac{\eta \sqrt{N}}{(1 + n)^\beta}, \\
 t_{n+1} &= \tfrac12 \bigl(1 + \sqrt{1 + 4 t_n^2}\bigr), \qquad
 y^{n+1} = x^{n+1} + \frac{t_n - 1}{t_{n+1}} \bigl(x^{n+1} - x^n\bigr),
 \end{aligned} $$
 
 from $y^0 = x^0$ and $t_0 = 1$, where $N$ is the number of samples, so that
-the first step moves a sample by half a grey level on average. $g$ is a
-subgradient of $P - \iota_{\mathcal{C}}$. The scheme has no convergence
-guarantee and no measure of how far it is from the least value.
+the first step moves a sample by $\eta$ grey levels on average (root mean
+square). By default $\eta = \beta = \tfrac12$ and the extrapolation is on;
+without it, $y^{n+1} = x^{n+1}$. $g$ is a subgradient of
+$P - \iota_{\mathcal{C}}$. The scheme has no convergence guarantee and no
+measure of how far it is from the least value.
 
 ## References
 

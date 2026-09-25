@@ -71,12 +71,12 @@ class Task:
 def run(task: Task) -> dict[str, Any]:
     """Decodes a file by a method, and measures the picture."""
     from unround import decode, jpegio, pdhg, subgradient  # noqa: PLC0415
-    from unround.model import Primal, make_problem  # noqa: PLC0415
+    from unround.model import Primal  # noqa: PLC0415
 
     settings = decode.Settings()
     data = task.case.jpeg.read_bytes()
     component = jpegio.read(data).components[0]
-    problem = make_problem(component.coefficients, component.quant_table, mu=settings.mu, slack=settings.slack)
+    problem = decode.component_problem(component, settings)
     original = common.read_original(task.case.original)
     height, width = component.height, component.width
     outcome: dict[str, Any] = {
@@ -121,11 +121,10 @@ def run(task: Task) -> dict[str, Any]:
 def timing(case: common.Case) -> dict[str, Any]:
     """The least time an iteration of each solver took, over a few runs without records."""
     from unround import decode, jpegio, pdhg, subgradient  # noqa: PLC0415
-    from unround.model import make_problem  # noqa: PLC0415
 
     settings = decode.Settings()
     component = jpegio.read(case.jpeg.read_bytes()).components[0]
-    problem = make_problem(component.coefficients, component.quant_table, mu=settings.mu, slack=settings.slack)
+    problem = decode.component_problem(component, settings)
     timed = dataclasses.replace(settings.pdhg, iterations=TIMED_ITERATIONS, tolerance=0.0, record_every=0)
     sub = subgradient.Options(iterations=TIMED_ITERATIONS, record_every=0)
     solvers: dict[str, Callable[[], Result]] = {
