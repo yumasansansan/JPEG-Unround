@@ -4,12 +4,11 @@
 //! The values of the records in the planes (`records`) against those of the natural
 //! layout (`frames`). Every term is computed by the same formula from the same values
 //! in both, so the terms agree to the last bit and only the order of their sums
-//! differs. A sum of `n` terms in the order of the natural layout rounds within
-//! `gamma(128 + 2 ceil(log2(n / 128)))` of their magnitudes, and one in the order of
-//! the planes within `gamma(ceil(W / 8) + 7 + 128 + 2 ceil(log2 runs))`, the lanes of a
-//! row's run of terms and then the runs' sums; with the few additions of the parts
-//! after them, `gamma(ceil(W / 8) + 300)` bounds each for any count of terms below
-//! 2^64, and the two differ by at most twice that times the sum of the terms'
+//! differs. Each order adds a run of terms in lanes and then the runs' sums in a
+//! [`jpeg_unround::exact::Sum`]: the planes runs of at most `W` terms, the natural layout
+//! the pixels one by one and the model's coefficients by block rows of at most `8 W`
+//! terms; `rounding::record_roundings` counts what a term goes through in either, and
+//! the two values differ by at most twice `gamma` of that times the sum of the terms'
 //! magnitudes, which the tests compute from the natural layout.
 
 mod support;
@@ -20,17 +19,33 @@ use jpeg_unround::model::{DataTerm, Tgv, Tv};
 use jpeg_unround::planar::Layout;
 use jpeg_unround::records::Values;
 use jpeg_unround::sweep::{TgvOutputs, TgvPoint, TgvSweep, TvOutputs, TvPoint, TvSweep};
-use support::rounding::gamma;
+use support::rounding::{self, gamma};
 use support::synthetic::{self, Numbers};
 
-/// Twice the bound of either order's rounding, per unit of the terms' magnitudes.
+/// Twice the bound of either order's rounding, per unit of the terms' magnitudes, with
+/// room for the rounding of the bound's own product.
 fn tolerance(layout: &Layout) -> f64 {
-    2.0 * gamma(layout.width.div_ceil(8) + 300)
+    let bound = gamma(rounding::record_roundings(layout.height, layout.width));
+    2.0 * bound / (1.0 - 2.0 * bound)
+}
+
+/// A bound of the exact sum of nonnegative terms from the sum computed of them one after
+/// another, `terms` at most.
+fn above(computed: f64, terms: usize) -> f64 {
+    computed * (1.0 + 2.0 * gamma(terms))
 }
 
 /// The sum of the magnitudes of the terms of `G*(xi)` bounded over the box of the
-/// radius, in the natural layout (`frames::conjugate`'s terms).
+/// radius, in the natural layout (`frames::conjugate`'s terms): at least the exact one,
+/// the sums of at most `2 C H W` terms and their products taken one after another.
 fn conjugate_magnitude(frame: &Frame, xi: &[f64], radius: f64) -> f64 {
+    above(
+        conjugate_terms(frame, xi, radius),
+        2 * frame.samples() + 2 * frame.channels().len(),
+    )
+}
+
+fn conjugate_terms(frame: &Frame, xi: &[f64], radius: f64) -> f64 {
     let plane = frame.plane();
     let mut total = 0.0;
     for (index, channel) in frame.channels().iter().enumerate() {

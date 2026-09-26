@@ -13,11 +13,13 @@
 //! of its magnitude. The 8-point transforms go by their even and odd halves
 //! (docs/math.md, 1.1): a sum or difference of two values, rounded once, and then a
 //! sum of four products; or two sums of four products, and their sum or difference,
-//! rounded once. Each output is then within `e1 |B| |x|` of the exact one,
-//! `e1 = (1 + U)^2 (1 + gamma(4)) - 1`, about 6U; and the block DCT, `(B X) B^T`,
-//! within `e1 (2 + e1)`, about 12U, times `|B| |X| |B|^T`, as is the inverse. The
-//! bounds below take 13U, which covers the terms of second order and the rounding
-//! of the bound's own computation.
+//! rounded once. Each output is then within `e1 |C| |x|` of the exact one, `C` the
+//! exact basis, `e1 = (1 + U)^2 (1 + gamma(4)) - 1 <= gamma(6)`; and the block DCT,
+//! `(B X) B^T`, within `e1 (2 + e1)`, about 12U, times `|C| |X| |C|^T`, as is the
+//! inverse. The bounds below take `gamma(6) (2 + gamma(6))` times the magnitudes
+//! computed with `|B|`, and a factor `1 + gamma(50)` for how far those may lie below
+//! the exact ones (`|C|` within `|B| / (1 - U)`, and two sums of eight nonnegative
+//! products, each within `gamma(8)`) and for the rounding of the bound's own product.
 
 use jpeg_unround::dct::{BASIS, BLOCK, BLOCK_SIZE, Block};
 
@@ -29,6 +31,25 @@ pub const U: f64 = 1.0 / 9_007_199_254_740_992.0;
 pub fn gamma(n: usize) -> f64 {
     let count = f64::from(u32::try_from(n).expect("a count of terms fits in u32"));
     count * U / (1.0 - count * U)
+}
+
+/// The rounding of the block DCT relative to its magnitudes, with the factor that
+/// makes the magnitudes computed in floating point bound it.
+fn relative() -> f64 {
+    gamma(6) * (2.0 + gamma(6)) * (1.0 + gamma(50))
+}
+
+/// A bound of the roundings that a term of a record's value goes through in either
+/// layout (docs/math.md, Arithmetic), on a canvas of `height` x `width`: a row of at most
+/// `8 W` terms in lanes (a block row of the model's sums, 64 terms a block),
+/// `W + 7` additions; the rows' or the pixels' [`jpeg_unround::exact::Sum`], of at most
+/// `H W` terms, `128 + 2 ceil(log2(H W / 128))`; and at most 16 more, of the channels,
+/// the components and the parts of the value.
+#[must_use]
+pub fn record_roundings(height: usize, width: usize) -> usize {
+    let blocks = (height * width).div_ceil(128).max(1);
+    let levels = usize::try_from(blocks.next_power_of_two().trailing_zeros()).expect("a count of levels");
+    width + 7 + 128 + 2 * levels + 16
 }
 
 fn absolute(block: &Block) -> Block {
@@ -72,13 +93,15 @@ pub fn inverse_magnitude(block: &Block) -> Block {
 /// A bound, coefficient by coefficient, of the rounding of the DCT of a block.
 #[must_use]
 pub fn forward_error(block: &Block) -> Block {
-    forward_magnitude(block).map(|row| row.map(|value| 13.0 * U * value))
+    let relative = relative();
+    forward_magnitude(block).map(|row| row.map(|value| relative * value))
 }
 
 /// A bound, sample by sample, of the rounding of the inverse DCT of a block.
 #[must_use]
 pub fn inverse_error(block: &Block) -> Block {
-    inverse_magnitude(block).map(|row| row.map(|value| 13.0 * U * value))
+    let relative = relative();
+    inverse_magnitude(block).map(|row| row.map(|value| relative * value))
 }
 
 /// A bound, coefficient by coefficient, of `|forward(inverse(c)) - c|` of a block:

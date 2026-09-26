@@ -634,10 +634,12 @@ fn tgv_starts_from_the_field_given() {
         ..Initial::default()
     };
     // The record adds the same terms as the objective in the order of the planes, whose
-    // rounding and the objective's are each within gamma(ceil(W / 8) + 300) of the sum of
-    // the terms, all of them at least 0 (tests/records.rs).
+    // rounding and the objective's are each within gamma of record_roundings of the sum of
+    // the terms, all of them at least 0 (tests/records.rs): at most the objective over
+    // 1 - gamma, and the room of 2 gamma for the rounding of the bound's product.
+    let roundings = gamma(rounding::record_roundings(frame.height(), frame.width()));
     let close = |value: f64, expected: f64| {
-        let bound = 2.0 * gamma(frame.width().div_ceil(8) + 300) * expected * 1.01;
+        let bound = 2.0 * roundings * expected / (1.0 - 2.0 * roundings);
         assert!(
             (value - expected).abs() <= bound,
             "{value} against {expected}, the bound {bound}"
@@ -653,7 +655,7 @@ fn tgv_starts_from_the_field_given() {
         .expect("the objective");
     close(default.history.primal[0], at_gradient);
     // The two starts differ by far more than the rounding.
-    assert!((at_zero - at_gradient).abs() > 1e6 * 2.0 * gamma(frame.width().div_ceil(8) + 300) * at_zero);
+    assert!((at_zero - at_gradient).abs() > 1e6 * 2.0 * roundings * at_zero);
     let short = Initial {
         w: Some(Vector::zeros(size - 1)),
         ..Initial::default()

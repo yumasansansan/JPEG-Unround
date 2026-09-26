@@ -7,7 +7,8 @@ This is the one statement of the model and of the algorithms, which the
 implementations follow. Each section says in which module it is implemented: a
 module of the Rust reference implementation (`rust/unround/src/`, the crate
 `jpeg-unround`), and one of the same name of the Python implementation
-(`python/src/unround/`), which the Rust one replaces.
+(`python/src/unround/`), which the Rust one replaces. Section 9 bounds how far two
+implementations may differ, which the conformance cases (`conformance/`) check.
 
 Every value this document gives as a default, of the model, of the steps of
 the solvers and of when they stop, is an option of the implementations: the
@@ -928,6 +929,251 @@ $1 / 1.772 = 250 / 443$ and $1 / 1.402 = 500 / 701$. The RGB result converted
 back is the solution to within rounding, and its coefficients are within their
 intervals to within rounding (the tests bound both).
 
+## 9. Agreement between implementations
+
+*Checked by the conformance cases, `conformance/cases/`: `conformance/generate.py`
+writes them from the Python implementation, and `conformance/bounds.py` computes
+their tolerances.*
+
+Implementations that compute this document's formulas, with the freedom that
+Arithmetic leaves them, differ only by rounding. A conformance case is a quantized
+picture (one component, or three in 4:2:0, 4:2:2 or 4:4:4, in YCbCr or in RGB) and
+the options of its reconstruction, with what the Python implementation, the
+reference, made of it. An implementation reproduces the case when what is rational
+agrees to the last bit and the rest lies within the case's tolerances, which bound
+the rounding of both implementations: of the reference's, from the magnitudes of
+the values it computed, which the case keeps; and of any implementation that
+computes each value with the roundings counted below, from the same magnitudes.
+
+Here $u = 2^{-53}$ and $\gamma_k = k u / (1 - k u)$, the relative bound of $k$
+roundings: a sum of $k + 1$ terms, computed in any order, with its products fused
+or not, lies within $\gamma_k$ times the sum of its terms' magnitudes of its value
+(Higham). Norms are Euclidean, over every entry of a field, a tensor's off-diagonal
+entry counted twice (3.2); a component's samples and coefficients count $n_c$
+times, as many as the samples of the canvas that each stands for (1.3), so that
+their norms are those of the canvas.
+
+### 9.1 The iterations' metric
+
+Write $s = (z, y)$ for a state of the method of 5, $z = x$ and $y = p$ for TV,
+$z = (x, w)$ and $y = (p, r)$ for TGV; $T$ for the map that takes a state to its
+tilde point, and $T_\rho = \rho T + (1 - \rho) I$ for an iteration. Let $\eta$ be
+$\sigma \tau$ times the bound of $\|K\|^2$ of 3.3 (8, or $\tfrac12 (17 + \sqrt{33})$
+for TGV, times $\max_c \gamma_c^2$): the product $\vartheta$ of 5, to the rounding
+of the steps, where $L^2$ is that bound, as it is by default. The cases compute it
+from their steps exactly, and round it up. With $\eta < 1$,
+
+$$ M = \begin{pmatrix} I/\tau & -K^\top \\ -K & I/\sigma \end{pmatrix} $$
+
+is positive definite, and the tilde point solves $0 \in B(Ts) + M(Ts - s)$ for the
+maximal monotone $B = \begin{pmatrix} \partial G & K^\top \\ -K & \partial F^\ast \end{pmatrix}$,
+so that $T = (M + B)^{-1} M$ is firmly nonexpansive in the norm
+$\|s\|_M^2 = \langle s, M s \rangle$ (He and Yuan; Condat), and $T_\rho$, for
+$0 < \rho < 2$, nonexpansive.
+
+With $a = \|z\| / \sqrt\tau$ and $b = \|y\| / \sqrt\sigma$,
+$|2 \langle K z, y \rangle| \le 2 \sqrt\eta\, a b$, so
+$\|(z, y)\|_M^2 \le a^2 + b^2 + 2 \sqrt\eta\, a b$. The least of
+$\|(z, y)\|_M^2$ over $y$ for a given $z$ is at $y = \sigma K z$, where it is
+$\|z\|^2 / \tau - \sigma \|K z\|^2 \ge (1 - \eta) \|z\|^2 / \tau$; and alike
+over $z$. So
+
+$$ \|z\|^2 \le \frac{\tau\, \|(z, y)\|_M^2}{1 - \eta}, \qquad
+   \|y\|^2 \le \frac{\sigma\, \|(z, y)\|_M^2}{1 - \eta}. $$
+
+Two implementations compute $\hat s_{n+1} = T_\rho(\hat s_n) + e_n$, each with
+its own local errors $e_n$ (9.3). As $T_\rho$ is nonexpansive, the distance of
+their states, $E_n = \|\hat s^A_n - \hat s^R_n\|_M$, grows at each iteration by at
+most the local errors of both; and that of the tilde points of iteration $n$,
+computed from the states after $n - 1$, is at most $F_n = E_{n-1}$ plus the tilde
+points' local errors:
+
+$$ E_n \le E_0 + \sum_{k < n} \bigl(\|e^A_k\|_M + \|e^R_k\|_M\bigr), \qquad
+   \|\tilde x^A_n - \tilde x^R_n\|^2 + \|\tilde w^A_n - \tilde w^R_n\|^2
+   \le \frac{\tau F_n^2}{1 - \eta}. $$
+
+The canvas after the last iteration is compared within this bound. It grows with
+the iterations linearly, as rounding errors that all fell the same way would, its
+local errors are those of the worst of rounding, and the last conversion
+multiplies it by $1 / \sqrt{1 - \eta}$, 10 for the default product: on the cases,
+the tolerance after 40 to 200 iterations is $4 \times 10^4$ to $3 \times 10^5$ times
+the distance measured between the Rust and the Python implementations. One
+iteration is compared more closely.
+
+### 9.2 What agrees exactly, and the start
+
+What is rational is the same in every implementation (Arithmetic), and the cases
+compare it to the last bit: the ends of the intervals; the weights of the data
+term, $\mu \omega_k$, with $\mu$ given or following the quantization with the
+power 1 (4.1); and the steps $\tau = \sqrt{\kappa \vartheta / L^2}$ and
+$\sigma = \sqrt{\vartheta / (\kappa L^2)}$, each computed in that order, with
+correctly rounded operations, from the same ratio, product and $L^2$.
+
+The MMSE centres (2.2) take logarithms and exponentials, and differ. An
+implementation's scale lies within $16u$ of $\beta^\ast$, relatively, and its
+$\delta / Q$ within $16u$ of the exact value at the $\rho$ it is given (its tests
+check both against references of 60 digits); given its scale, its centre then lies
+within $(2|q| + 17)\, u Q$ of the mean of the bin at that scale, from the rounding
+of $\rho = Q / \beta$, of $|q| - \delta / Q$ and of the product with $Q$. The
+scale's own error moves $\rho$ by $16u$ of it, relatively, and $\delta / Q$ by at
+most $16u \sup_\rho \rho\, \delta'(\rho)$, where $\rho\, \delta'(\rho)$ is at most
+0.1743 (at $\rho \approx 3.82$): by less than $3u$. A conforming implementation's
+centres are therefore within $(2|q| + 20)\, u Q$ of the exact means of their bins,
+which the cases hold in decimals of 60 digits, and which they compare the centres
+with; the centres of DC, of the level 0 and the middles are exact. The
+reference's centres enter the bounds by their distances from the exact means,
+computed exactly.
+
+The start is $x^0 = \nu_c^{-1} A_c^\top \mathrm{clip}(\hat c)$ (5), and for TGV
+$w^0 = \nabla x^0$. The two implementations' starts differ by at most
+
+$$ \|x^{0,A} - x^{0,R}\| \le \sum_{I = A, R} \Bigl( \epsilon_I\,
+   \bigl\| |C|^\top\, |\mathrm{clip}(\hat c)|\, |C| \bigr\|
+   + \bigl\| \hat c^I - \hat c^\ast \bigr\| \Bigr), $$
+
+with $\epsilon_I$ the implementation's bound of the inverse DCT (9.3), $\hat c^\ast$
+the exact means and the norms over every block of every component; $\nabla$ adds
+$\sqrt 8$ times that, and the rounding of its differences, $u \|\nabla x^0\|$. The
+decoder of the centres (2.3) is compared within this bound.
+
+### 9.3 One iteration
+
+Each value of an iteration is computed with at most the roundings counted here,
+in any order, with products fused with the sums that take them or not. The local
+error of a value is its distance from what the exact map gives from the same
+computed input. With $S_f$ the sum of the magnitudes of the terms of $f$ at a
+sample, and $n$ the samples of a cell:
+
+- $v = x + \tau \gamma\, \mathrm{div}\, p$: within $u |x| + \gamma_6\, \tau\gamma\, S_{\mathrm{div}\, p}$
+  (three roundings in the divergence, one in each product and one in the sum).
+- The means $\bar v$ of the cells: within $\gamma_{n-1}$ times the means of $|v|$.
+- The DCT of a block $X$: within $\epsilon\, |C|\, |X|\, |C|^\top$, and the
+  inverse within $\epsilon\, |C|^\top |Z|\, |C|$. By the even and odd halves of
+  1.1, $\epsilon_A = \gamma_6 (2 + \gamma_6)$; as products with the basis whose
+  eight terms are added in any order, as the reference computes them,
+  $\epsilon_R = \gamma_9 (2 + \gamma_9)$, the basis within $u$.
+- The proximal map of a coefficient (4.1), with $t = (\tau / n)\, \mu\omega$ and,
+  where the slack has a cost, the shrink $h = (\tau / n)\, \lambda / (1 + t)$:
+  within $\gamma_8\, \phi$, $\phi = (|e| + t |\hat c|) / (1 + t) + h$; the
+  centre's own error adds $t\, |\hat c - \hat c^\ast| / (1 + t)$.
+- Where cells have several samples, the change $D^\top \zeta - \bar v$ and its sum
+  with $v$: within $u\, (|D^\top \zeta - \bar v| + |\tilde x|)$.
+
+The proximal map of $G$ is 1-Lipschitz, and so is its map of the coefficients from
+the means, so that the coefficients $\zeta$ lie within the error of $v$ and
+
+$$ \epsilon\, \| |C|\, |\bar v|\, |C|^\top \| + \gamma_8 \|\phi\|
+   + \Bigl\| \frac{t\, |\hat c - \hat c^\ast|}{1 + t} \Bigr\| + 2 \gamma_{n-1} \|\overline{|v|}\| $$
+
+of the exact map's, and $\tilde x$ within that, $\epsilon\, \| |C|^\top |\zeta|\, |C| \|$
+and $u$ times the norm of the magnitudes of the last item (the means' error counts
+twice: through the map, and in the change). For TV, $\tilde p$ then lies within
+
+$$ 2 \sigma\gamma \sqrt 8\, e_{\tilde x} + \sqrt 8\, u\, \|\sigma\gamma\, |\bar x|\|
+   + u\, \|a\| + \gamma_3\, \|\sigma\gamma\, |\nabla \bar x|\| + \gamma_{k+4}\, \|\tilde p\| $$
+
+of its exact value, with $\bar x = 2 \tilde x - x$ and $a$ the ascent before its
+projection: $\tilde x$'s error through the gradient ($\|\nabla\| \le \sqrt 8$),
+the rounding of $\bar x$ and of the sum with $p$, that of the difference and the
+two products, and that of the projection onto a ball whose squared norm adds $k$
+terms ($2C$ coupled, 2 apart): the norm, its quotient by the radius, and the
+entries' quotients. For TGV, $\tilde w = w + \tau\gamma (p + \mathrm{div}_2 r)$
+lies within $u |w| + \gamma_7\, \tau\gamma\, S_{p + \mathrm{div}_2 r}$;
+
+$$ e_{\tilde p} \le \sigma\gamma\, (2 \sqrt 8\, e_{\tilde x} + 2 e_{\tilde w})
+   + \sqrt 8\, u\, \|\sigma\gamma |\bar x|\| + u\, \|\sigma\gamma |\bar w|\|
+   + \gamma_4\, \|\sigma\gamma\, (|\nabla \bar x| + |\bar w|)\| + u\, \|a\| + \gamma_{k+4}\, \|\tilde p\|, $$
+
+$$ e_{\tilde r} \le 2 \sigma\gamma \sqrt 8\, e_{\tilde w} + \sqrt 8\, u\, \|\sigma\gamma |\bar w|\|
+   + \gamma_5\, \|\sigma\gamma\, S_{\mathcal E \bar w}\| + u\, \|b\| + \gamma_{k'+4}\, \|\tilde r\|, $$
+
+with $\|\mathcal E\| \le \sqrt 8$, $b$ the ascent of $r$ and $k'$ the terms of a
+tensor's squared norm ($3C$ coupled, 3 apart). The relaxed state adds
+$\gamma_2 (\rho |\tilde s| + |1 - \rho|\, |s|)$ to $\rho$ times the tilde point's
+error. By 9.1 these give the local errors in the metric, and the tilde points' in
+it. $\gamma$ is the largest channel weight where a bound does not keep the
+channels' own.
+
+The norms above are those of the reference's values, which the case keeps for
+every iteration. An implementation under test computes from values of its own,
+within the distances bounded here of the reference's, and its bounds are those
+norms at its values. Each norm is that of a map of nonnegative weights, of norm at
+most 8 (the DCT's, $|C| \otimes |C|$), $\tau\gamma (1 + 2\sqrt 2)$ or
+$\sigma\gamma \sqrt 8$ (the terms of the differences), applied to the magnitudes of
+a field that moves by at most $3 + \tau\gamma\sqrt 8$ (the input of the proximal
+map and the change it puts), $3 \sqrt 8 + 3$ (the extrapolations and their
+gradients), $1 + \sigma\gamma (3\sqrt 8 + 3)$ (the ascents) or $\rho + |1 - \rho|$
+(the relaxed states) times the largest distance of the states, the tilde points
+and the coefficients. The cases require that distance to be at most $10^{-3}$,
+which every case's bounds confirm (they give at most $10^{-5}$), and the product of
+the two factors to be at most $10^3$ (it is at most 205): the implementation's
+norms lie within 1 of the reference's, which its bounds add.
+
+**One iteration from a state given.** Where the method is unrelaxed and no sample
+is free, the state after an iteration, $(D^\top \zeta, \tilde p)$ and for TGV
+$(\tilde w, \tilde r)$, is given by its coefficients and its fields, as a start
+(5). A case of one iteration gives the reference's state after 30 as the start,
+and compares the next tilde point without the metric: the two starts differ by at
+most $(\epsilon_A + \epsilon_R)\, \| |C|^\top |\zeta|\, |C| \|$ in $x$,
+and by $2 \gamma_{k+4} \|p\|$ in $p$ and $2 \gamma_{k'+4} \|r\|$ in $r$,
+projected again; $v$ by the first and $\tau\gamma\sqrt 8$ times the second; and
+$\tilde x$ by that and the two implementations' errors of $\tilde x$. On the
+cases the tolerance is 1.2 to $1.5 \times 10^{-10}$, a five-thousandth of a
+hundred iterations', and a hundred times the distance measured.
+
+### 9.4 The records
+
+The primal value is Lipschitz in the canvas and TGV's field. With $N$ the pixel
+norms that it adds (the pixels coupled, every channel's apart), the constant is
+$\alpha \sqrt N\, \gamma \sqrt 8$ for TV, and $(3 \alpha_1 + \sqrt 8\, \alpha_0)
+\sqrt N\, \gamma$ for TGV in $(x, w)$ jointly ($\sqrt 8\, a + b \le 3 \sqrt{a^2 + b^2}$).
+The data term is Lipschitz in the coefficients with
+$\|\mu\omega\, |\zeta - \hat c| + \lambda\| + \max(\mu\omega)\, \|\Delta\zeta\|$,
+in their plain norm, which is at most the one of this section; they move by at
+most $v$'s distance, $(1 + \sqrt\eta) \sqrt{\tau / (1 - \eta)}$ times the states',
+and the two implementations' errors of the coefficients. In the centres it is
+Lipschitz with $\|\mu\omega\, |\zeta - \hat c|\| + \max(\mu\omega)\, \|\Delta\hat c\|$.
+A computed primal value is a sum of terms of at least 0, within $\gamma_m$ of its
+value, with $m$ counting its terms and the roundings of each; the two values lie
+within 1 of each other, as their tolerance allows. The primal value of every
+record is compared within these bounds.
+
+Where no sample is free, the gap is certified (6.1, 6.2): each dual value is at
+most the least value, and so at most the other implementation's primal value. The
+cases check this, allowing the rounding of both values: that of the primal values
+above, and that of a dual value, $\gamma_m$ of the magnitudes of its terms and,
+through the DCT of the field $\xi$ whose conjugate it takes,
+$(\epsilon + \gamma_j) \sum_k \max(|a_k|, |b_k|)\, (|C|\, S_\xi\, |C|^\top)_k$,
+with $j$ the roundings of $\xi$. For the reference these are its own magnitudes.
+For an implementation under test, whose $\xi$ may lie anywhere its dual field's
+balls allow, they are bounded for any such field: a term $|s\, c^\ast|$ by
+$|s| \max(|a|, |b|)$ and the rest by $\tfrac12 \mu\omega\, (b - a)^2 + \lambda (b - a)$,
+with $\|s\| \le \|\xi\| \le \gamma \sqrt 8\, \alpha \sqrt N$ ($\alpha_1$ for TGV,
+whose $\tilde p$ lies in its balls), $\| |C|\, S_\xi\, |C|^\top \| \le 8 \|S_\xi\|$, and
+$\|S_\xi\| \le 2 \sqrt 2\, \gamma\, \alpha \sqrt N$ for TV and
+$8 \gamma\, \alpha_0 \sqrt N$ for TGV. For TV the cases also compare the gaps:
+the dual value is Lipschitz in $p$ with $\gamma \sqrt 8\, \|\max(|a|, |b|)\|$, and
+in the centres with $\|\mu\omega\, (b - a)\|$. TGV's dual value, through the
+scaling $\theta$, a largest value over the pixels, has no such constant of the
+size of these.
+
+### 9.5 Where the method stops
+
+A case that stops at a tolerance has one chosen between the gaps of two records,
+so that the gaps of any two conforming implementations, within the bound of their
+difference (9.4), lie on the same sides of it: the gap of every record before the
+stop above the tolerance by more than that bound, and that of the stop below it,
+with 2 per cent to spare. Every implementation stops at the same record, and the
+case compares the iterations exactly.
+
+### 9.6 The subgradient method
+
+The subgradient method divides by the norms of the gradient and of its direction
+(7), which nothing bounds from below: its iterations are not Lipschitz, and no
+bound of their rounding follows. Its case is a regression check, with tolerances
+more than two hundred times the distances measured between the Rust and the
+Python implementations on Windows (x86-64).
+
 ## References
 
 - K. Bredies, K. Kunisch, T. Pock. Total generalized variation. SIAM Journal on
@@ -943,6 +1189,11 @@ intervals to within rounding (the tests bound both).
 - L. Condat. A primal-dual splitting method for convex optimization involving
   Lipschitzian, proximable and linear composite terms. Journal of Optimization
   Theory and Applications 158, 2013.
+- B. He, X. Yuan. Convergence analysis of primal-dual algorithms for a saddle-point
+  problem: from contraction perspective. SIAM Journal on Imaging Sciences 5(1),
+  2012.
+- N. J. Higham. Accuracy and Stability of Numerical Algorithms, 2nd edition.
+  SIAM, 2002.
 - T. Pock, A. Chambolle. Diagonal preconditioning for first order primal-dual
   algorithms in convex optimization. ICCV, 2011.
 - T. Goldstein, M. Li, X. Yuan. Adaptive primal-dual splitting methods for

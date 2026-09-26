@@ -349,3 +349,35 @@ mod tests {
         assert!(tiny.scaled(-1).add(&tiny.scaled(-1)).equals(&tiny));
     }
 }
+
+/// An exact value, as the pair of doubles `hi:lo` that holds it: `hi` the double nearest to
+/// it and `lo` the double nearest to what remains, so that `hi + lo` is within about
+/// 2^-106 of it (conformance/references.py and conformance/generate.py write them).
+#[derive(Debug, Clone, Copy)]
+pub struct Exact {
+    /// The double nearest to the value.
+    pub high: f64,
+    /// The double nearest to what remains.
+    pub low: f64,
+}
+
+impl Exact {
+    /// The pair written `hi:lo`.
+    #[must_use]
+    pub fn parse(text: &str) -> Self {
+        let (high, low) = text.split_once(':').expect("a pair hi:lo");
+        Self {
+            high: high.parse().expect("a double"),
+            low: low.parse().expect("a double"),
+        }
+    }
+
+    /// Whether `value` is within `bound` of it, in exact arithmetic, with 2^-100 of it for
+    /// the pair's own rounding.
+    #[must_use]
+    pub fn within(self, value: f64, bound: &Dyadic) -> bool {
+        let exact = Dyadic::from_f64(self.high).add(&Dyadic::from_f64(self.low));
+        let slack = Dyadic::from_f64(self.high).abs().scaled(-100);
+        Dyadic::from_f64(value).sub(&exact).abs().at_most(&bound.add(&slack))
+    }
+}

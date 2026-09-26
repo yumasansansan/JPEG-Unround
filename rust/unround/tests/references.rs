@@ -13,7 +13,7 @@ mod support;
 
 use jpeg_unround::dct::{self, BASIS, BLOCK, BLOCK_SIZE, Block};
 use jpeg_unround::laplace;
-use support::exact::Dyadic;
+use support::exact::{Dyadic, Exact};
 use support::rounding::{self, U};
 
 const BASIS_FILE: &str = include_str!("../../../conformance/references/basis.txt");
@@ -21,31 +21,6 @@ const DCT_FILE: &str = include_str!("../../../conformance/references/dct.txt");
 const SCALE_FILE: &str = include_str!("../../../conformance/references/scale.txt");
 const SHRINKAGE_FILE: &str = include_str!("../../../conformance/references/shrinkage.txt");
 const CENTRES_FILE: &str = include_str!("../../../conformance/references/centres.txt");
-
-/// An exact value, as the pair of doubles that holds it.
-#[derive(Debug, Clone, Copy)]
-struct Exact {
-    high: f64,
-    low: f64,
-}
-
-impl Exact {
-    fn parse(text: &str) -> Self {
-        let (high, low) = text.split_once(':').expect("a pair hi:lo");
-        Self {
-            high: high.parse().expect("a double"),
-            low: low.parse().expect("a double"),
-        }
-    }
-
-    /// Whether `value` is within `bound` of it, in exact arithmetic, with 2^-100 of it for
-    /// the pair's own rounding.
-    fn within(self, value: f64, bound: &Dyadic) -> bool {
-        let exact = Dyadic::from_f64(self.high).add(&Dyadic::from_f64(self.low));
-        let slack = Dyadic::from_f64(self.high).abs().scaled(-100);
-        Dyadic::from_f64(value).sub(&exact).abs().at_most(&bound.add(&slack))
-    }
-}
 
 fn lines(file: &str) -> impl Iterator<Item = Vec<&str>> {
     file.lines()
