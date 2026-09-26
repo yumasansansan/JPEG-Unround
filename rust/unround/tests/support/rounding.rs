@@ -10,11 +10,14 @@
 //! Accuracy and Stability of Numerical Algorithms, 2nd ed., sections 3.1 and 4.2).
 //!
 //! Every entry of the DCT's basis is the double nearest to the exact one, within `U`
-//! of its magnitude. A product `B X` of the basis and a block is then within
-//! `e1 |B| |X|` of the exact one, `e1 = gamma(8) (1 + U) + U`, about 9U; and the
-//! block DCT, `(B X) B^T`, within `gamma(8) (1 + e1) (1 + U) + U (1 + e1) + e1`,
-//! about 18U, times `|B| |X| |B|^T`. The bounds below take 19U, which covers the
-//! terms of second order and the rounding of the bound's own computation.
+//! of its magnitude. The 8-point transforms go by their even and odd halves
+//! (docs/math.md, 1.1): a sum or difference of two values, rounded once, and then a
+//! sum of four products; or two sums of four products, and their sum or difference,
+//! rounded once. Each output is then within `e1 |B| |x|` of the exact one,
+//! `e1 = (1 + U)^2 (1 + gamma(4)) - 1`, about 6U; and the block DCT, `(B X) B^T`,
+//! within `e1 (2 + e1)`, about 12U, times `|B| |X| |B|^T`, as is the inverse. The
+//! bounds below take 13U, which covers the terms of second order and the rounding
+//! of the bound's own computation.
 
 use jpeg_unround::dct::{BASIS, BLOCK, BLOCK_SIZE, Block};
 
@@ -69,13 +72,13 @@ pub fn inverse_magnitude(block: &Block) -> Block {
 /// A bound, coefficient by coefficient, of the rounding of the DCT of a block.
 #[must_use]
 pub fn forward_error(block: &Block) -> Block {
-    forward_magnitude(block).map(|row| row.map(|value| 19.0 * U * value))
+    forward_magnitude(block).map(|row| row.map(|value| 13.0 * U * value))
 }
 
 /// A bound, sample by sample, of the rounding of the inverse DCT of a block.
 #[must_use]
 pub fn inverse_error(block: &Block) -> Block {
-    inverse_magnitude(block).map(|row| row.map(|value| 19.0 * U * value))
+    inverse_magnitude(block).map(|row| row.map(|value| 13.0 * U * value))
 }
 
 /// A bound, coefficient by coefficient, of `|forward(inverse(c)) - c|` of a block:

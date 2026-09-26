@@ -64,20 +64,26 @@ pub fn subgradient(frame: &Frame, weights: &Tv, canvas: &[f64]) -> Vec<f64> {
     let problem = frame.channels()[0].problem();
     let (mut across, mut down) = (vec![0.0; size], vec![0.0; size]);
     operators::grad(canvas, shape, &mut across, &mut down);
+    // The gradient over its norm, 0 where it is 0: both chosen, not branched to.
     for (x, y) in across.iter_mut().zip(&mut down) {
         let norm = vector_square(*x, *y).sqrt();
-        if norm > 0.0 {
-            *x /= norm;
-            *y /= norm;
-        } else {
-            (*x, *y) = (0.0, 0.0);
-        }
+        let positive = norm > 0.0;
+        *x = if positive { *x / norm } else { 0.0 };
+        *y = if positive { *y / norm } else { 0.0 };
     }
     let mut divergence = vec![0.0; size];
     operators::div(&across, &down, shape, &mut divergence);
     let mut coefficients = dct::forward(canvas, shape.height, shape.width);
-    for (index, (value, &centre)) in coefficients.iter_mut().zip(problem.centres()).enumerate() {
-        *value = problem.weights()[index % BLOCK_SIZE] * (*value - centre);
+    let frequencies = problem.weights();
+    for (values, centres) in coefficients
+        .as_chunks_mut::<BLOCK_SIZE>()
+        .0
+        .iter_mut()
+        .zip(problem.centres().as_chunks::<BLOCK_SIZE>().0)
+    {
+        for ((value, &centre), &weight) in values.iter_mut().zip(centres).zip(frequencies) {
+            *value = weight * (*value - centre);
+        }
     }
     let data = dct::inverse(&coefficients, problem.rows(), problem.columns());
     divergence
@@ -157,7 +163,12 @@ pub fn solve_tv(
     while iteration < options.iterations {
         recorder.resume();
         let direction = subgradient(frame, weights, &extrapolated);
-        let length = exact::sum(direction.iter().map(|&along| along * along)).sqrt();
+        // The squares of each row in lanes, and the rows' sums in a Sum.
+        let mut squares = exact::Sum::new();
+        for row in direction.chunks(shape.width) {
+            squares.add(exact::lanes_by(row, |along| along * along));
+        }
+        let length = squares.total().sqrt();
         if length == 0.0 {
             recorder.pause();
             stop = Stop::Stationary;
@@ -194,6 +205,8 @@ pub fn solve_tv(
             recorder.record(iteration, objective, f64::NEG_INFINITY, f64::NAN, f64::NAN);
             if let Some(observe) = observer.as_deref_mut() {
                 let record = Record {
+                    height: frame.height(),
+                    width: frame.width(),
                     iteration,
                     gap: f64::INFINITY,
                     primal: objective,

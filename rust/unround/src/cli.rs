@@ -476,6 +476,167 @@ fn settings(reader: &mut Reader<'_>) -> Settings {
     settings
 }
 
+/// The options of the command line that are not settings: what the program writes,
+/// and where.
+const OUTPUT_OPTIONS: &[&str] = &[
+    "format",
+    "bits",
+    "ycbcr",
+    "overwrite",
+    "report",
+    "verbose",
+    "quiet",
+    "version",
+    "help",
+];
+
+/// The settings of options given by name as the command line takes them, without
+/// files and without the options of the output: the settings that the library, the C
+/// interface and the Python package take, under the command line's names.
+///
+/// # Errors
+///
+/// Every option that is refused, one message each.
+pub fn settings_of(options: Vec<OsString>) -> Result<Settings, Vec<String>> {
+    let mut errors = Vec::new();
+    let given = split(options, &mut errors);
+    for name in given.values.keys().chain(given.flags.iter()) {
+        if OUTPUT_OPTIONS.contains(&name.as_str()) {
+            errors.push(format!("--{name} is an option of the command line, not a setting"));
+        }
+    }
+    if !given.positional.is_empty() {
+        errors.push("settings are options alone, without files".into());
+    }
+    let mut reader = Reader {
+        given: &given,
+        errors: &mut errors,
+    };
+    let settings = settings(&mut reader);
+    if errors.is_empty() { Ok(settings) } else { Err(errors) }
+}
+
+/// A number as the options give it: the shortest decimal that reads back as the same
+/// double.
+fn decimal(value: f64) -> String {
+    format!("{value:?}")
+}
+
+/// An option of the data terms, and its value of one term.
+type Field<'a> = (&'a str, &'a dyn Fn(&DataTerm) -> String);
+
+/// One value of the data terms, where every component has it, or a list of one value
+/// for each; nothing for no data terms.
+fn listed(terms: &[DataTerm], value: impl Fn(&DataTerm) -> String) -> Option<String> {
+    let values: Vec<String> = terms.iter().map(value).collect();
+    let first = values.first()?;
+    Some(if values.iter().all(|other| other == first) {
+        first.clone()
+    } else {
+        values.join(",")
+    })
+}
+
+/// The options that give the settings, as [`settings_of`] takes them: every value of
+/// the settings, `--name=value` or `--flag`, each number as the shortest decimal that
+/// reads back as the same double. The weights of the channels, and whether they are
+/// coupled, are one option: the method's model's, TGV's for TGV and TV's otherwise.
+#[must_use]
+pub fn options_of(settings: &Settings) -> Vec<String> {
+    let mut options = Vec::new();
+    let mut put = |name: &str, value: String| options.push(format!("--{name}={value}"));
+    let method = match settings.method {
+        Method::Mmse => "mmse",
+        Method::Tv => "tv",
+        Method::Tgv => "tgv",
+        Method::Subgradient => "subgradient",
+    };
+    put("method", method.to_owned());
+    put("alpha", decimal(settings.tv.alpha));
+    put("alpha1", decimal(settings.tgv.alpha1));
+    put("alpha0", decimal(settings.tgv.alpha0));
+    let (gammas, coupled) = if settings.method == Method::Tgv {
+        (&settings.tgv.channel_weights, settings.tgv.coupled)
+    } else {
+        (&settings.tv.channel_weights, settings.tv.coupled)
+    };
+    if let Some(gammas) = gammas {
+        let values: Vec<String> = gammas.iter().copied().map(decimal).collect();
+        put("channel-weights", values.join(","));
+    }
+    put("channels", (if coupled { "coupled" } else { "apart" }).to_owned());
+    let terms = &settings.data;
+    let fields: [Field<'_>; 8] = [
+        ("mu", &|term| term.mu.map_or_else(|| "rule".to_owned(), decimal)),
+        ("mu-scale", &|term| decimal(term.mu_scale)),
+        ("mu-power", &|term| decimal(term.mu_power)),
+        ("weight-power", &|term| decimal(term.power)),
+        ("dc-weight", &|term| decimal(term.dc_weight)),
+        ("centres", &|term| {
+            match term.centres {
+                Centres::Mmse => "mmse",
+                Centres::Midpoint => "midpoint",
+            }
+            .to_owned()
+        }),
+        ("slack", &|term| decimal(term.slack)),
+        ("slack-cost", &|term| decimal(term.slack_cost)),
+    ];
+    for (name, value) in fields {
+        if let Some(value) = listed(terms, value) {
+            put(name, value);
+        }
+    }
+    let solver = &settings.pdhg;
+    if let Some(iterations) = solver.iterations {
+        put("iterations", iterations.to_string());
+    }
+    if let Some(tolerance) = solver.tolerance {
+        put("tolerance", decimal(tolerance));
+    }
+    put("relative-tolerance", decimal(solver.relative_tolerance));
+    put("partial-tolerance", decimal(solver.partial_tolerance));
+    if let Some(radius) = solver.partial_radius {
+        put("partial-radius", decimal(radius));
+    }
+    if let Some(ratio) = solver.step_ratio {
+        put("step-ratio", decimal(ratio));
+    }
+    if let Some(relaxation) = solver.relaxation {
+        put("relaxation", decimal(relaxation));
+    }
+    put("step-product", decimal(solver.step_product));
+    if let Some(norm_squared) = solver.norm_squared {
+        put("norm-squared", decimal(norm_squared));
+    }
+    put("record-every", solver.record_every.to_string());
+    put("free-radius", decimal(solver.free_radius));
+    let method = &settings.subgradient;
+    put("subgradient-iterations", method.iterations.to_string());
+    put("subgradient-step", decimal(method.step));
+    put("subgradient-decay", decimal(method.decay));
+    put("subgradient-record-every", method.record_every.to_string());
+    let read = &settings.read;
+    if read.max_pixels != 0 {
+        put("max-pixels", read.max_pixels.to_string());
+    }
+    if read.max_scans != 0 {
+        put("max-scans", read.max_scans.to_string());
+    }
+    let flags = [
+        ("no-weight-scaling", !solver.scale_with_weight),
+        ("no-momentum", !method.momentum),
+        ("warnings-are-errors", read.warnings_are_errors),
+    ];
+    options.extend(
+        flags
+            .into_iter()
+            .filter(|&(_, on)| on)
+            .map(|(name, _)| format!("--{name}")),
+    );
+    options
+}
+
 fn format_of(path: &Path) -> Option<Format> {
     let extension = path.extension()?.to_str()?.to_ascii_lowercase();
     match extension.as_str() {
@@ -612,7 +773,12 @@ pub fn report(command: &Command, decoded: &decode::Decoded) -> String {
     let _ = writeln!(text, "  \"height\": {},", decoded.height);
     let _ = writeln!(text, "  \"width\": {},", decoded.width);
     let _ = writeln!(text, "  \"color_space\": {},", json_string(space));
-    let _ = write!(text, "  \"method\": {}", json_string(method));
+    let _ = writeln!(text, "  \"method\": {},", json_string(method));
+    let settings: Vec<String> = options_of(&command.settings)
+        .iter()
+        .map(|option| json_string(option))
+        .collect();
+    let _ = write!(text, "  \"settings\": [{}]", settings.join(", "));
     if let Some(result) = &decoded.result {
         let stop = match result.stop {
             Stop::Converged => "converged",
@@ -750,24 +916,24 @@ pub fn run(command: &Command) -> Result<(), (u8, String)> {
     Ok(())
 }
 
-/// The program: the arguments of the process, and its exit status.
+/// The program on these arguments, without the program's name: its exit status
+/// (docs/cli.md).
 #[must_use]
-pub fn main() -> ExitCode {
-    let arguments: Vec<OsString> = std::env::args_os().skip(1).collect();
+pub fn main_with(arguments: Vec<OsString>) -> u8 {
     match parse(arguments) {
         Ok(Request::Help) => {
             print!("{HELP}");
-            ExitCode::SUCCESS
+            0
         }
         Ok(Request::Version) => {
             println!("{VERSION}");
-            ExitCode::SUCCESS
+            0
         }
         Ok(Request::Run(command)) => match run(&command) {
-            Ok(()) => ExitCode::SUCCESS,
+            Ok(()) => 0,
             Err((status, message)) => {
                 eprintln!("unround: {message}");
-                ExitCode::from(status)
+                status
             }
         },
         Err(errors) => {
@@ -775,14 +941,22 @@ pub fn main() -> ExitCode {
                 eprintln!("unround: {error}");
             }
             eprintln!("unround: --help gives the options");
-            ExitCode::from(2)
+            2
         }
     }
+}
+
+/// The program: the arguments of the process, and its exit status.
+#[must_use]
+pub fn main() -> ExitCode {
+    ExitCode::from(main_with(std::env::args_os().skip(1).collect()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{Tgv, Tv};
+    use crate::{pdhg, subgradient};
 
     fn arguments(text: &str) -> Vec<OsString> {
         text.split_whitespace().map(OsString::from).collect()
@@ -832,6 +1006,101 @@ mod tests {
         ] {
             assert!(all.contains(fragment), "{fragment} in {all}");
         }
+    }
+
+    #[test]
+    fn the_settings_alone_are_the_command_line_s() {
+        let settings = settings_of(arguments("--method tv --mu 0.5")).expect("settings");
+        assert_eq!(settings.method, Method::Tv);
+        assert_eq!(settings.data[0].mu, Some(0.5));
+        let errors = settings_of(arguments("--format pnm --alpha 0 in.jpg")).expect_err("refused");
+        let all = errors.join("\n");
+        for fragment in [
+            "--format is an option of the command line",
+            "--alpha is positive",
+            "without files",
+        ] {
+            assert!(all.contains(fragment), "{fragment} in {all}");
+        }
+    }
+
+    fn given_back(settings: &Settings) -> Result<Settings, Vec<String>> {
+        settings_of(options_of(settings).into_iter().map(OsString::from).collect())
+    }
+
+    #[test]
+    fn the_options_of_settings_give_them_back() {
+        assert_eq!(given_back(&Settings::default()), Ok(Settings::default()));
+        let gammas = Some(vec![1.0, 1e-7, 3.0]);
+        let settings = Settings {
+            method: Method::Tv,
+            data: vec![
+                DataTerm {
+                    mu: None,
+                    mu_scale: 2.5e-3,
+                    ..DataTerm::default()
+                },
+                DataTerm {
+                    mu: Some(1e300),
+                    mu_power: -0.5,
+                    slack: 0.5,
+                    dc_weight: 3.0,
+                    centres: Centres::Midpoint,
+                    power: 1.0,
+                    slack_cost: 7.0,
+                    ..DataTerm::default()
+                },
+                DataTerm::default(),
+            ],
+            tv: Tv {
+                alpha: 0.1 + 0.2,
+                channel_weights: gammas.clone(),
+                coupled: false,
+            },
+            tgv: Tgv {
+                alpha1: 1.0 / 3.0,
+                alpha0: 5e-324,
+                channel_weights: gammas,
+                coupled: false,
+            },
+            pdhg: pdhg::Options {
+                iterations: Some(12_345),
+                tolerance: Some(0.0),
+                relative_tolerance: 1e-4,
+                partial_tolerance: 0.0,
+                step_ratio: Some(f64::MIN_POSITIVE),
+                relaxation: Some(1.0 - f64::EPSILON / 2.0),
+                step_product: 0.5,
+                norm_squared: Some(8.5),
+                scale_with_weight: false,
+                record_every: 0,
+                partial_radius: None,
+                free_radius: 300.0,
+            },
+            subgradient: subgradient::Options {
+                iterations: 7,
+                record_every: 3,
+                step: 0.25,
+                decay: 0.0,
+                momentum: false,
+            },
+            read: jpegio_sys::Options {
+                max_pixels: 1 << 20,
+                max_scans: 9,
+                warnings_are_errors: true,
+            },
+        };
+        assert_eq!(given_back(&settings), Ok(settings));
+        let tgv = Settings {
+            method: Method::Tgv,
+            pdhg: pdhg::Options {
+                partial_radius: Some(20.0),
+                partial_tolerance: 1e-2,
+                ..pdhg::Options::default()
+            },
+            ..Settings::default()
+        };
+        assert_eq!(given_back(&tgv), Ok(tgv));
     }
 
     #[test]

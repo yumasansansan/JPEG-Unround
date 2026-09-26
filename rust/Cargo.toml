@@ -3,12 +3,13 @@
 #
 # The Rust implementation of JPEG-Unround, as a Cargo workspace: the reference
 # implementation. jpegio-sys is the C layer that the implementations read JPEG
-# files with, built by the CMake project at the root of the repository; it is the
-# only crate here that holds unsafe code. jpeg-unround (unround/) is the
-# implementation itself. No crate is fetched from crates.io.
+# files with, built by the CMake project at the root of the repository.
+# jpeg-unround (unround/) is the implementation itself, and unround-capi (capi/)
+# its C interface, which the Python package calls; jpegio-sys and unround-capi
+# hold all the unsafe code. No crate is fetched from crates.io.
 
 [workspace]
-members = ["jpegio-sys", "unround"]
+members = ["jpegio-sys", "unround", "capi"]
 resolver = "3"
 
 [workspace.package]

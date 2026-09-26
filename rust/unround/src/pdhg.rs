@@ -14,13 +14,14 @@
 
 use std::ops::ControlFlow;
 
-use crate::dct::multiply_add;
 use crate::error::Error;
 use crate::exact::nearest_from_usize;
 use crate::frames::{self, Dual, Frame, Primal, Tensor, Vector};
-use crate::model::Step;
 use crate::model::{Tgv, Tv};
+use crate::planar::Layout;
+use crate::records::Values;
 use crate::results::{FrameResult, Recorder, Stop};
+use crate::sweep::{self, TgvOutputs, TgvPoint, TgvSweep, TvOutputs, TvPoint, TvSweep};
 
 /// A bound of `||grad||^2` (docs/math.md, 3.3): TV's `L^2` by default, times the
 /// largest channel weight squared.
@@ -345,9 +346,14 @@ pub struct Initial {
 
 /// A record, as an observer sees it: the iteration, its gap per sample (what the
 /// tolerance is compared with; where samples are free, the partial gap of 6.6), the
-/// primal and dual values, and the point.
+/// primal and dual values, and the point, on a canvas of `height x width` samples
+/// for each channel.
 #[derive(Debug)]
 pub struct Record<'a> {
+    /// Rows of the canvas.
+    pub height: usize,
+    /// Columns of the canvas.
+    pub width: usize,
     /// The iteration.
     pub iteration: u64,
     /// The gap per sample.
@@ -399,6 +405,189 @@ fn tensor_start(given: Option<&Tensor>, size: usize) -> Result<Option<Tensor>, E
     Ok(Some(field.clone()))
 }
 
+/// TV's point and outputs at the start, in the planes: the start's canvas and
+/// coefficients, and `p` projected where it is given.
+fn tv_start(
+    frame: &Frame,
+    layout: &Layout,
+    weights: &Tv,
+    initial: Option<&Initial>,
+) -> Result<(TvPoint, TvOutputs), Error> {
+    let (canvas, coefficients) = sweep::start(frame, layout, initial.and_then(|first| first.coefficients.as_deref()))?;
+    let given = initial.and_then(|first| first.p.as_ref());
+    let (px, py, p_given) = dual_start(frame, layout, given, weights.alpha, weights.coupled)?;
+    let point = TvPoint {
+        x: canvas.clone(),
+        px: copy(&px, p_given),
+        py: copy(&py, p_given),
+    };
+    // The outputs are the start until a record writes over them.
+    Ok((
+        point,
+        TvOutputs {
+            canvas,
+            coefficients,
+            px,
+            py,
+        },
+    ))
+}
+
+/// TGV's point and outputs at the start, in the planes: the start's canvas and
+/// coefficients, `w` given or the gradient of the canvas, and `p` and `r` projected
+/// where they are given.
+fn tgv_start(
+    frame: &Frame,
+    layout: &Layout,
+    weights: &Tgv,
+    initial: Option<&Initial>,
+) -> Result<(TgvPoint, TgvOutputs), Error> {
+    let size = frame.samples();
+    let (canvas, coefficients) = sweep::start(frame, layout, initial.and_then(|first| first.coefficients.as_deref()))?;
+    let (wx, wy) = match vector_start(initial.and_then(|first| first.w.as_ref()), size, "w")? {
+        Some(given) => (layout.to_planes(&given.x), layout.to_planes(&given.y)),
+        None => sweep::gradient(layout, &canvas),
+    };
+    let given = initial.and_then(|first| first.p.as_ref());
+    let (px, py, p_given) = dual_start(frame, layout, given, weights.alpha1, weights.coupled)?;
+    let (rxx, ryy, rxy, r_given) = match tensor_start(initial.and_then(|first| first.r.as_ref()), size)? {
+        Some(mut given) => {
+            frames::project_tensors(frame, &mut given, weights.alpha0, weights.coupled);
+            (
+                layout.to_planes(&given.xx),
+                layout.to_planes(&given.yy),
+                layout.to_planes(&given.xy),
+                true,
+            )
+        }
+        None => (vec![0.0; size], vec![0.0; size], vec![0.0; size], false),
+    };
+    let point = TgvPoint {
+        x: canvas.clone(),
+        wx: wx.clone(),
+        wy: wy.clone(),
+        px: copy(&px, p_given),
+        py: copy(&py, p_given),
+        rxx: copy(&rxx, r_given),
+        ryy: copy(&ryy, r_given),
+        rxy: copy(&rxy, r_given),
+    };
+    // The outputs are the start until a record writes over them.
+    let outputs = TgvOutputs {
+        first: TvOutputs {
+            canvas,
+            coefficients,
+            px,
+            py,
+        },
+        wx,
+        wy,
+        rxx,
+        ryy,
+        rxy,
+    };
+    Ok((point, outputs))
+}
+
+/// The dual field `p` to start from in the planes: the one given, projected onto the
+/// balls of the radius, or 0; and whether it was given.
+fn dual_start(
+    frame: &Frame,
+    layout: &Layout,
+    given: Option<&Vector>,
+    radius: f64,
+    coupled: bool,
+) -> Result<(Vec<f64>, Vec<f64>, bool), Error> {
+    let size = frame.samples();
+    Ok(match vector_start(given, size, "p")? {
+        Some(mut given) => {
+            frames::project_vectors(frame, &mut given, radius, coupled);
+            (layout.to_planes(&given.x), layout.to_planes(&given.y), true)
+        }
+        None => (vec![0.0; size], vec![0.0; size], false),
+    })
+}
+
+/// Each component's coefficients from the planes into natural order.
+fn write_coefficients(layout: &Layout, planar: &[Vec<f64>], natural: &mut [Vec<f64>]) {
+    for ((part, own), target) in layout.parts.iter().zip(planar).zip(natural) {
+        layout.write_values_natural(part, own, target);
+    }
+}
+
+/// TV's outputs in the natural layout: the canvas and `p` in the memory of the
+/// point, which is no longer needed, and the coefficients into `coefficients`.
+fn tv_natural(
+    layout: &Layout,
+    point: TvPoint,
+    outputs: &TvOutputs,
+    coefficients: &mut [Vec<f64>],
+) -> (Vec<f64>, Vector) {
+    let TvPoint { x: mut canvas, px, py } = point;
+    let mut p = Vector { x: px, y: py };
+    layout.write_natural(&outputs.canvas, &mut canvas);
+    layout.write_natural(&outputs.px, &mut p.x);
+    layout.write_natural(&outputs.py, &mut p.y);
+    write_coefficients(layout, &outputs.coefficients, coefficients);
+    (canvas, p)
+}
+
+/// TGV's outputs in the natural layout: the canvas, `w`, `p` and `r` in the memory of
+/// the point, which is no longer needed, and the coefficients into `coefficients`.
+fn tgv_natural(
+    layout: &Layout,
+    point: TgvPoint,
+    outputs: &TgvOutputs,
+    coefficients: &mut [Vec<f64>],
+) -> (Vec<f64>, Vector, Vector, Tensor) {
+    let TgvPoint {
+        x: mut canvas,
+        wx,
+        wy,
+        px,
+        py,
+        rxx,
+        ryy,
+        rxy,
+    } = point;
+    let mut w = Vector { x: wx, y: wy };
+    let mut p = Vector { x: px, y: py };
+    let mut r = Tensor {
+        xx: rxx,
+        yy: ryy,
+        xy: rxy,
+    };
+    layout.write_natural(&outputs.first.canvas, &mut canvas);
+    write_coefficients(layout, &outputs.first.coefficients, coefficients);
+    for (planar, natural) in [
+        (&outputs.wx, &mut w.x),
+        (&outputs.wy, &mut w.y),
+        (&outputs.first.px, &mut p.x),
+        (&outputs.first.py, &mut p.y),
+        (&outputs.rxx, &mut r.xx),
+        (&outputs.ryy, &mut r.yy),
+        (&outputs.rxy, &mut r.xy),
+    ] {
+        layout.write_natural(planar, natural);
+    }
+    (canvas, w, p, r)
+}
+
+/// A copy of a field of the start where it was given; one made anew where it is 0,
+/// whose memory is written first by the iterations.
+fn copy(field: &[f64], given: bool) -> Vec<f64> {
+    if given { field.to_vec() } else { vec![0.0; field.len()] }
+}
+
+/// Room for each component's coefficients in natural order.
+fn natural_room(layout: &Layout) -> Vec<Vec<f64>> {
+    layout
+        .parts
+        .iter()
+        .map(|part| vec![0.0; part.rows * part.columns * crate::dct::BLOCK_SIZE])
+        .collect()
+}
+
 fn due(iteration: u64, settled: &Plan) -> bool {
     iteration == settled.iterations || (settled.record_every > 0 && iteration.is_multiple_of(settled.record_every))
 }
@@ -411,174 +600,6 @@ fn stops(settled: &Plan, samples: f64, primal: f64, dual: f64, partial: f64) -> 
         || (settled.relative_tolerance > 0.0 && gap <= settled.relative_tolerance * primal.abs())
         || (settled.partial_tolerance > 0.0 && partial / samples <= settled.partial_tolerance);
     (per_sample, met)
-}
-
-/// `f[j]` for `j < W - 1`, less `f[j - 1]` for `j > 0`: the backward difference of a
-/// row, the negative adjoint of the forward one.
-#[inline]
-fn backward_across(row: &[f64], out: &mut [f64]) {
-    let width = row.len();
-    if width == 1 {
-        out[0] = 0.0;
-        return;
-    }
-    out[0] = row[0];
-    for ((entry, &here), &before) in out[1..width - 1].iter_mut().zip(&row[1..]).zip(row) {
-        *entry = here - before;
-    }
-    out[width - 1] = 0.0 - row[width - 2];
-}
-
-/// The backward difference down at a row, from the row itself (`None` at the last
-/// row) and the one above (`None` at the first).
-#[inline]
-fn backward_down(own: Option<&[f64]>, before: Option<&[f64]>, out: &mut [f64]) {
-    match (own, before) {
-        (Some(own), Some(before)) => {
-            for ((entry, &here), &above) in out.iter_mut().zip(own).zip(before) {
-                *entry = here - above;
-            }
-        }
-        (Some(own), None) => out.copy_from_slice(own),
-        (None, Some(before)) => {
-            for (entry, &above) in out.iter_mut().zip(before) {
-                *entry = 0.0 - above;
-            }
-        }
-        (None, None) => out.fill(0.0),
-    }
-}
-
-/// The forward difference across a row, 0 at its end.
-#[inline]
-fn forward_across(row: &[f64], out: &mut [f64]) {
-    let width = row.len();
-    for ((entry, &here), &next) in out.iter_mut().zip(row).zip(&row[1..]) {
-        *entry = next - here;
-    }
-    out[width - 1] = 0.0;
-}
-
-/// The forward difference down at a row, from the row and the one below (`None` at
-/// the last row).
-#[inline]
-fn forward_down(own: &[f64], next: Option<&[f64]>, out: &mut [f64]) {
-    match next {
-        Some(next) => {
-            for ((entry, &here), &below) in out.iter_mut().zip(own).zip(next) {
-                *entry = below - here;
-            }
-        }
-        None => out.fill(0.0),
-    }
-}
-
-/// The rows of a plane: row `i` of `height`, and the rows above and below it.
-struct Rows<'a> {
-    own: &'a [f64],
-    above: Option<&'a [f64]>,
-    below: Option<&'a [f64]>,
-    last: bool,
-}
-
-fn rows(plane: &[f64], width: usize, height: usize, i: usize) -> Rows<'_> {
-    let start = i * width;
-    Rows {
-        own: &plane[start..start + width],
-        above: (i > 0).then(|| &plane[start - width..start]),
-        below: (i + 1 < height).then(|| &plane[start + width..start + 2 * width]),
-        last: i + 1 == height,
-    }
-}
-
-/// Scratch rows for the differences of one row.
-struct Scratch {
-    first: Vec<f64>,
-    second: Vec<f64>,
-    third: Vec<f64>,
-}
-
-impl Scratch {
-    fn new(width: usize) -> Self {
-        Self {
-            first: vec![0.0; width],
-            second: vec![0.0; width],
-            third: vec![0.0; width],
-        }
-    }
-}
-
-/// `x + tau (gamma div p)`, channel by channel, into `out`.
-fn descend(frame: &Frame, gammas: &[f64], tau: f64, x: &[f64], p: &Vector, out: &mut [f64], scratch: &mut Scratch) {
-    let (height, width, plane) = (frame.height(), frame.width(), frame.plane());
-    for (channel, &gamma) in gammas.iter().enumerate() {
-        let range = channel * plane..(channel + 1) * plane;
-        let (p_x, p_y) = (&p.x[range.clone()], &p.y[range.clone()]);
-        let (source, target) = (&x[range.clone()], &mut out[range]);
-        for i in 0..height {
-            let down = rows(p_y, width, height, i);
-            backward_across(&p_x[i * width..(i + 1) * width], &mut scratch.first);
-            backward_down((!down.last).then_some(down.own), down.above, &mut scratch.second);
-            let start = i * width;
-            for (((entry, &value), &across), &downward) in target[start..start + width]
-                .iter_mut()
-                .zip(&source[start..start + width])
-                .zip(&scratch.first)
-                .zip(&scratch.second)
-            {
-                *entry = multiply_add(tau, gamma * (across + downward), value);
-            }
-        }
-    }
-}
-
-/// `2 a - b`, entry by entry, into `out`: the extrapolated point.
-fn extrapolate(a: &[f64], b: &[f64], out: &mut [f64]) {
-    for ((entry, &new), &old) in out.iter_mut().zip(a).zip(b) {
-        *entry = multiply_add(2.0, new, -old);
-    }
-}
-
-/// `current <- rho tilde + (1 - rho) current`.
-fn relax(rho: f64, tilde: &[f64], current: &mut [f64]) {
-    let rest = 1.0 - rho;
-    for (value, &new) in current.iter_mut().zip(tilde) {
-        *value = multiply_add(rho, new, rest * *value);
-    }
-}
-
-/// `p + sigma (gamma grad bar)`, channel by channel, into `out` (TV's ascent).
-fn ascend_tv(
-    frame: &Frame,
-    gammas: &[f64],
-    sigma: f64,
-    bar: &[f64],
-    p: &Vector,
-    out: &mut Vector,
-    scratch: &mut Scratch,
-) {
-    let (height, width, plane) = (frame.height(), frame.width(), frame.plane());
-    for (channel, &gamma) in gammas.iter().enumerate() {
-        let range = channel * plane..(channel + 1) * plane;
-        let own = &bar[range.clone()];
-        for i in 0..height {
-            let lines = rows(own, width, height, i);
-            forward_across(lines.own, &mut scratch.first);
-            forward_down(lines.own, lines.below, &mut scratch.second);
-            let start = channel * plane + i * width;
-            let span = start..start + width;
-            for ((entry, &value), &across) in out.x[span.clone()]
-                .iter_mut()
-                .zip(&p.x[span.clone()])
-                .zip(&scratch.first)
-            {
-                *entry = multiply_add(sigma, gamma * across, value);
-            }
-            for ((entry, &value), &down) in out.y[span.clone()].iter_mut().zip(&p.y[span]).zip(&scratch.second) {
-                *entry = multiply_add(sigma, gamma * down, value);
-            }
-        }
-    }
 }
 
 /// Minimizes the TV model of a frame (docs/math.md, 4.4 and 5).
@@ -604,63 +625,64 @@ pub fn solve_tv(
 ) -> Result<FrameResult, Error> {
     let settled = plan(options, Weights::Tv(weights))?;
     let (tau, sigma) = steps(settled.norm_squared, settled.step_ratio, settled.step_product)?;
-    let rho = settled.relaxation;
-    #[expect(clippy::float_cmp, reason = "a relaxation of exactly 1 takes the new point as it is")]
-    let unrelaxed = rho == 1.0;
     let gammas = frame.channel_weights(weights.channel_weights.as_deref())?;
     if initial.is_some_and(|first| first.w.is_some() || first.r.is_some()) {
         return Err(Error::Options("TV has no field w or r to start from".into()));
     }
     let size = frame.samples();
-    let start = frames::start(frame, initial.and_then(|first| first.coefficients.as_deref()))?;
-    let (mut coefficients, mut canvas) = (start.coefficients, start.canvas);
-    let mut x = canvas.clone();
-    let mut p =
-        vector_start(initial.and_then(|first| first.p.as_ref()), size, "p")?.unwrap_or_else(|| Vector::zeros(size));
-    frames::project_vectors(frame, &mut p, weights.alpha, weights.coupled);
-    let mut p_out = p.clone();
+    let layout = Layout::new(frame)?;
+    let (mut point, mut outputs) = tv_start(frame, &layout, weights, initial)?;
+    let proximal = frames::steps(frame, tau);
+    let mut sweep = TvSweep::new(
+        frame,
+        &layout,
+        &proximal,
+        &gammas,
+        tau,
+        sigma,
+        weights.alpha,
+        weights.coupled,
+        settled.relaxation,
+    );
+    let mut values = Values::new(frame, &layout, &gammas);
     let radius = settled.free_radius;
     let samples = nearest_from_usize(size);
-    let steps = frames::steps(frame, tau);
-    let mut work = vec![0.0; size];
-    let mut scratch = Scratch::new(frame.width());
     let mut recorder = Recorder::new();
-    let (primal, dual) = frames::tv_values(frame, weights, &coefficients, &canvas, &p_out, radius)?;
+    let (primal, dual) = values.tv(weights, &outputs, radius);
     recorder.record(0, primal, dual, f64::NAN, f64::NAN);
     let mut stop = Stop::Iterations;
     let mut iteration = 0;
+    let mut coefficients = natural_room(&layout);
+    let mut seen = if observer.is_some() {
+        vec![0.0; size]
+    } else {
+        Vec::new()
+    };
     while iteration < settled.iterations {
         recorder.resume();
         iteration += 1;
-        descend(frame, &gammas, tau, &x, &p, &mut work, &mut scratch);
-        frames::prox(frame, &steps, &work, &mut coefficients, &mut canvas);
-        extrapolate(&canvas, &x, &mut work);
-        ascend_tv(frame, &gammas, sigma, &work, &p, &mut p_out, &mut scratch);
-        frames::project_vectors(frame, &mut p_out, weights.alpha, weights.coupled);
-        if unrelaxed {
-            x.copy_from_slice(&canvas);
-            p.clone_from(&p_out);
-        } else {
-            relax(rho, &canvas, &mut x);
-            relax(rho, &p_out.x, &mut p.x);
-            relax(rho, &p_out.y, &mut p.y);
-        }
+        let keep = due(iteration, &settled);
+        sweep.iterate(&mut point, keep.then_some(&mut outputs));
         recorder.pause();
-        if due(iteration, &settled) {
-            let (primal, dual) = frames::tv_values(frame, weights, &coefficients, &canvas, &p_out, radius)?;
+        if keep {
+            let (primal, dual) = values.tv(weights, &outputs, radius);
             recorder.record(iteration, primal, dual, f64::NAN, f64::NAN);
             let (gap, met) = stops(&settled, samples, primal, dual, f64::NAN);
             if met {
                 stop = Stop::Converged;
             }
             if let Some(observe) = observer.as_deref_mut() {
+                layout.write_natural(&outputs.canvas, &mut seen);
+                write_coefficients(&layout, &outputs.coefficients, &mut coefficients);
                 let record = Record {
+                    height: frame.height(),
+                    width: frame.width(),
                     iteration,
                     gap,
                     primal,
                     dual,
                     coefficients: &coefficients,
-                    canvas: &canvas,
+                    canvas: &seen,
                     w: None,
                 };
                 if observe(&record).is_break() && !met {
@@ -673,6 +695,7 @@ pub fn solve_tv(
             }
         }
     }
+    let (canvas, p_out) = tv_natural(&layout, point, &outputs, &mut coefficients);
     Ok(FrameResult {
         primal: Primal {
             coefficients,
@@ -684,290 +707,6 @@ pub fn solve_tv(
         stop,
         history: recorder.finish(),
     })
-}
-
-/// `w + tau (gamma (p + div2 r))`, channel by channel, into `out` (TGV's step of `w`).
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the step reads the field, both duals and the scratch rows"
-)]
-fn advance_w(
-    frame: &Frame,
-    gammas: &[f64],
-    tau: f64,
-    w: &Vector,
-    p: &Vector,
-    r: &Tensor,
-    out: &mut Vector,
-    scratch: &mut Scratch,
-) {
-    let (height, width, plane) = (frame.height(), frame.width(), frame.plane());
-    for (channel, &gamma) in gammas.iter().enumerate() {
-        let range = channel * plane..(channel + 1) * plane;
-        let (xx, yy, xy) = (&r.xx[range.clone()], &r.yy[range.clone()], &r.xy[range]);
-        for i in 0..height {
-            let start = i * width;
-            // div2 r = (d/dx r11 + d/dy r12, d/dx r12 + d/dy r22), by forward differences.
-            forward_across(&xx[start..start + width], &mut scratch.first);
-            let lines = rows(xy, width, height, i);
-            forward_down(lines.own, lines.below, &mut scratch.second);
-            let span = channel * plane + start..channel * plane + start + width;
-            for (((entry, &value), &dual), (&across, &down)) in out.x[span.clone()]
-                .iter_mut()
-                .zip(&w.x[span.clone()])
-                .zip(&p.x[span.clone()])
-                .zip(scratch.first.iter().zip(&scratch.second))
-            {
-                *entry = multiply_add(tau, gamma * (dual + (across + down)), value);
-            }
-            forward_across(lines.own, &mut scratch.first);
-            let lines = rows(yy, width, height, i);
-            forward_down(lines.own, lines.below, &mut scratch.second);
-            for (((entry, &value), &dual), (&across, &down)) in out.y[span.clone()]
-                .iter_mut()
-                .zip(&w.y[span.clone()])
-                .zip(&p.y[span])
-                .zip(scratch.first.iter().zip(&scratch.second))
-            {
-                *entry = multiply_add(tau, gamma * (dual + (across + down)), value);
-            }
-        }
-    }
-}
-
-/// `p + sigma (gamma (grad bar - bar_w))`, channel by channel, into `out` (TGV's
-/// ascent of `p`).
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the step reads the extrapolated point, the dual and the scratch rows"
-)]
-fn ascend_p(
-    frame: &Frame,
-    gammas: &[f64],
-    sigma: f64,
-    bar: &[f64],
-    bar_w: &Vector,
-    p: &Vector,
-    out: &mut Vector,
-    scratch: &mut Scratch,
-) {
-    let (height, width, plane) = (frame.height(), frame.width(), frame.plane());
-    for (channel, &gamma) in gammas.iter().enumerate() {
-        let range = channel * plane..(channel + 1) * plane;
-        let own = &bar[range];
-        for i in 0..height {
-            let lines = rows(own, width, height, i);
-            forward_across(lines.own, &mut scratch.first);
-            forward_down(lines.own, lines.below, &mut scratch.second);
-            let start = channel * plane + i * width;
-            let span = start..start + width;
-            for (((entry, &value), &across), &field) in out.x[span.clone()]
-                .iter_mut()
-                .zip(&p.x[span.clone()])
-                .zip(&scratch.first)
-                .zip(&bar_w.x[span.clone()])
-            {
-                *entry = multiply_add(sigma, gamma * (across - field), value);
-            }
-            for (((entry, &value), &down), &field) in out.y[span.clone()]
-                .iter_mut()
-                .zip(&p.y[span.clone()])
-                .zip(&scratch.second)
-                .zip(&bar_w.y[span])
-            {
-                *entry = multiply_add(sigma, gamma * (down - field), value);
-            }
-        }
-    }
-}
-
-/// `r + sigma (gamma E bar_w)`, channel by channel, into `out` (TGV's ascent of `r`).
-fn ascend_r(
-    frame: &Frame,
-    gammas: &[f64],
-    sigma: f64,
-    bar_w: &Vector,
-    r: &Tensor,
-    out: &mut Tensor,
-    scratch: &mut Scratch,
-) {
-    let (height, width, plane) = (frame.height(), frame.width(), frame.plane());
-    for (channel, &gamma) in gammas.iter().enumerate() {
-        let range = channel * plane..(channel + 1) * plane;
-        let (w_x, w_y) = (&bar_w.x[range.clone()], &bar_w.y[range]);
-        for i in 0..height {
-            let start = i * width;
-            let span = channel * plane + start..channel * plane + start + width;
-            // E w = (d_x w1, d_y w2, (d_y w1 + d_x w2) / 2), by backward differences.
-            backward_across(&w_x[start..start + width], &mut scratch.first);
-            for ((entry, &value), &across) in out.xx[span.clone()]
-                .iter_mut()
-                .zip(&r.xx[span.clone()])
-                .zip(&scratch.first)
-            {
-                *entry = multiply_add(sigma, gamma * across, value);
-            }
-            let lines = rows(w_y, width, height, i);
-            backward_down((!lines.last).then_some(lines.own), lines.above, &mut scratch.second);
-            for ((entry, &value), &down) in out.yy[span.clone()]
-                .iter_mut()
-                .zip(&r.yy[span.clone()])
-                .zip(&scratch.second)
-            {
-                *entry = multiply_add(sigma, gamma * down, value);
-            }
-            let lines = rows(w_x, width, height, i);
-            backward_down((!lines.last).then_some(lines.own), lines.above, &mut scratch.second);
-            backward_across(&w_y[start..start + width], &mut scratch.third);
-            for (((entry, &value), &down), &across) in out.xy[span.clone()]
-                .iter_mut()
-                .zip(&r.xy[span])
-                .zip(&scratch.second)
-                .zip(&scratch.third)
-            {
-                *entry = multiply_add(sigma, gamma * f64::midpoint(down, across), value);
-            }
-        }
-    }
-}
-
-/// The values of a record of TGV: the primal and dual values, the scaling of the
-/// feasible dual, and the partial gap where its radius is given.
-fn tgv_record(
-    frame: &Frame,
-    weights: &Tgv,
-    settled: &Plan,
-    point: (&[Vec<f64>], &[f64], &Vector),
-    dual: (&Vector, &Tensor),
-) -> Result<(f64, f64, f64, f64), Error> {
-    let (coefficients, canvas, w) = point;
-    let (p, r) = dual;
-    let radius = settled.free_radius;
-    let (primal, dual_value, theta) = frames::tgv_values(frame, weights, coefficients, canvas, w, r, radius)?;
-    let partial = match settled.partial_radius {
-        Some(partial_radius) => {
-            let residual = frames::tgv_residual(frame, weights, p, r)?;
-            let bound = frames::dual_bound(frame, weights.channel_weights.as_deref(), p, radius)?;
-            primal + bound + partial_radius * residual
-        }
-        None => f64::NAN,
-    };
-    Ok((primal, dual_value, theta, partial))
-}
-
-/// The iterates of TGV: the current point and dual, the outputs of their proximal
-/// steps, and room for the extrapolated field and point.
-struct TgvIterates {
-    x: Vec<f64>,
-    canvas: Vec<f64>,
-    coefficients: Vec<Vec<f64>>,
-    w: Vector,
-    w_out: Vector,
-    bar_w: Vector,
-    p: Vector,
-    p_out: Vector,
-    r: Tensor,
-    r_out: Tensor,
-    work: Vec<f64>,
-}
-
-impl TgvIterates {
-    /// The start: the data term's centres, `w` the gradient of their canvas, and `p`
-    /// and `r` 0, where `initial` does not give them; `p` and `r` projected onto their
-    /// balls.
-    fn new(frame: &Frame, weights: &Tgv, initial: Option<&Initial>) -> Result<Self, Error> {
-        let size = frame.samples();
-        let start = frames::start(frame, initial.and_then(|first| first.coefficients.as_deref()))?;
-        let w = match vector_start(initial.and_then(|first| first.w.as_ref()), size, "w")? {
-            Some(w) => w,
-            None => frames::gradient(frame, &start.canvas),
-        };
-        let mut p =
-            vector_start(initial.and_then(|first| first.p.as_ref()), size, "p")?.unwrap_or_else(|| Vector::zeros(size));
-        frames::project_vectors(frame, &mut p, weights.alpha1, weights.coupled);
-        let mut r =
-            tensor_start(initial.and_then(|first| first.r.as_ref()), size)?.unwrap_or_else(|| Tensor::zeros(size));
-        frames::project_tensors(frame, &mut r, weights.alpha0, weights.coupled);
-        Ok(Self {
-            x: start.canvas.clone(),
-            canvas: start.canvas,
-            coefficients: start.coefficients,
-            w_out: w.clone(),
-            w,
-            bar_w: Vector::zeros(size),
-            p_out: p.clone(),
-            p,
-            r_out: r.clone(),
-            r,
-            work: vec![0.0; size],
-        })
-    }
-
-    /// The proximal steps from the current point: `x~`, `w~`, `p~` and `r~`.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "a step takes the model, both steps and the scratch rows"
-    )]
-    fn step(
-        &mut self,
-        frame: &Frame,
-        weights: &Tgv,
-        gammas: &[f64],
-        proximal: &[Step],
-        tau: f64,
-        sigma: f64,
-        scratch: &mut Scratch,
-    ) {
-        descend(frame, gammas, tau, &self.x, &self.p, &mut self.work, scratch);
-        frames::prox(frame, proximal, &self.work, &mut self.coefficients, &mut self.canvas);
-        advance_w(frame, gammas, tau, &self.w, &self.p, &self.r, &mut self.w_out, scratch);
-        extrapolate(&self.canvas, &self.x, &mut self.work);
-        extrapolate(&self.w_out.x, &self.w.x, &mut self.bar_w.x);
-        extrapolate(&self.w_out.y, &self.w.y, &mut self.bar_w.y);
-        ascend_p(
-            frame,
-            gammas,
-            sigma,
-            &self.work,
-            &self.bar_w,
-            &self.p,
-            &mut self.p_out,
-            scratch,
-        );
-        frames::project_vectors(frame, &mut self.p_out, weights.alpha1, weights.coupled);
-        ascend_r(frame, gammas, sigma, &self.bar_w, &self.r, &mut self.r_out, scratch);
-        frames::project_tensors(frame, &mut self.r_out, weights.alpha0, weights.coupled);
-    }
-
-    /// The current point moved to `rho` times the outputs plus `1 - rho` times itself.
-    fn relax(&mut self, rho: f64, unrelaxed: bool) {
-        if unrelaxed {
-            self.x.copy_from_slice(&self.canvas);
-            self.w.clone_from(&self.w_out);
-            self.p.clone_from(&self.p_out);
-            self.r.clone_from(&self.r_out);
-        } else {
-            relax(rho, &self.canvas, &mut self.x);
-            relax(rho, &self.w_out.x, &mut self.w.x);
-            relax(rho, &self.w_out.y, &mut self.w.y);
-            relax(rho, &self.p_out.x, &mut self.p.x);
-            relax(rho, &self.p_out.y, &mut self.p.y);
-            relax(rho, &self.r_out.xx, &mut self.r.xx);
-            relax(rho, &self.r_out.yy, &mut self.r.yy);
-            relax(rho, &self.r_out.xy, &mut self.r.xy);
-        }
-    }
-
-    /// The values of a record at the outputs of the proximal steps.
-    fn record(&self, frame: &Frame, weights: &Tgv, settled: &Plan) -> Result<(f64, f64, f64, f64), Error> {
-        tgv_record(
-            frame,
-            weights,
-            settled,
-            (&self.coefficients, &self.canvas, &self.w_out),
-            (&self.p_out, &self.r_out),
-        )
-    }
 }
 
 /// Minimizes the TGV model of a frame (docs/math.md, 4.4 and 5).
@@ -990,41 +729,75 @@ pub fn solve_tgv(
 ) -> Result<FrameResult, Error> {
     let settled = plan(options, Weights::Tgv(weights))?;
     let (tau, sigma) = steps(settled.norm_squared, settled.step_ratio, settled.step_product)?;
-    let rho = settled.relaxation;
-    #[expect(clippy::float_cmp, reason = "a relaxation of exactly 1 takes the new point as it is")]
-    let unrelaxed = rho == 1.0;
     let gammas = frame.channel_weights(weights.channel_weights.as_deref())?;
-    let mut iterates = TgvIterates::new(frame, weights, initial)?;
-    let samples = nearest_from_usize(frame.samples());
+    let size = frame.samples();
+    let layout = Layout::new(frame)?;
+    let (mut point, mut outputs) = tgv_start(frame, &layout, weights, initial)?;
     let proximal = frames::steps(frame, tau);
-    let mut scratch = Scratch::new(frame.width());
+    let mut sweep = TgvSweep::new(
+        frame,
+        &layout,
+        &proximal,
+        &gammas,
+        tau,
+        sigma,
+        (weights.alpha1, weights.alpha0),
+        weights.coupled,
+        settled.relaxation,
+    );
+    let mut values = Values::new(frame, &layout, &gammas);
+    let samples = nearest_from_usize(size);
     let mut recorder = Recorder::new();
-    let (primal, dual, theta, partial) = iterates.record(frame, weights, &settled)?;
+    let radius = settled.free_radius;
+    let record = |values: &mut Values, outputs: &TgvOutputs| {
+        let (primal, dual, theta) = values.tgv(weights, outputs, radius);
+        let partial = match settled.partial_radius {
+            Some(partial_radius) => {
+                let (bound, residual) = values.tgv_partial(outputs, radius);
+                primal + bound + partial_radius * residual
+            }
+            None => f64::NAN,
+        };
+        (primal, dual, theta, partial)
+    };
+    let (primal, dual, theta, partial) = record(&mut values, &outputs);
     recorder.record(0, primal, dual, theta, partial);
     let mut stop = Stop::Iterations;
     let mut iteration = 0;
+    let mut coefficients = natural_room(&layout);
+    let (mut seen, mut seen_w) = if observer.is_some() {
+        (vec![0.0; size], Vector::zeros(size))
+    } else {
+        (Vec::new(), Vector::zeros(0))
+    };
     while iteration < settled.iterations {
         recorder.resume();
         iteration += 1;
-        iterates.step(frame, weights, &gammas, &proximal, tau, sigma, &mut scratch);
-        iterates.relax(rho, unrelaxed);
+        let keep = due(iteration, &settled);
+        sweep.iterate(&mut point, keep.then_some(&mut outputs));
         recorder.pause();
-        if due(iteration, &settled) {
-            let (primal, dual, theta, partial) = iterates.record(frame, weights, &settled)?;
+        if keep {
+            let (primal, dual, theta, partial) = record(&mut values, &outputs);
             recorder.record(iteration, primal, dual, theta, partial);
             let (gap, met) = stops(&settled, samples, primal, dual, partial);
             if met {
                 stop = Stop::Converged;
             }
             if let Some(observe) = observer.as_deref_mut() {
+                layout.write_natural(&outputs.first.canvas, &mut seen);
+                write_coefficients(&layout, &outputs.first.coefficients, &mut coefficients);
+                layout.write_natural(&outputs.wx, &mut seen_w.x);
+                layout.write_natural(&outputs.wy, &mut seen_w.y);
                 let record = Record {
+                    height: frame.height(),
+                    width: frame.width(),
                     iteration,
                     gap,
                     primal,
                     dual,
-                    coefficients: &iterates.coefficients,
-                    canvas: &iterates.canvas,
-                    w: Some(&iterates.w_out),
+                    coefficients: &coefficients,
+                    canvas: &seen,
+                    w: Some(&seen_w),
                 };
                 if observe(&record).is_break() && !met {
                     stop = Stop::Observer;
@@ -1036,15 +809,16 @@ pub fn solve_tgv(
             }
         }
     }
+    let (canvas, w_out, p_out, r_out) = tgv_natural(&layout, point, &outputs, &mut coefficients);
     Ok(FrameResult {
         primal: Primal {
-            coefficients: iterates.coefficients,
-            canvas: iterates.canvas,
-            w: Some(iterates.w_out),
+            coefficients,
+            canvas,
+            w: Some(w_out),
         },
         dual: Some(Dual {
-            p: iterates.p_out,
-            r: Some(iterates.r_out),
+            p: p_out,
+            r: Some(r_out),
         }),
         iterations: iteration,
         stop,

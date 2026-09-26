@@ -15,6 +15,10 @@
 //! - [`model`]: the quantization constraint set and the data term of a component.
 //! - [`frames`]: the components of a file on one canvas, and the objectives and gaps.
 //! - [`pdhg`]: the primal-dual method for TV and TGV.
+//! - [`planar`]: the layout of the solvers, in planes of the columns of the MCUs.
+//! - [`kernels`]: the loops of the solvers, and the formulas of one value.
+//! - [`sweep`]: one iteration of the primal-dual method as one sweep of the canvas.
+//! - [`records`]: the values of the records, in the layout of the solvers.
 //! - [`subgradient`]: a subgradient method of jpeg2png's kind, to compare with.
 //! - [`results`]: what the solvers return.
 //! - [`colour`]: the YCbCr of JFIF, and its inverse.
@@ -32,13 +36,17 @@ pub mod decode;
 pub mod error;
 pub mod exact;
 pub mod frames;
+pub mod kernels;
 pub mod laplace;
 pub mod model;
 pub mod operators;
 pub mod output;
 pub mod pdhg;
+pub mod planar;
+pub mod records;
 pub mod results;
 pub mod subgradient;
+pub mod sweep;
 pub mod tiff;
 
 pub use decode::{Decoded, Method, Settings, decode};

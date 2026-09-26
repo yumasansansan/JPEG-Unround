@@ -114,6 +114,15 @@ one value for each (4.1, 4.4).
 - `--version`: the version and the implementation, and nothing else.
 - `-h`, `--help`: the options.
 
+## Builds
+
+On x86-64 the program needs a processor with AVX2 and FMA (x86-64-v3): its
+iterations are vector code of four doubles, a product fused with the sum that
+takes it. A second build, for processors with AVX-512 (x86-64-v4), computes with
+vectors of eight; the two give the same results up to the last bits of what
+is computed in floating point (docs/math.md, Arithmetic). On AArch64 the vectors
+are NEON's, of two doubles.
+
 ## Syntax and exit status
 
 An option takes its value as the next argument or after `=` (`--mu 0.01`,

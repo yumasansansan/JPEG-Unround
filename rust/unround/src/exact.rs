@@ -310,6 +310,41 @@ pub fn bernoulli(count: usize) -> Vec<Ratio> {
     numbers
 }
 
+/// The lanes of [`lanes`].
+const LANES: usize = 8;
+
+/// The sum of a row of terms in eight lanes, which the compiler makes one vector of
+/// eight, or two of four, or four of two: term `8 k + l` goes to lane `l`, each lane
+/// adding its terms one after another, the terms beyond the last eight as one more
+/// eight padded with 0; then the lanes are added one after another. A term of `n` goes
+/// through at most `ceil(n / 8) + 7` additions, so the rounding of the sum is at most
+/// `gamma(ceil(n / 8) + 7)` times the sum of the magnitudes of the terms.
+#[must_use]
+pub fn lanes(terms: &[f64]) -> f64 {
+    lanes_by(terms, |term| term)
+}
+
+/// [`lanes`] of `term` of each value, made and added in the same order without a
+/// row of the terms; `term` of 0 is 0, as the padding needs.
+#[inline]
+#[must_use]
+pub fn lanes_by(values: &[f64], term: impl Fn(f64) -> f64) -> f64 {
+    let mut lanes = [0.0; LANES];
+    let (chunks, rest) = values.as_chunks::<LANES>();
+    let mut last = [0.0; LANES];
+    last[..rest.len()].copy_from_slice(rest);
+    for chunk in chunks.iter().chain([&last]) {
+        for (lane, &value) in lanes.iter_mut().zip(chunk) {
+            *lane += term(value);
+        }
+    }
+    let mut total = lanes[0];
+    for &lane in &lanes[1..] {
+        total += lane;
+    }
+    total
+}
+
 /// The terms that a block of [`Sum`] adds one after another, before it is added
 /// to the others in a tree.
 const SUM_BLOCK: usize = 128;
@@ -360,11 +395,25 @@ impl Sum {
     /// smallest level up.
     #[must_use]
     pub fn total(&self) -> f64 {
-        self.partials
-            .iter()
-            .flatten()
-            .fold(self.block, |sum, &partial| sum + partial)
+        let mut sum = self.block;
+        for partial in self.partials.iter().flatten() {
+            sum += partial;
+        }
+        sum
     }
+}
+
+/// The totals of sums added in order: the first, then each after it.
+#[must_use]
+pub fn added(totals: &[Sum]) -> f64 {
+    let Some((first, rest)) = totals.split_first() else {
+        return 0.0;
+    };
+    let mut sum = first.total();
+    for total in rest {
+        sum += total.total();
+    }
+    sum
 }
 
 impl Extend<f64> for Sum {

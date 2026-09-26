@@ -12,3 +12,11 @@ dependencies = [
 [[package]]
 name = "jpegio-sys"
 version = "0.1.0"
+
+[[package]]
+name = "unround-capi"
+version = "0.1.0"
+dependencies = [
+ "jpeg-unround",
+ "jpegio-sys",
+]

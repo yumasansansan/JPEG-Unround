@@ -98,6 +98,9 @@ pub struct Decoded {
     pub color_space: ColorSpace,
     /// Every component's coefficients.
     pub coefficients: Vec<Vec<f64>>,
+    /// The whole canvas of every channel, `C x H x W`, as the solver left it: the
+    /// picture and what lies beyond it.
+    pub canvas: Vec<f64>,
     /// The components on their canvas.
     pub frame: Frame,
     /// What the solver returned.
@@ -108,6 +111,43 @@ pub struct Decoded {
     pub exif_orientation: i32,
 }
 
+/// A component of a file: its quantized levels, `rows x columns` blocks of 64 in
+/// natural order, its quantization table, and its sampling factors, across and down.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Component {
+    /// The levels, block rows from the top, each block in natural order.
+    pub levels: Vec<i16>,
+    /// Block rows.
+    pub rows: usize,
+    /// Blocks across.
+    pub columns: usize,
+    /// The quantization table, in natural order.
+    pub quant_table: [u16; 64],
+    /// The horizontal sampling factor.
+    pub h_samp_factor: usize,
+    /// The vertical sampling factor.
+    pub v_samp_factor: usize,
+}
+
+/// What a reconstruction starts from: the picture's size, its color space, and its
+/// components, as a file holds them or as they are given; and the file's ICC profile
+/// and EXIF orientation, which the reconstruction carries along.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Input {
+    /// Rows of the picture.
+    pub height: usize,
+    /// Columns of the picture.
+    pub width: usize,
+    /// The color space of the components.
+    pub color_space: ColorSpace,
+    /// The components: one, or three.
+    pub components: Vec<Component>,
+    /// The ICC profile, where there is one.
+    pub icc_profile: Option<Vec<u8>>,
+    /// The EXIF orientation, 1 to 8, or 0 where there is none.
+    pub exif_orientation: i32,
+}
+
 fn factor(value: i32) -> Result<usize, Error> {
     usize::try_from(value).map_err(|_| Error::Unsupported(format!("a sampling factor of {value}")))
 }
@@ -115,6 +155,47 @@ fn factor(value: i32) -> Result<usize, Error> {
 fn blocks(value: u32) -> usize {
     // Lossless on the 64-bit systems JPEG-Unround supports.
     usize::try_from(value).unwrap_or(usize::MAX)
+}
+
+impl Input {
+    /// The input of an image that the C layer read.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Unsupported`] for sampling factors that are not positive.
+    pub fn of_image(image: &Image) -> Result<Self, Error> {
+        let components = image
+            .components()
+            .map(|component| {
+                Ok(Component {
+                    levels: component.coefficients().to_vec(),
+                    rows: blocks(component.height_in_blocks()),
+                    columns: blocks(component.width_in_blocks()),
+                    quant_table: *component.quant_table(),
+                    h_samp_factor: factor(component.h_samp_factor())?,
+                    v_samp_factor: factor(component.v_samp_factor())?,
+                })
+            })
+            .collect::<Result<Vec<Component>, Error>>()?;
+        Ok(Self {
+            height: blocks(image.height()),
+            width: blocks(image.width()),
+            color_space: image.color_space(),
+            components,
+            icc_profile: image.icc_profile().map(<[u8]>::to_vec),
+            exif_orientation: image.exif_orientation(),
+        })
+    }
+
+    /// The input of a JPEG file in memory.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Read`] for a file that the C layer does not read, and the errors of
+    /// [`Input::of_image`].
+    pub fn read(data: &[u8], options: &jpegio_sys::Options) -> Result<Self, Error> {
+        Self::of_image(&Image::read(data, options)?)
+    }
 }
 
 /// The data term of component `index`: the one of every component, or its own.
@@ -128,42 +209,53 @@ fn data_of(settings: &Settings, index: usize, count: usize) -> Result<&DataTerm,
     }
 }
 
-/// The frame of a file's components (docs/math.md, 1.3), with the model of the
+/// The frame of an input's components (docs/math.md, 1.3), with the model of the
 /// settings.
 ///
 /// # Errors
 ///
-/// [`Error::Options`] for options of `G` out of their ranges, and
-/// [`Error::Unsupported`] for sampling factors that are not whole multiples.
-pub fn frame_of(image: &Image, settings: &Settings) -> Result<Frame, Error> {
-    let count = image.components().len();
+/// [`Error::Options`] for options of `G` out of their ranges, or levels that are not
+/// of the component's blocks; [`Error::Unsupported`] for a color space and a count of
+/// components that do not go together, or sampling factors that are not whole
+/// multiples.
+pub fn frame_of(input: &Input, settings: &Settings) -> Result<Frame, Error> {
+    let count = input.components.len();
+    let expected = if input.color_space == ColorSpace::Grayscale {
+        1
+    } else {
+        3
+    };
+    if count != expected {
+        return Err(Error::Unsupported(format!(
+            "a file of the color space {:?} has {expected} components, not {count}",
+            input.color_space
+        )));
+    }
     let mut problems = Vec::with_capacity(count);
     let mut factors = Vec::with_capacity(count);
-    for (index, component) in image.components().enumerate() {
+    for (index, component) in input.components.iter().enumerate() {
         let data = data_of(settings, index, count)?;
         problems.push(Problem::new(
-            component.coefficients(),
-            blocks(component.height_in_blocks()),
-            blocks(component.width_in_blocks()),
-            component.quant_table(),
+            &component.levels,
+            component.rows,
+            component.columns,
+            &component.quant_table,
             data,
             None,
         )?);
-        factors.push((factor(component.h_samp_factor())?, factor(component.v_samp_factor())?));
+        factors.push((component.h_samp_factor, component.v_samp_factor));
     }
-    Frame::of_file(problems, &factors, (blocks(image.height()), blocks(image.width())))
+    Frame::of_file(problems, &factors, (input.height, input.width))
 }
 
-/// Reconstructs a JPEG file, greyscale or in colour. `observer` is called with the
+/// Reconstructs an input, greyscale or in colour. `observer` is called with the
 /// solver's records, and can stop it.
 ///
 /// # Errors
 ///
-/// [`Error::Read`] for a file that the C layer does not read, and the errors of
-/// [`frame_of`] and of the solvers.
-pub fn decode(data: &[u8], settings: &Settings, observer: Option<&mut Observer<'_>>) -> Result<Decoded, Error> {
-    let image = Image::read(data, &settings.read)?;
-    let frame = frame_of(&image, settings)?;
+/// The errors of [`frame_of`] and of the solvers.
+pub fn solve(input: &Input, settings: &Settings, observer: Option<&mut Observer<'_>>) -> Result<Decoded, Error> {
+    let frame = frame_of(input, settings)?;
     let result = match settings.method {
         Method::Mmse => None,
         Method::Tv => Some(pdhg::solve_tv(&frame, &settings.tv, &settings.pdhg, None, observer)?),
@@ -180,7 +272,7 @@ pub fn decode(data: &[u8], settings: &Settings, observer: Option<&mut Observer<'
         Some(solved) => solved.primal.clone(),
         None => frames::start(&frame, None)?,
     };
-    let (height, width) = (blocks(image.height()), blocks(image.width()));
+    let (height, width) = (input.height, input.width);
     let count = frame.channels().len();
     let mut planes = Vec::with_capacity(count * height * width);
     for channel in 0..count {
@@ -189,7 +281,7 @@ pub fn decode(data: &[u8], settings: &Settings, observer: Option<&mut Observer<'
             planes.extend_from_slice(&row[..width]);
         }
     }
-    let (picture, channels) = match (image.color_space(), count) {
+    let (picture, channels) = match (input.color_space, count) {
         (ColorSpace::YCbCr, _) => (colour::to_rgb(&planes, height, width)?, 3),
         (_, 1) => (planes.clone(), 1),
         _ => {
@@ -209,11 +301,22 @@ pub fn decode(data: &[u8], settings: &Settings, observer: Option<&mut Observer<'
         width,
         channels,
         planes,
-        color_space: image.color_space(),
+        color_space: input.color_space,
         coefficients: point.coefficients,
+        canvas: point.canvas,
         frame,
         result,
-        icc_profile: image.icc_profile().map(<[u8]>::to_vec),
-        exif_orientation: image.exif_orientation(),
+        icc_profile: input.icc_profile.clone(),
+        exif_orientation: input.exif_orientation,
     })
+}
+
+/// Reconstructs a JPEG file, greyscale or in colour: [`solve`] of its [`Input`].
+///
+/// # Errors
+///
+/// [`Error::Read`] for a file that the C layer does not read, and the errors of
+/// [`solve`].
+pub fn decode(data: &[u8], settings: &Settings, observer: Option<&mut Observer<'_>>) -> Result<Decoded, Error> {
+    solve(&Input::read(data, &settings.read)?, settings, observer)
 }

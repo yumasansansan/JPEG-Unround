@@ -43,6 +43,17 @@ same everywhere. A computation that relies on what holds only without rounding,
 such as $x^2 - y^2 \ge 0$ where $|x| \ge |y|$, is written so that no fusing
 breaks it.
 
+A sum of many terms, such as the values of a record (6), is taken in an order
+that depends only on the order of its terms. The terms of a row go to eight
+lanes, term $8k + l$ to lane $l$, each lane adding its terms one after another,
+the last terms of the row as one more eight padded with 0; then the lanes are
+added one after another. The sums of the rows are added in blocks of 128, one
+after another within a block, and the blocks in a tree. A term of a row of $n$
+goes through at most $\lceil n/8 \rceil + 7$ additions, so that the rounding of
+the row's sum is at most $\gamma_{\lceil n/8 \rceil + 7}$ times the sum of the
+magnitudes of its terms, $\gamma_m = m u / (1 - m u)$ with $u = 2^{-53}$ (Higham,
+3.1). The lanes are what the processor's vectors add at once.
+
 The result can be written in binary64, and is then the last iterate's canvas
 itself, cut to the picture, to the last bit: no operation stands between the
 computation and the file. The canvas holds the samples in their own units (0 to
@@ -90,6 +101,22 @@ $\pi (2n+1) k / 16$ would not give the nearest double: the angle is rounded
 before the cosine is taken, which near $\pi/2$ magnifies that rounding several
 times. All three implementations use the same constants, and so the same basis
 to the last bit.
+
+The 8-point transforms go by their even and odd halves. Forward, the sums
+$s_j = x_j + x_{7-j}$ and the differences $d_j = x_j - x_{7-j}$, $j < 4$, give
+the even frequencies $y_{2i} = \sum_{j<4} C_{2i,j}\, s_j$ and the odd ones
+$y_{2i+1} = \sum_{j<4} C_{2i+1,j}\, d_j$; inversely, the even part
+$e_n = \sum_{i<4} C_{2i,n}\, c_{2i}$ and the odd part
+$o_n = \sum_{i<4} C_{2i+1,n}\, c_{2i+1}$, $n < 4$, give $x_n = e_n + o_n$ and
+$x_{7-n} = e_n - o_n$. Each sum of four products is taken from its first term
+on, each product fused with the sum that takes it where the processor can
+(Arithmetic). A block is transformed down its columns and then along its rows,
+and back along its rows and then down its columns. Each output of an 8-point
+transform is then within $e_1 = (1 + u)^2 (1 + \gamma_4) - 1 \approx 6u$ of its
+exact value, times $\sum_n |C_{k,n}|\, |x_n|$ (the sum or difference rounded
+once, the four products and sums, and the entries of $C$ each within $u$), and
+each coefficient of a block within $e_1 (2 + e_1) \approx 12u$ times the entry
+of $|C|\, |X|\, |C|^\top$; the inverse likewise, with $|C|^\top |Z|\, |C|$.
 
 The file holds, for every coefficient $k$ (a block and a frequency), an integer
 $q_k$, and for every frequency the step $Q_k$ of the component's quantization
@@ -587,6 +614,46 @@ where it started with 0.3; on three tuning files none of them brought the gap
 down faster than the fixed ratio. Starting TGV from TV's solution, with $w = 0$
 and TV's $p$, was no faster either: TV's solution is another picture than
 TGV's. (`experiments/results/phase2-solver.md`.)
+
+### 5.1 The layout of the solvers
+
+*Implemented in `planar`, `sweep`, `kernels` and `records`.*
+
+The iterations compute the formulas above, operation for operation and each
+rounded as it is written; what the layout changes is the order in which the
+samples are visited and where they lie in memory.
+
+**The planes.** The canvas is cut into MCUs of $R \times P$ samples, $P = 8a$
+and $R = 8b$ for the largest ratios $a$ across and $b$ down of the components'
+cells (1.3), so that every component's blocks tile an MCU, and the canvas is
+$M$ MCUs across. A row of the canvas holds its $W = P M$ samples as $P$ planes
+of $M$: column $c$ at $(c \bmod P)\, M + \lfloor c / P \rfloor$. The same column
+of every MCU is then one stream, and so is the same coefficient of every block
+of a component at the same place in its MCU: for a component of $P_c = P / a_c$
+columns in an MCU, coefficient $(v, u)$ of block $h m + t$ of a block row
+($h = P_c / 8$ blocks across an MCU, $t < h$) is at
+$(v P_c + 8 t + u)\, M + m$ in the block row. An 8-point transform of eight such
+streams, a proximal map, a difference and a projection are each one loop over
+the MCUs, the same operation on neighbouring values, which the compiler makes
+vector code of the processor's width. The next sample across is in the next
+plane at the same MCU, and after the last plane in the first plane at the next
+MCU.
+
+**The sweep.** An iteration is one pass over the canvas, band of $R$ rows by
+band. For each band, the primal step: $x + \tau \gamma\, \mathrm{div}\, p$ row by
+row, and the proximal map of $G$ block row by block row, the DCT down the
+columns of every plane at once, then along the rows of each set of blocks, the
+map, and back; and for TGV the step of $w$, which needs $p$ and the differences
+of $r$ down to the row below the band. Then the dual steps and the relaxation of
+the band before, whose last row's forward differences down need the first row
+of the new band's $\tilde x$ (and $\tilde w$), and whose backward differences of
+$\bar w$ need the row above. Two bands of $\tilde x$ (and of $\tilde w$) are kept;
+the point is read and written once in an iteration, and the outputs of the
+proximal steps are written out where a record takes them.
+
+**The records.** The values of 6 are computed in the same layout from those
+outputs, row by row, their sums in the order of Arithmetic, which differs from
+that of the natural layout: the two agree within the bounds of their rounding.
 
 ## 6. When to stop: duality gaps
 

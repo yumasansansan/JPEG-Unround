@@ -76,9 +76,9 @@ pub fn to_rgb(planes: &[f64], height: usize, width: usize) -> Result<Vec<f64>, E
     }
     let (luma, rest) = planes.split_at(size);
     let (blue, red) = rest.split_at(size);
-    let mut picture = Vec::with_capacity(3 * size);
-    for ((&y, &cb), &cr) in luma.iter().zip(blue).zip(red) {
-        picture.extend_from_slice(&rgb_of(y, cb, cr));
+    let mut picture = vec![0.0; 3 * size];
+    for (((pixel, &y), &cb), &cr) in picture.as_chunks_mut::<3>().0.iter_mut().zip(luma).zip(blue).zip(red) {
+        *pixel = rgb_of(y, cb, cr);
     }
     Ok(picture)
 }
@@ -99,11 +99,10 @@ pub fn to_ycbcr(picture: &[f64], height: usize, width: usize) -> Result<Vec<f64>
         )));
     }
     let mut planes = vec![0.0; 3 * size];
-    for (index, &[red, green, blue]) in picture.as_chunks::<3>().0.iter().enumerate() {
-        let [y, cb, cr] = ycbcr_of(red, green, blue);
-        planes[index] = y;
-        planes[size + index] = cb;
-        planes[2 * size + index] = cr;
+    let (luma, rest) = planes.split_at_mut(size);
+    let (blue, red) = rest.split_at_mut(size);
+    for (((&[r, g, b], y), cb), cr) in picture.as_chunks::<3>().0.iter().zip(luma).zip(blue).zip(red) {
+        [*y, *cb, *cr] = ycbcr_of(r, g, b);
     }
     Ok(planes)
 }

@@ -633,13 +633,27 @@ fn tgv_starts_from_the_field_given() {
         w: Some(zero.clone()),
         ..Initial::default()
     };
+    // The record adds the same terms as the objective in the order of the planes, whose
+    // rounding and the objective's are each within gamma(ceil(W / 8) + 300) of the sum of
+    // the terms, all of them at least 0 (tests/records.rs).
+    let close = |value: f64, expected: f64| {
+        let bound = 2.0 * gamma(frame.width().div_ceil(8) + 300) * expected * 1.01;
+        assert!(
+            (value - expected).abs() <= bound,
+            "{value} against {expected}, the bound {bound}"
+        );
+    };
     let result = pdhg::solve_tgv(&frame, &Tgv::default(), &options, Some(&first), None).expect("a result");
-    let expected = frames::tgv_objective(&frame, &Tgv::default(), &begin.coefficients, &begin.canvas, &zero);
-    assert_eq!(result.history.primal[0], expected.expect("the objective"));
+    let at_zero = frames::tgv_objective(&frame, &Tgv::default(), &begin.coefficients, &begin.canvas, &zero)
+        .expect("the objective");
+    close(result.history.primal[0], at_zero);
     let default = pdhg::solve_tgv(&frame, &Tgv::default(), &options, None, None).expect("a result");
     let gradient = frames::gradient(&frame, &begin.canvas);
-    let expected = frames::tgv_objective(&frame, &Tgv::default(), &begin.coefficients, &begin.canvas, &gradient);
-    assert_eq!(default.history.primal[0], expected.expect("the objective"));
+    let at_gradient = frames::tgv_objective(&frame, &Tgv::default(), &begin.coefficients, &begin.canvas, &gradient)
+        .expect("the objective");
+    close(default.history.primal[0], at_gradient);
+    // The two starts differ by far more than the rounding.
+    assert!((at_zero - at_gradient).abs() > 1e6 * 2.0 * gamma(frame.width().div_ceil(8) + 300) * at_zero);
     let short = Initial {
         w: Some(Vector::zeros(size - 1)),
         ..Initial::default()

@@ -66,6 +66,13 @@ fn every_entry_of_the_basis_is_the_double_nearest_to_it() {
     assert_eq!(count, 64);
 }
 
+/// A block as a canvas of one block, or as the coefficients of one.
+fn flattened(block: &Block) -> Vec<f64> {
+    let mut values = vec![0.0; BLOCK_SIZE];
+    dct::flatten(block, &mut values);
+    values
+}
+
 fn block_of(fields: &[&str]) -> Block {
     let values: Vec<f64> = fields
         .iter()
@@ -83,8 +90,14 @@ fn the_dct_is_that_of_the_standard_within_its_rounding() {
         assert_eq!(exact[0], "exact");
         let block = block_of(&kind[1..]);
         let (computed, bound) = match kind[0] {
-            "forward" => (dct::forward_block(&block), rounding::forward_error(&block)),
-            "inverse" => (dct::inverse_block(&block), rounding::inverse_error(&block)),
+            "forward" => (
+                dct::gather(&dct::forward(&flattened(&block), BLOCK, BLOCK)),
+                rounding::forward_error(&block),
+            ),
+            "inverse" => (
+                dct::gather(&dct::inverse(&flattened(&block), 1, 1)),
+                rounding::inverse_error(&block),
+            ),
             other => panic!("a line of {other}"),
         };
         for (index, field) in exact[1..].iter().enumerate() {

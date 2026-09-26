@@ -15,6 +15,7 @@ use std::sync::OnceLock;
 
 use crate::dct::{BLOCK_SIZE, multiply_add};
 use crate::exact::{self, Ratio};
+use crate::kernels;
 
 /// Below this `rho`, the shrinkage is its Taylor series.
 const SERIES_BELOW: f64 = 1.0;
@@ -125,6 +126,22 @@ pub fn shrinkage(rho: f64) -> f64 {
     }
 }
 
+/// `delta / Q` of each frequency, from its step and scale: [`shrinkage`] of `Q / scale`,
+/// and 1/2 for a scale of 0.
+#[must_use]
+pub fn shrinkages(table: &[u16; BLOCK_SIZE], scale: &[f64; BLOCK_SIZE]) -> [f64; BLOCK_SIZE] {
+    let mut delta = [0.0; BLOCK_SIZE];
+    for ((shrunk, &step), &scale) in delta.iter_mut().zip(table).zip(scale) {
+        let rho = if scale > 0.0 {
+            f64::from(step) / scale
+        } else {
+            f64::INFINITY
+        };
+        *shrunk = shrinkage(rho);
+    }
+    delta
+}
+
 /// The MMSE centre of every level, in coefficient units, 64 to a block.
 ///
 /// The centre of the level `q` with the step `Q` is `sign(q) (|q| - delta / Q) Q`,
@@ -136,15 +153,7 @@ pub fn shrinkage(rho: f64) -> f64 {
 /// the interval.
 #[must_use]
 pub fn centres(levels: &[i16], table: &[u16; BLOCK_SIZE], scale: &[f64; BLOCK_SIZE]) -> Vec<f64> {
-    let mut delta = [0.0; BLOCK_SIZE];
-    for ((shrunk, &step), &scale) in delta.iter_mut().zip(table).zip(scale) {
-        let rho = if scale > 0.0 {
-            f64::from(step) / scale
-        } else {
-            f64::INFINITY
-        };
-        *shrunk = shrinkage(rho);
-    }
+    let delta = shrinkages(table, scale);
     let mut result = vec![0.0; levels.len()];
     for (centres, block) in result
         .as_chunks_mut::<BLOCK_SIZE>()
@@ -153,10 +162,7 @@ pub fn centres(levels: &[i16], table: &[u16; BLOCK_SIZE], scale: &[f64; BLOCK_SI
         .zip(levels.as_chunks::<BLOCK_SIZE>().0)
     {
         for (((centre, &level), &shrunk), &step) in centres.iter_mut().zip(block).zip(&delta).zip(table) {
-            if level != 0 {
-                let magnitude = (f64::from(level.unsigned_abs()) - shrunk) * f64::from(step);
-                *centre = if level < 0 { -magnitude } else { magnitude };
-            }
+            *centre = kernels::centre(f64::from(level), f64::from(step), shrunk, 0.0);
         }
     }
     result

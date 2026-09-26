@@ -18,8 +18,9 @@
 use crate::dct::{self, BLOCK, BLOCK_SIZE};
 use crate::error::Error;
 use crate::exact::{Sum, nearest_from_usize};
+use crate::kernels;
 use crate::model::{Problem, Step, Tgv, Tv};
-use crate::operators::{self, Shape, ball_factor, tensor_square, vector_square};
+use crate::operators::{self, Shape, tensor_square, vector_square};
 
 /// Where the samples beyond the blocks start, and the centre of their box in 6.6.
 pub const FREE_CENTRE: f64 = 128.0;
@@ -434,30 +435,22 @@ fn put(
 ) {
     let width = frame.width;
     let (rows_covered, columns_covered) = channel.extent();
-    let blocks_across = channel.problem.columns();
+    let (block_rows, blocks_across) = (channel.problem.rows(), channel.problem.columns());
     if channel.cells() == 1 {
+        dct::forward_into(source, width, block_rows, blocks_across, coefficients);
         for (block, values) in coefficients.as_chunks_mut::<BLOCK_SIZE>().0.iter_mut().enumerate() {
-            let (row, column) = (block / blocks_across * BLOCK, block % blocks_across * BLOCK);
-            dct::flatten(&dct::forward_block(&dct::load(source, width, row, column)), values);
             map(block, values);
-            dct::store(&dct::inverse_block(&dct::gather(values)), target, width, row, column);
         }
+        dct::inverse_into(coefficients, block_rows, blocks_across, target, width);
     } else {
         let own = means(channel, source, width);
         let columns = channel.problem.width();
         let mut change = vec![0.0; own.len()];
+        dct::forward_into(&own, columns, block_rows, blocks_across, coefficients);
         for (block, values) in coefficients.as_chunks_mut::<BLOCK_SIZE>().0.iter_mut().enumerate() {
-            let (row, column) = (block / blocks_across * BLOCK, block % blocks_across * BLOCK);
-            dct::flatten(&dct::forward_block(&dct::load(&own, columns, row, column)), values);
             map(block, values);
-            dct::store(
-                &dct::inverse_block(&dct::gather(values)),
-                &mut change,
-                columns,
-                row,
-                column,
-            );
         }
+        dct::inverse_into(coefficients, block_rows, blocks_across, &mut change, columns);
         for (value, &mean) in change.iter_mut().zip(&own) {
             *value -= mean;
         }
@@ -859,8 +852,10 @@ pub fn tgv_values(
     } else {
         weights.alpha1 / largest
     };
-    for value in divergence.x.iter_mut().chain(divergence.y.iter_mut()) {
-        *value *= -theta;
+    for values in [&mut divergence.x, &mut divergence.y] {
+        for value in values.iter_mut() {
+            *value *= -theta;
+        }
     }
     let xi = weighted_divergence(frame, &gammas, &divergence);
     let primal = tgv_objective(frame, weights, coefficients, canvas, w)?;
@@ -909,22 +904,18 @@ pub fn project_vectors(frame: &Frame, field: &mut Vector, radius: f64, coupled: 
                 let index = channel * plane + pixel;
                 added + vector_square(field.x[index], field.y[index])
             });
-            let factor = ball_factor(added, radius);
-            if factor > 1.0 {
-                for channel in 0..count {
-                    let index = channel * plane + pixel;
-                    field.x[index] /= factor;
-                    field.y[index] /= factor;
-                }
+            let scale = kernels::ball_scale(added, radius);
+            for channel in 0..count {
+                let index = channel * plane + pixel;
+                field.x[index] *= scale;
+                field.y[index] *= scale;
             }
         }
     } else {
         for (x, y) in field.x.iter_mut().zip(field.y.iter_mut()) {
-            let factor = ball_factor(vector_square(*x, *y), radius);
-            if factor > 1.0 {
-                *x /= factor;
-                *y /= factor;
-            }
+            let scale = kernels::ball_scale(vector_square(*x, *y), radius);
+            *x *= scale;
+            *y *= scale;
         }
     }
 }
@@ -940,24 +931,20 @@ pub fn project_tensors(frame: &Frame, field: &mut Tensor, radius: f64, coupled: 
                 let index = channel * plane + pixel;
                 added + tensor_square(field.xx[index], field.yy[index], field.xy[index])
             });
-            let factor = ball_factor(added, radius);
-            if factor > 1.0 {
-                for channel in 0..count {
-                    let index = channel * plane + pixel;
-                    field.xx[index] /= factor;
-                    field.yy[index] /= factor;
-                    field.xy[index] /= factor;
-                }
+            let scale = kernels::ball_scale(added, radius);
+            for channel in 0..count {
+                let index = channel * plane + pixel;
+                field.xx[index] *= scale;
+                field.yy[index] *= scale;
+                field.xy[index] *= scale;
             }
         }
     } else {
         for ((xx, yy), xy) in field.xx.iter_mut().zip(field.yy.iter_mut()).zip(field.xy.iter_mut()) {
-            let factor = ball_factor(tensor_square(*xx, *yy, *xy), radius);
-            if factor > 1.0 {
-                *xx /= factor;
-                *yy /= factor;
-                *xy /= factor;
-            }
+            let scale = kernels::ball_scale(tensor_square(*xx, *yy, *xy), radius);
+            *xx *= scale;
+            *yy *= scale;
+            *xy *= scale;
         }
     }
 }

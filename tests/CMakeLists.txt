@@ -10,6 +10,10 @@
 #
 # Where the shared C layer is built, a test checks that it exports its API and
 # nothing else (check_exports.cmake).
+#
+# The header of the C interface of the Rust implementation
+# (rust/capi/include/unround.h) is compiled as C23 and as C++, so that its
+# declarations and the layout of its structures are checked by the compiler.
 
 if(UNROUND_SANITIZER_LIST)
   find_package(Threads REQUIRED)
@@ -48,4 +52,15 @@ if(UNROUND_WITH_PYTHON)
       "-DHEADER=${PROJECT_SOURCE_DIR}/c/jpegio/include/unround/jpegio.h"
       "-DNM=${CMAKE_NM}" "-DOBJDUMP=${CMAKE_OBJDUMP}"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/check_exports.cmake")
+endif()
+
+add_library(unround_header_check OBJECT check_unround_header.c)
+target_include_directories(unround_header_check PRIVATE "${PROJECT_SOURCE_DIR}/rust/capi/include")
+target_link_libraries(unround_header_check PRIVATE unround::jpegio)
+unround_target_defaults(unround_header_check)
+if(UNROUND_WITH_CPP)
+  add_library(unround_header_check_cpp OBJECT check_unround_header.cpp)
+  target_include_directories(unround_header_check_cpp PRIVATE "${PROJECT_SOURCE_DIR}/rust/capi/include")
+  target_link_libraries(unround_header_check_cpp PRIVATE unround::jpegio)
+  unround_target_defaults(unround_header_check_cpp)
 endif()

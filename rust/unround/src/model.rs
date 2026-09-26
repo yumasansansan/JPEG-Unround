@@ -14,9 +14,10 @@
 //! `8 x 128 = 1024` exactly, and that is added to the DC intervals and centres, so
 //! that nothing is added to or taken from the samples (docs/math.md, 1.1).
 
-use crate::dct::{BLOCK, BLOCK_SIZE, multiply_add};
+use crate::dct::{BLOCK, BLOCK_SIZE};
 use crate::error::Error;
 use crate::exact::Sum;
+use crate::kernels;
 use crate::laplace;
 
 /// What the level shift of 128 adds to the DC coefficient of a block: 128 times 8,
@@ -165,6 +166,9 @@ impl Cost {
 pub struct Problem {
     rows: usize,
     columns: usize,
+    levels: Vec<i16>,
+    shrunk: [f64; BLOCK_SIZE],
+    slack: f64,
     lower: Vec<f64>,
     upper: Vec<f64>,
     centres: Vec<f64>,
@@ -180,6 +184,15 @@ pub struct Step {
     scaled: [f64; BLOCK_SIZE],
     inverse: [f64; BLOCK_SIZE],
     shrink: [f64; BLOCK_SIZE],
+}
+
+impl Step {
+    /// `tau w`, `1 / (1 + tau w)` and `tau` times the cost over `1 + tau w`, for each
+    /// frequency.
+    #[must_use]
+    pub fn factors(&self) -> (&[f64; BLOCK_SIZE], &[f64; BLOCK_SIZE], &[f64; BLOCK_SIZE]) {
+        (&self.scaled, &self.inverse, &self.shrink)
+    }
 }
 
 /// `mu` of the data term: `data.mu`, or where it is `None`, `mu_scale` times the
@@ -249,7 +262,9 @@ impl Problem {
         }
         weights[0] *= data.dc_weight;
         let slack = data.slack;
-        let centres = match data.centres {
+        // The shrinkage of each frequency: the MMSE centres', or none for the middles
+        // q Q, which are exact: |q| <= 2^15 and Q < 2^16.
+        let shrunk = match data.centres {
             Centres::Mmse => {
                 let estimated;
                 let scale = if let Some(scale) = scale {
@@ -258,45 +273,49 @@ impl Problem {
                     estimated = laplace::scales(levels, table);
                     &estimated
                 };
-                laplace::centres(levels, table, scale)
+                laplace::shrinkages(table, scale)
             }
-            // The middles q Q are exact: |q| <= 2^15 and Q < 2^16.
-            Centres::Midpoint => levels
-                .iter()
-                .zip(steps.iter().cycle())
-                .map(|(&level, &step)| f64::from(level) * step)
-                .collect(),
+            Centres::Midpoint => [0.0; BLOCK_SIZE],
         };
-        let ends = |sign: f64, widen: f64| -> Vec<f64> {
-            levels
-                .iter()
-                .zip(steps.iter().cycle())
-                .map(|(&level, &step)| ((f64::from(level) + sign * 0.5) + sign * widen) * step)
-                .collect()
+        let mut shifts = [0.0; BLOCK_SIZE];
+        shifts[0] = LEVEL_SHIFT_DC;
+        // A value of each coefficient from its level and its frequency's constants, block
+        // by block.
+        let each = |value: &dyn Fn(f64, usize) -> f64| -> Vec<f64> {
+            let mut values = vec![0.0; levels.len()];
+            for (block, own) in values
+                .as_chunks_mut::<BLOCK_SIZE>()
+                .0
+                .iter_mut()
+                .zip(levels.as_chunks::<BLOCK_SIZE>().0)
+            {
+                for (frequency, (value_of, &level)) in block.iter_mut().zip(own).enumerate() {
+                    *value_of = value(f64::from(level), frequency);
+                }
+            }
+            values
+        };
+        let ends = |half: f64, widen: f64| {
+            each(&|level, frequency| kernels::interval_end(level, half, widen, steps[frequency], shifts[frequency]))
         };
         let mut problem = Self {
             rows,
             columns,
-            lower: ends(-1.0, slack),
-            upper: ends(1.0, slack),
-            centres,
+            levels: levels.to_vec(),
+            shrunk,
+            slack,
+            lower: ends(-0.5, -slack),
+            upper: ends(0.5, slack),
+            centres: each(&|level, frequency| {
+                kernels::centre(level, steps[frequency], shrunk[frequency], shifts[frequency])
+            }),
             steps,
             weights,
             cost: None,
         };
-        for values in [&mut problem.lower, &mut problem.upper, &mut problem.centres] {
-            for block in values.as_chunks_mut::<BLOCK_SIZE>().0 {
-                block[0] += LEVEL_SHIFT_DC;
-            }
-        }
         if slack > 0.0 && data.slack_cost > 0.0 {
-            let mut inner_lower = ends(-1.0, 0.0);
-            let mut inner_upper = ends(1.0, 0.0);
-            for values in [&mut inner_lower, &mut inner_upper] {
-                for block in values.as_chunks_mut::<BLOCK_SIZE>().0 {
-                    block[0] += LEVEL_SHIFT_DC;
-                }
-            }
+            let inner_lower = ends(-0.5, 0.0);
+            let inner_upper = ends(0.5, 0.0);
             let mut costs = [0.0; BLOCK_SIZE];
             for (cost, &step) in costs.iter_mut().zip(&steps) {
                 *cost = data.slack_cost / step;
@@ -314,6 +333,25 @@ impl Problem {
     #[must_use]
     pub fn rows(&self) -> usize {
         self.rows
+    }
+
+    /// The quantized levels, 64 to a block in natural order.
+    #[must_use]
+    pub fn levels(&self) -> &[i16] {
+        &self.levels
+    }
+
+    /// How far towards 0 the centre of each frequency lies, in steps: the MMSE
+    /// shrinkage of its scale (docs/math.md, 2.2), 0 for DC and for the middles.
+    #[must_use]
+    pub fn shrunk(&self) -> &[f64; BLOCK_SIZE] {
+        &self.shrunk
+    }
+
+    /// The slack of the intervals, in steps on each side.
+    #[must_use]
+    pub fn slack(&self) -> f64 {
+        self.slack
     }
 
     /// Blocks across.
@@ -381,7 +419,7 @@ impl Problem {
     #[inline]
     #[must_use]
     pub fn clip_one(&self, index: usize, value: f64) -> f64 {
-        value.max(self.lower[index]).min(self.upper[index])
+        kernels::at_most(kernels::at_least(value, self.lower[index]), self.upper[index])
     }
 
     /// The coefficients, clipped to their intervals.
@@ -414,7 +452,7 @@ impl Problem {
             Some(cost) => (cost.inner_lower[index], cost.inner_upper[index]),
             None => (self.lower[index], self.upper[index]),
         };
-        (lower - value).max(0.0) + (value - upper).max(0.0)
+        kernels::beyond(value, lower, upper)
     }
 
     /// The factors of the proximal map with the step `tau` (docs/math.md, 4.1).
@@ -452,26 +490,32 @@ impl Problem {
         match &self.cost {
             None => {
                 for (frequency, value) in coefficients.iter_mut().enumerate() {
-                    let moved =
-                        multiply_add(step.scaled[frequency], centres[frequency], *value) * step.inverse[frequency];
-                    *value = moved.max(lower[frequency]).min(upper[frequency]);
+                    let moved = kernels::proximal(
+                        *value,
+                        step.scaled[frequency],
+                        step.inverse[frequency],
+                        centres[frequency],
+                    );
+                    *value = kernels::at_most(kernels::at_least(moved, lower[frequency]), upper[frequency]);
                 }
             }
             Some(cost) => {
                 let inner_lower = &cost.inner_lower[range.clone()];
                 let inner_upper = &cost.inner_upper[range];
                 for (frequency, value) in coefficients.iter_mut().enumerate() {
-                    let moved =
-                        multiply_add(step.scaled[frequency], centres[frequency], *value) * step.inverse[frequency];
-                    let shrink = step.shrink[frequency];
-                    let kept = if moved > inner_upper[frequency] {
-                        (moved - shrink).max(inner_upper[frequency])
-                    } else if moved < inner_lower[frequency] {
-                        (moved + shrink).min(inner_lower[frequency])
-                    } else {
-                        moved
-                    };
-                    *value = kept.max(lower[frequency]).min(upper[frequency]);
+                    let moved = kernels::proximal(
+                        *value,
+                        step.scaled[frequency],
+                        step.inverse[frequency],
+                        centres[frequency],
+                    );
+                    let kept = kernels::charged(
+                        moved,
+                        step.shrink[frequency],
+                        inner_lower[frequency],
+                        inner_upper[frequency],
+                    );
+                    *value = kernels::at_most(kernels::at_least(kept, lower[frequency]), upper[frequency]);
                 }
             }
         }
@@ -486,19 +530,54 @@ impl Problem {
     }
 
     /// `G` at coefficients within their intervals: half the sum of `w (c - centre)^2`,
-    /// and the slack's cost.
+    /// and the slack's cost. The terms of a block row are added in lanes
+    /// ([`crate::exact::lanes`]), and the block rows' sums in a [`Sum`].
     #[must_use]
     pub fn data_term(&self, coefficients: &[f64]) -> f64 {
+        let row = self.columns * BLOCK_SIZE;
+        let mut terms = vec![0.0; row];
         let mut squares = Sum::new();
-        for (index, (&value, &centre)) in coefficients.iter().zip(&self.centres).enumerate() {
-            let difference = value - centre;
-            squares.add(self.weights[index % BLOCK_SIZE] * difference * difference);
+        for (values, centres) in coefficients.chunks_exact(row).zip(self.centres.chunks_exact(row)) {
+            // Block by block, each frequency with its weight.
+            for ((terms, values), centres) in terms
+                .as_chunks_mut::<BLOCK_SIZE>()
+                .0
+                .iter_mut()
+                .zip(values.as_chunks::<BLOCK_SIZE>().0)
+                .zip(centres.as_chunks::<BLOCK_SIZE>().0)
+            {
+                for (((term, &value), &centre), &weight) in terms.iter_mut().zip(values).zip(centres).zip(&self.weights)
+                {
+                    *term = kernels::squared_term(value, weight, centre);
+                }
+            }
+            squares.add(crate::exact::lanes(&terms));
         }
         let mut value = 0.5 * squares.total();
         if let Some(cost) = &self.cost {
             let mut charged = Sum::new();
-            for (index, &coefficient) in coefficients.iter().enumerate() {
-                charged.add(cost.costs[index % BLOCK_SIZE] * self.beyond_one(index, coefficient));
+            for ((values, lower), upper) in coefficients
+                .chunks_exact(row)
+                .zip(cost.inner_lower.chunks_exact(row))
+                .zip(cost.inner_upper.chunks_exact(row))
+            {
+                for (((terms, values), lower), upper) in terms
+                    .as_chunks_mut::<BLOCK_SIZE>()
+                    .0
+                    .iter_mut()
+                    .zip(values.as_chunks::<BLOCK_SIZE>().0)
+                    .zip(lower.as_chunks::<BLOCK_SIZE>().0)
+                    .zip(upper.as_chunks::<BLOCK_SIZE>().0)
+                {
+                    for ((term, ((&coefficient, &low), &high)), &charge) in terms
+                        .iter_mut()
+                        .zip(values.iter().zip(lower).zip(upper))
+                        .zip(&cost.costs)
+                    {
+                        *term = charge * kernels::beyond(coefficient, low, high);
+                    }
+                }
+                charged.add(crate::exact::lanes(&terms));
             }
             value += charged.total();
         }
@@ -512,50 +591,84 @@ impl Problem {
     pub fn conjugate_one(&self, index: usize, s: f64) -> f64 {
         let frequency = index % BLOCK_SIZE;
         let weight = self.weights[frequency];
-        let (lower, upper, centre) = (self.lower[index], self.upper[index], self.centres[index]);
-        let Some(cost) = &self.cost else {
-            if weight > 0.0 {
-                let best = (centre + s / weight).max(lower).min(upper);
-                let difference = best - centre;
-                return s * best - 0.5 * weight * (difference * difference);
+        let ends = (self.lower[index], self.upper[index]);
+        let centre = self.centres[index];
+        match &self.cost {
+            None => kernels::conjugate_term::<false>(s, weight, ends, centre, 0.0, ends),
+            Some(cost) => {
+                let inner = (cost.inner_lower[index], cost.inner_upper[index]);
+                kernels::conjugate_term::<true>(s, weight, ends, centre, cost.costs[frequency], inner)
             }
-            // With no weight, the largest of s c over the interval is at one of its ends.
-            return (s * lower).max(s * upper);
-        };
-        let charge = cost.costs[frequency];
-        let (inner_lower, inner_upper) = (cost.inner_lower[index], cost.inner_upper[index]);
-        // The largest of s c - (w/2) (c - centre)^2 - cost dist(c, inner) over the widened
-        // interval: at the quadratic's own top where that is within the inner interval;
-        // beyond it, at the top of the piece with the cost, but not before the inner end;
-        // with no weight, at the end of the piece whose slope keeps its sign.
-        let best = if weight > 0.0 {
-            let top = centre + s / weight;
-            if top > inner_upper {
-                (centre + (s - charge) / weight).max(inner_upper).min(upper)
-            } else if top < inner_lower {
-                (centre + (s + charge) / weight).min(inner_lower).max(lower)
-            } else {
-                top
-            }
-        } else if s > charge {
-            upper
-        } else if s > 0.0 {
-            inner_upper
-        } else if s < -charge {
-            lower
-        } else {
-            inner_lower
-        };
-        let difference = best - centre;
-        s * best - 0.5 * weight * (difference * difference) - charge * self.beyond_one(index, best)
+        }
     }
 
-    /// `G*(xi)`, given the coefficients `s = D xi` (docs/math.md, 4.1).
+    /// `G*(xi)`, given the coefficients `s = D xi` (docs/math.md, 4.1). The terms of a
+    /// block row are added in lanes ([`crate::exact::lanes`]), and the block rows' sums
+    /// in a [`Sum`].
     #[must_use]
     pub fn conjugate(&self, coefficients: &[f64]) -> f64 {
+        let row = self.columns * BLOCK_SIZE;
+        let mut terms = vec![0.0; row];
         let mut total = Sum::new();
-        for (index, &s) in coefficients.iter().enumerate() {
-            total.add(self.conjugate_one(index, s));
+        for (block_row, values) in coefficients.chunks_exact(row).enumerate() {
+            let span = block_row * row..(block_row + 1) * row;
+            let (lower, upper, centres) = (
+                &self.lower[span.clone()],
+                &self.upper[span.clone()],
+                &self.centres[span.clone()],
+            );
+            // Block by block, each frequency with its constants.
+            let own = terms
+                .as_chunks_mut::<BLOCK_SIZE>()
+                .0
+                .iter_mut()
+                .zip(values.as_chunks::<BLOCK_SIZE>().0)
+                .zip(
+                    lower
+                        .as_chunks::<BLOCK_SIZE>()
+                        .0
+                        .iter()
+                        .zip(upper.as_chunks::<BLOCK_SIZE>().0),
+                )
+                .zip(centres.as_chunks::<BLOCK_SIZE>().0);
+            match &self.cost {
+                None => {
+                    for (((terms, values), (lower, upper)), centres) in own {
+                        for (k, term) in terms.iter_mut().enumerate() {
+                            let ends = (lower[k], upper[k]);
+                            *term = kernels::conjugate_term::<false>(
+                                values[k],
+                                self.weights[k],
+                                ends,
+                                centres[k],
+                                0.0,
+                                ends,
+                            );
+                        }
+                    }
+                }
+                Some(cost) => {
+                    let (inner_lower, inner_upper) = (&cost.inner_lower[span.clone()], &cost.inner_upper[span]);
+                    let inner = inner_lower
+                        .as_chunks::<BLOCK_SIZE>()
+                        .0
+                        .iter()
+                        .zip(inner_upper.as_chunks::<BLOCK_SIZE>().0);
+                    for ((((terms, values), (lower, upper)), centres), (inner_lower, inner_upper)) in own.zip(inner) {
+                        for (k, term) in terms.iter_mut().enumerate() {
+                            *term = kernels::conjugate_term::<true>(
+                                values[k],
+                                self.weights[k],
+                                (lower[k], upper[k]),
+                                centres[k],
+                                cost.costs[k],
+                                (inner_lower[k], inner_upper[k]),
+                            );
+                        }
+                    }
+                }
+            }
+            total.add(crate::exact::lanes(&terms));
         }
         total.total()
     }

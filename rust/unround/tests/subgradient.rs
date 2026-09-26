@@ -235,7 +235,14 @@ fn the_iterates_follow_the_options() {
         let samples = f64::from(u32::try_from(canvas.len()).expect("fits"));
         for n in 0..options.iterations {
             let direction = subgradient::subgradient(&frame, &weights, &extrapolated);
-            let length = jpeg_unround::exact::sum(direction.iter().map(|value| value * value)).sqrt();
+            // The squares of each row in lanes, and the rows' sums in a Sum.
+            let mut squares = jpeg_unround::exact::Sum::new();
+            for row in direction.chunks(problem.width()) {
+                squares.add(jpeg_unround::exact::lanes(
+                    &row.iter().map(|value| value * value).collect::<Vec<f64>>(),
+                ));
+            }
+            let length = squares.total().sqrt();
             let base = 1.0 + f64::from(u32::try_from(n).expect("fits"));
             #[expect(clippy::float_cmp, reason = "the decay 1/2 is taken exactly as it is given")]
             let power = if options.decay == 0.5 {

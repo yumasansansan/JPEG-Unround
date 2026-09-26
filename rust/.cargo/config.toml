@@ -5,16 +5,21 @@
 # for Windows, and on the other systems Clang as the linker driver with
 # -fuse-ld=lld (ld.lld on Linux, ld64.lld on macOS). macOS builds are for macOS
 # 26.0 and later, as the C layer they link is.
+#
+# On x86-64 the builds need AVX2 and FMA (x86-64-v3): the kernels of the solvers
+# are vector code of four doubles, and a product is fused with the sum that takes
+# it. ci/avx512.sh builds the same code for AVX-512, with vectors of eight.
 
 [target.x86_64-pc-windows-msvc]
 linker = "lld-link"
+rustflags = ["-C", "target-cpu=x86-64-v3"]
 
 [target.aarch64-pc-windows-msvc]
 linker = "lld-link"
 
 [target.x86_64-unknown-linux-gnu]
 linker = "clang"
-rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+rustflags = ["-C", "link-arg=-fuse-ld=lld", "-C", "target-cpu=x86-64-v3"]
 
 [target.aarch64-unknown-linux-gnu]
 linker = "clang"

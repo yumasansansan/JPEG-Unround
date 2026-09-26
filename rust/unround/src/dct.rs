@@ -9,8 +9,16 @@
 //! left, each 64 in natural order: entry `64 b + 8 v + u` is the coefficient of
 //! vertical frequency `v` and horizontal frequency `u` of block `b`. That is the
 //! layout of the C layer's coefficients.
+//!
+//! The transforms go block row by block row with the 8-point transforms of the
+//! kernels ([`crate::kernels::forward8`]), which take eight streams at a time: down
+//! the columns of the block row at once, its eight rows the streams; and then along
+//! the rows of its blocks, each row of frequencies moved to eight streams, the same
+//! column of every block one stream, as the solvers lay them out ([`crate::planar`]).
 
 use std::f64::consts::FRAC_1_SQRT_2;
+
+use crate::kernels;
 
 /// The side of a block.
 pub const BLOCK: usize = 8;
@@ -109,35 +117,6 @@ pub fn multiply_add(a: f64, b: f64, c: f64) -> f64 {
     }
 }
 
-/// The product `left right` of two 8x8 matrices, row by row: each row of the result
-/// is the sum over `k` of `left[i][k]` times row `k` of `right`, `k` in order.
-#[inline]
-fn product(left: &Block, right: &Block) -> Block {
-    let mut result = [[0.0; BLOCK]; BLOCK];
-    for (row, factors) in result.iter_mut().zip(left) {
-        for (&factor, source) in factors.iter().zip(right) {
-            for (entry, &value) in row.iter_mut().zip(source) {
-                *entry = multiply_add(factor, value, *entry);
-            }
-        }
-    }
-    result
-}
-
-/// The coefficients of a block of samples, `(B X) B^T`.
-#[inline]
-#[must_use]
-pub fn forward_block(samples: &Block) -> Block {
-    product(&product(&BASIS, samples), &BASIS_TRANSPOSED)
-}
-
-/// The samples of a block of coefficients, `(B^T C) B`.
-#[inline]
-#[must_use]
-pub fn inverse_block(coefficients: &Block) -> Block {
-    product(&product(&BASIS_TRANSPOSED, coefficients), &BASIS)
-}
-
 /// The block of a canvas `width` samples wide whose top-left sample is at `row`,
 /// `column`.
 #[inline]
@@ -193,12 +172,81 @@ pub fn forward(canvas: &[f64], height: usize, width: usize) -> Vec<f64> {
     );
     assert_eq!(canvas.len(), height * width, "a canvas of {height} x {width}");
     let mut coefficients = vec![0.0; height * width];
-    let columns = width / BLOCK;
-    for (index, target) in coefficients.as_chunks_mut::<BLOCK_SIZE>().0.iter_mut().enumerate() {
-        let (row, column) = (index / columns * BLOCK, index % columns * BLOCK);
-        flatten(&forward_block(&load(canvas, width, row, column)), target);
-    }
+    forward_into(canvas, width, height / BLOCK, width / BLOCK, &mut coefficients);
     coefficients
+}
+
+/// The coefficients of the `rows x columns` blocks at the top left of a canvas
+/// `stride` samples wide, into `coefficients`: down the columns of every block of a
+/// block row, and then along the rows, the arithmetic of the even and odd halves
+/// (docs/math.md, 1.1).
+///
+/// # Panics
+///
+/// When the canvas does not hold the blocks, or `coefficients` is not their size.
+pub fn forward_into(canvas: &[f64], stride: usize, rows: usize, columns: usize, coefficients: &mut [f64]) {
+    let width = columns * BLOCK;
+    assert!(
+        width <= stride && canvas.len() >= rows * BLOCK * stride,
+        "a canvas holds the blocks"
+    );
+    assert_eq!(
+        coefficients.len(),
+        rows * columns * BLOCK_SIZE,
+        "room for the coefficients"
+    );
+    if width == 0 {
+        return;
+    }
+    let row = BLOCK * width;
+    let (mut down, mut streams, mut along) = (vec![0.0; row], vec![0.0; width], vec![0.0; width]);
+    for (source, target) in canvas.chunks(BLOCK * stride).zip(coefficients.chunks_exact_mut(row)) {
+        kernels::forward8(source, stride, &mut down, width, width);
+        for v in 0..BLOCK {
+            // Row v of each block's vertical frequencies, column u of every block in
+            // stream u; its horizontal frequencies go to row v of each block.
+            to_streams(&down[v * width..(v + 1) * width], BLOCK, &mut streams, columns);
+            kernels::forward8(&streams, columns, &mut along, columns, columns);
+            from_streams(&along, &mut target[v * BLOCK..], BLOCK_SIZE, columns);
+        }
+    }
+}
+
+/// Eight streams of `count` values, one after another in `streams`, from `count`
+/// groups of eight, `stride` apart in `groups`: value `u` of group `m` to value `m` of
+/// stream `u`.
+fn to_streams(groups: &[f64], stride: usize, streams: &mut [f64], count: usize) {
+    let (s0, rest) = streams.split_at_mut(count);
+    let (s1, rest) = rest.split_at_mut(count);
+    let (s2, rest) = rest.split_at_mut(count);
+    let (s3, rest) = rest.split_at_mut(count);
+    let (s4, rest) = rest.split_at_mut(count);
+    let (s5, rest) = rest.split_at_mut(count);
+    let (s6, s7) = rest.split_at_mut(count);
+    let s7 = &mut s7[..count];
+    for (m, group) in groups.chunks(stride).take(count).enumerate() {
+        let group = &group[..BLOCK];
+        (s0[m], s1[m], s2[m], s3[m]) = (group[0], group[1], group[2], group[3]);
+        (s4[m], s5[m], s6[m], s7[m]) = (group[4], group[5], group[6], group[7]);
+    }
+}
+
+/// Eight streams of `count` values to `count` groups of eight, `stride` apart: value
+/// `m` of stream `u` to value `u` of group `m`.
+fn from_streams(streams: &[f64], groups: &mut [f64], stride: usize, count: usize) {
+    let (s0, rest) = streams.split_at(count);
+    let (s1, rest) = rest.split_at(count);
+    let (s2, rest) = rest.split_at(count);
+    let (s3, rest) = rest.split_at(count);
+    let (s4, rest) = rest.split_at(count);
+    let (s5, rest) = rest.split_at(count);
+    let (s6, s7) = rest.split_at(count);
+    let s7 = &s7[..count];
+    for (m, group) in groups.chunks_mut(stride).take(count).enumerate() {
+        let group = &mut group[..BLOCK];
+        (group[0], group[1], group[2], group[3]) = (s0[m], s1[m], s2[m], s3[m]);
+        (group[4], group[5], group[6], group[7]) = (s4[m], s5[m], s6[m], s7[m]);
+    }
 }
 
 /// `D^T`, the inverse DCT: the canvas of `rows x columns` blocks with these
@@ -209,18 +257,45 @@ pub fn forward(canvas: &[f64], height: usize, width: usize) -> Vec<f64> {
 /// When there are not `rows x columns` blocks of coefficients.
 #[must_use]
 pub fn inverse(coefficients: &[f64], rows: usize, columns: usize) -> Vec<f64> {
+    let mut canvas = vec![0.0; rows * columns * BLOCK_SIZE];
+    inverse_into(coefficients, rows, columns, &mut canvas, columns * BLOCK);
+    canvas
+}
+
+/// The samples of `rows x columns` blocks of coefficients into the top left of a
+/// canvas `stride` samples wide: along the rows of every block of a block row, and
+/// then down the columns, as [`forward_into`] computes the other way.
+///
+/// # Panics
+///
+/// When there are not `rows x columns` blocks of coefficients, or the canvas does not
+/// hold them.
+pub fn inverse_into(coefficients: &[f64], rows: usize, columns: usize, canvas: &mut [f64], stride: usize) {
+    let width = columns * BLOCK;
     assert_eq!(
         coefficients.len(),
         rows * columns * BLOCK_SIZE,
         "coefficients of {rows} x {columns} blocks"
     );
-    let width = columns * BLOCK;
-    let mut canvas = vec![0.0; coefficients.len()];
-    for (index, block) in coefficients.as_chunks::<BLOCK_SIZE>().0.iter().enumerate() {
-        let (row, column) = (index / columns * BLOCK, index % columns * BLOCK);
-        store(&inverse_block(&gather(block)), &mut canvas, width, row, column);
+    assert!(
+        width <= stride && canvas.len() >= rows * BLOCK * stride,
+        "a canvas holds the blocks"
+    );
+    if width == 0 {
+        return;
     }
-    canvas
+    let row = BLOCK * width;
+    let (mut streams, mut along, mut down) = (vec![0.0; width], vec![0.0; width], vec![0.0; row]);
+    for (source, target) in coefficients.chunks_exact(row).zip(canvas.chunks_mut(BLOCK * stride)) {
+        for v in 0..BLOCK {
+            // Row v of each block's coefficients, frequency u of every block in stream
+            // u; the samples of its horizontal inverse go to row v of the block row.
+            to_streams(&source[v * BLOCK..], BLOCK_SIZE, &mut streams, columns);
+            kernels::inverse8(&streams, columns, &mut along, columns, columns);
+            from_streams(&along, &mut down[v * width..(v + 1) * width], BLOCK, columns);
+        }
+        kernels::inverse8(&down, width, target, stride, width);
+    }
 }
 
 #[cfg(test)]

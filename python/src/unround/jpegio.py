@@ -9,24 +9,26 @@ decodes the component planes as libjpeg's standard decoder does, before
 upsampling and color conversion. Here the results are copied into NumPy arrays,
 which are read-only, and the C layer's memory is freed before a function returns.
 
-The shared library is the one at the path in the environment variable
-UNROUND_JPEGIO_LIBRARY, or else the one in unround/_native, where a wheel carries
-it. CMake builds it with -DUNROUND_WITH_PYTHON=ON, into python/ of the build
-directory. ctypes releases the GIL while the library reads, so threads read
-files at once.
+The C layer is in two libraries: its own, which CMake builds with
+-DUNROUND_WITH_PYTHON=ON into python/ of the build directory, and the reference
+implementation's (unround.native), which passes its functions on under names of its
+own. The one used is the one at the path in the environment variable
+UNROUND_JPEGIO_LIBRARY, or else UNROUND_LIBRARY, or else the one in unround/_native,
+where a wheel carries it. ctypes releases the GIL while the library reads, so
+threads read files at once.
 """
 
 import ctypes
 import enum
 import functools
-import os
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
 import numpy as np
 import numpy.typing as npt
+
+from unround import _loading
 
 __all__ = [
     "ABI_VERSION",
@@ -216,13 +218,6 @@ class Planes:
     """The first corrupt-data warning libjpeg reported while decoding, or an empty string."""
 
 
-_LIBRARY_NAMES: Final = {"win32": "unround_jpegio.dll", "darwin": "libunround_jpegio.dylib"}
-
-
-def _library_name() -> str:
-    return _LIBRARY_NAMES.get(sys.platform, "libunround_jpegio.so")
-
-
 def _check_layout() -> None:
     for structure, size in _SIZES:
         if ctypes.sizeof(structure) != size:
@@ -230,62 +225,90 @@ def _check_layout() -> None:
             raise RuntimeError(message)
 
 
+# The libraries that hold the C layer, where they are looked for in this order: its
+# own, and the reference implementation's, which passes its functions on under names
+# of its own.
+_SOURCES: Final = (
+    ("UNROUND_JPEGIO_LIBRARY", _loading.C_LAYER, "unround_jpegio_"),
+    ("UNROUND_LIBRARY", _loading.RUST, "unround_jpeg_"),
+)
+
+
+def _find() -> tuple[Path, str]:
+    for variable, _, prefix in _SOURCES:
+        path = _loading.configured(variable)
+        if path is not None:
+            if not path.is_file():
+                message = f"{variable} names {path}, where there is no file"
+                raise LibraryNotFoundError(message)
+            return path, prefix
+    for _, stem, prefix in _SOURCES:
+        path = _loading.bundled(stem)
+        if path is not None:
+            return path, prefix
+    message = (
+        "no library holds the C layer: build the reference implementation's with cargo build --release "
+        "-p unround-capi in rust/ (it is written into rust/target/release) and set UNROUND_LIBRARY to it, or "
+        "the C layer's own with cmake --preset release -DUNROUND_WITH_PYTHON=ON (into build/release/python) "
+        "and set UNROUND_JPEGIO_LIBRARY to it"
+    )
+    raise LibraryNotFoundError(message)
+
+
 @functools.cache
-def _library() -> ctypes.CDLL:
+def _library() -> tuple[ctypes.CDLL, str]:
+    """The library that holds the C layer, and the prefix of the names of its functions."""
     _check_layout()
-    configured = os.environ.get("UNROUND_JPEGIO_LIBRARY")
-    path = Path(configured) if configured else Path(__file__).parent / "_native" / _library_name()
-    if not path.is_file():
-        where = "UNROUND_JPEGIO_LIBRARY names" if configured else "the package holds no"
-        message = (
-            f"{where} {path}: build the C layer with cmake --preset release -DUNROUND_WITH_PYTHON=ON "
-            f"(it is written into build/release/python) and set UNROUND_JPEGIO_LIBRARY to it"
-        )
-        raise LibraryNotFoundError(message)
+    path, prefix = _find()
     library = ctypes.CDLL(str(path))
-
-    library.unround_jpegio_abi_version.argtypes = ()
-    library.unround_jpegio_abi_version.restype = ctypes.c_int32
-    library.unround_jpegio_libjpeg_version.argtypes = ()
-    library.unround_jpegio_libjpeg_version.restype = ctypes.c_char_p
-    library.unround_jpegio_read.argtypes = (
-        ctypes.c_char_p,
-        ctypes.c_size_t,
-        ctypes.POINTER(_Options),
-        ctypes.POINTER(_Image),
-        ctypes.c_char_p,
-        ctypes.c_size_t,
+    message = (ctypes.c_char_p, ctypes.c_size_t)
+    signatures: tuple[tuple[str, object, tuple[object, ...]], ...] = (
+        ("abi_version", ctypes.c_int32, ()),
+        ("libjpeg_version", ctypes.c_char_p, ()),
+        (
+            "read",
+            ctypes.c_int32,
+            (ctypes.c_char_p, ctypes.c_size_t, ctypes.POINTER(_Options), ctypes.POINTER(_Image), *message),
+        ),
+        ("image_free", None, (ctypes.POINTER(_Image),)),
+        (
+            "decode_planes",
+            ctypes.c_int32,
+            (ctypes.c_char_p, ctypes.c_size_t, ctypes.POINTER(_Options), ctypes.POINTER(_Planes), *message),
+        ),
+        ("planes_free", None, (ctypes.POINTER(_Planes),)),
     )
-    library.unround_jpegio_read.restype = ctypes.c_int32
-    library.unround_jpegio_image_free.argtypes = (ctypes.POINTER(_Image),)
-    library.unround_jpegio_image_free.restype = None
-    library.unround_jpegio_decode_planes.argtypes = (
-        ctypes.c_char_p,
-        ctypes.c_size_t,
-        ctypes.POINTER(_Options),
-        ctypes.POINTER(_Planes),
-        ctypes.c_char_p,
-        ctypes.c_size_t,
-    )
-    library.unround_jpegio_decode_planes.restype = ctypes.c_int32
-    library.unround_jpegio_planes_free.argtypes = (ctypes.POINTER(_Planes),)
-    library.unround_jpegio_planes_free.restype = None
-
-    version = int(library.unround_jpegio_abi_version())
+    for name, result, arguments in signatures:
+        function = getattr(library, prefix + name)
+        function.argtypes = arguments
+        function.restype = result
+    version = int(getattr(library, prefix + "abi_version")())
     if version != ABI_VERSION:
-        message = f"{path} is of ABI version {version}, and this module of version {ABI_VERSION}"
-        raise LibraryNotFoundError(message)
-    return library
+        message_text = f"{path} holds the C layer of ABI version {version}, and this module is of version {ABI_VERSION}"
+        raise LibraryNotFoundError(message_text)
+    return library, prefix
+
+
+def _call(name: str, *arguments: object) -> int:
+    """A function of the C layer, by its name without the prefix: its status, or its value."""
+    library, prefix = _library()
+    return int(getattr(library, prefix + name)(*arguments))
+
+
+def _free(name: str, *arguments: object) -> None:
+    library, prefix = _library()
+    getattr(library, prefix + name)(*arguments)
 
 
 def abi_version() -> int:
     """UNROUND_JPEGIO_ABI_VERSION of the library that is loaded."""
-    return int(_library().unround_jpegio_abi_version())
+    return _call("abi_version")
 
 
 def libjpeg_version() -> str:
     """The name and version of the libjpeg the C layer is built with."""
-    version: bytes = _library().unround_jpegio_libjpeg_version()
+    library, prefix = _library()
+    version: bytes = getattr(library, prefix + "libjpeg_version")()
     return version.decode("ascii")
 
 
@@ -346,16 +369,11 @@ def read(
     makes a corrupt-data warning fail the read. A file that cannot be read
     raises JpegioError.
     """
-    library = _library()
     buffer = bytes(data)
     options = _options(max_pixels, max_scans, warnings_are_errors=warnings_are_errors)
     raw = _Image()
     message = ctypes.create_string_buffer(_MESSAGE_SIZE)
-    status = int(
-        library.unround_jpegio_read(
-            buffer, len(buffer), ctypes.byref(options), ctypes.byref(raw), message, _MESSAGE_SIZE
-        )
-    )
+    status = _call("read", buffer, len(buffer), ctypes.byref(options), ctypes.byref(raw), message, _MESSAGE_SIZE)
     text = message.value.decode("utf-8", "replace")
     _raise_for(status, text)
     try:
@@ -376,7 +394,7 @@ def read(
             icc_profile=icc_profile,
         )
     finally:
-        library.unround_jpegio_image_free(ctypes.byref(raw))
+        _free("image_free", ctypes.byref(raw))
 
 
 def decode_planes(
@@ -387,15 +405,12 @@ def decode_planes(
     warnings_are_errors: bool = False,
 ) -> Planes:
     """Decode the component planes of a JPEG file in memory, with the limits of read()."""
-    library = _library()
     buffer = bytes(data)
     options = _options(max_pixels, max_scans, warnings_are_errors=warnings_are_errors)
     raw = _Planes()
     message = ctypes.create_string_buffer(_MESSAGE_SIZE)
-    status = int(
-        library.unround_jpegio_decode_planes(
-            buffer, len(buffer), ctypes.byref(options), ctypes.byref(raw), message, _MESSAGE_SIZE
-        )
+    status = _call(
+        "decode_planes", buffer, len(buffer), ctypes.byref(options), ctypes.byref(raw), message, _MESSAGE_SIZE
     )
     text = message.value.decode("utf-8", "replace")
     _raise_for(status, text)
@@ -411,4 +426,4 @@ def decode_planes(
             planes.append(_read_only(np.array(samples[:, :width], dtype=np.uint8, copy=True)))
         return Planes(planes=tuple(planes), warning=text)
     finally:
-        library.unround_jpegio_planes_free(ctypes.byref(raw))
+        _free("planes_free", ctypes.byref(raw))

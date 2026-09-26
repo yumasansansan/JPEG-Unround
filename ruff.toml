@@ -5,8 +5,9 @@
 # is held to the rules of the package (python/pyproject.toml).
 extend = "python/pyproject.toml"
 src = ["python/src", "scripts", "experiments", "ci", "conformance"]
-# The feature probes are not held to these rules yet.
-extend-exclude = ["tools"]
+# The feature probes are not held to these rules yet, and the libraries of extern/
+# are others' code.
+extend-exclude = ["tools", "extern"]
 
 # Command-line programs print, run the tools they are pointed at, and compare with
 # the numbers of formats and of the rules of their task.

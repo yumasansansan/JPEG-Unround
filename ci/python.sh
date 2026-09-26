@@ -5,10 +5,11 @@
 #   ci/python.sh <preset>
 #
 # Builds the shared C layer with a CMake preset (-DUNROUND_WITH_PYTHON=ON) and
-# checks that it exports its API and nothing else; then checks and tests the
-# Python implementation (python/) in the micromamba environment of
-# environment.yml, with the library it just built: ruff (the rules and the
-# layout), mypy (strict) and pytest. The Python outside the package (scripts/,
+# checks that it exports its API and nothing else, and the C interface of the Rust
+# implementation (rust/capi, in the release profile), which the package's module
+# native loads; then checks and tests the Python implementation (python/) in the
+# micromamba environment of environment.yml, with the libraries it just built:
+# ruff (the rules and the layout), mypy (strict) and pytest. The Python outside the package (scripts/,
 # experiments/, ci/ and conformance/, with ruff.toml) is held to the same rules
 # and types, and the exact references of conformance/ are checked against their
 # definitions.
@@ -28,18 +29,23 @@ cmake --preset "$preset" -DUNROUND_WITH_PYTHON=ON
 cmake --build --preset "$preset" --target unround_jpegio_shared
 ctest --preset "$preset" --tests-regex '^c\.jpegio\.exports$'
 
+(cd rust && cargo build --release --locked -p unround-capi)
+
 case "$(uname -s)" in
-  Linux) name=libunround_jpegio.so ;;
-  Darwin) name=libunround_jpegio.dylib ;;
-  MINGW* | MSYS* | CYGWIN*) name=unround_jpegio.dll ;;
+  Linux) name=libunround_jpegio.so capi=libunround_capi.so ;;
+  Darwin) name=libunround_jpegio.dylib capi=libunround_capi.dylib ;;
+  MINGW* | MSYS* | CYGWIN*) name=unround_jpegio.dll capi=unround_capi.dll ;;
   *) echo "error: this script does not know the system $(uname -s)" >&2; exit 1 ;;
 esac
 library=$(pwd -P)/build/$preset/python/$name
+native=$(pwd -P)/rust/target/release/$capi
 if command -v cygpath > /dev/null; then
   library=$(cygpath --windows "$library")
+  native=$(cygpath --windows "$native")
 fi
-export UNROUND_JPEGIO_LIBRARY=$library
+export UNROUND_JPEGIO_LIBRARY=$library UNROUND_LIBRARY=$native
 echo "== UNROUND_JPEGIO_LIBRARY=$UNROUND_JPEGIO_LIBRARY"
+echo "== UNROUND_LIBRARY=$UNROUND_LIBRARY"
 
 if [ -n "${UNROUND_PYTHON_PREFIX:-}" ]; then
   environment=(--prefix "$UNROUND_PYTHON_PREFIX")

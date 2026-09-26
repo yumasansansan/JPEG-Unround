@@ -27,16 +27,11 @@ fn quantized(sample: f64, top: f64) -> u16 {
 ///
 /// [`Error::Options`] for a sample that is not finite.
 pub fn eight_bits(samples: &[f64]) -> Result<Vec<u8>, Error> {
-    samples
+    finite(samples)?;
+    Ok(samples
         .iter()
-        .map(|&sample| {
-            if sample.is_finite() {
-                Ok(u8::try_from(quantized(sample, 255.0)).unwrap_or(u8::MAX))
-            } else {
-                Err(Error::Options(format!("a sample to quantize is not finite: {sample}")))
-            }
-        })
-        .collect()
+        .map(|&sample| u8::try_from(quantized(sample, 255.0)).unwrap_or(u8::MAX))
+        .collect())
 }
 
 /// 16-bit samples of a picture: each times 257, so that 255 is 65535, rounded to the
@@ -46,16 +41,25 @@ pub fn eight_bits(samples: &[f64]) -> Result<Vec<u8>, Error> {
 ///
 /// [`Error::Options`] for a sample that is not finite.
 pub fn sixteen_bits(samples: &[f64]) -> Result<Vec<u16>, Error> {
-    samples
+    finite(samples)?;
+    Ok(samples
         .iter()
-        .map(|&sample| {
-            if sample.is_finite() {
-                Ok(quantized(sample * 257.0, 65535.0))
-            } else {
-                Err(Error::Options(format!("a sample to quantize is not finite: {sample}")))
-            }
-        })
-        .collect()
+        .map(|&sample| quantized(sample * 257.0, 65535.0))
+        .collect())
+}
+
+/// [`Error::Options`] for the first sample that is not finite, if any: whether all
+/// are is taken over every sample, without stopping, as one vectorized loop.
+fn finite(samples: &[f64]) -> Result<(), Error> {
+    if samples.iter().fold(true, |all, sample| all & sample.is_finite()) {
+        return Ok(());
+    }
+    let sample = samples
+        .iter()
+        .copied()
+        .find(|sample| !sample.is_finite())
+        .unwrap_or(f64::NAN);
+    Err(Error::Options(format!("a sample to quantize is not finite: {sample}")))
 }
 
 /// The bytes of a PNM file of `height x width` pixels of 1 (`P5`) or 3 (`P6`)

@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: 2026 Yuma Kakei <yumasansansan@gmail.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# The loops of the library that may compute in scalar floating point, and why
+# (ci/vectorization.py). A key is the beginning of the names, demangled, of the
+# functions it allows. Everything else, the iterations of the solvers and their
+# records above all, is vector code of the full width.
+
+# Functions whose loops may be scalar.
+[functions]
+"jpeg_unround::frames::" = "the natural layout: the definitions that the layout of the solvers is tested against, one sample at a time; the objective that the subgradient method records; the projection of a dual field given to start from"
+"jpeg_unround::laplace::" = "the logarithms and exponentials of the system's library, one frequency at a time, once for each file"
+
+# Functions whose loops may be scalar where they only add: sums in a fixed order.
+[sums]
+"jpeg_unround::exact::" = "the terms of a block of a Sum, its partial sums, and the lanes of a row, each added after the one before"
+"jpeg_unround::records::" = "the sums of the rows added in a Sum, and the totals of the channels in their order"
+"jpeg_unround::model::Problem::" = "the sums of the block rows added in a Sum"
+"jpeg_unround::subgradient::solve_tv" = "the sums of the rows of the step's length and of the objective added in a Sum"
