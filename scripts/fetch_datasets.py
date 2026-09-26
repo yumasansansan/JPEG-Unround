@@ -11,7 +11,9 @@ are not. Each set comes under terms of its own, which `list` shows with where
 they are written, and which have to be read before a set is used, or a picture
 of it shown: nothing fetched may be committed (data/ is ignored) or passed on.
 
-Two sets are fetched: Kodak's Photo CD sampler and the test pictures of BSDS500.
+Two sets are fetched: Kodak's Photo CD sampler, and BSDS500, whose pictures are
+put in its three splits: train and val, to choose what the model is tuned to, and
+test, to measure it on.
 LIVE1 is given out on request only, so it is put in place by hand, as `list`
 says. Classic5 is not used: no source of it states terms, and one of its five
 pictures is refused by several journals.
@@ -67,7 +69,7 @@ KODAK: Final = Dataset(
 
 BSDS500: Final = Dataset(
     name="bsds500",
-    title="Berkeley Segmentation Data Set 500: its 200 test pictures, 481x321 or 321x481, JPEG",
+    title="Berkeley Segmentation Data Set 500: 200 train, 100 val and 200 test pictures, 481x321 or 321x481, JPEG",
     source="https://www2.eecs.berkeley.edu/Research/Projects/CS/vision/grouping/resources.html",
     terms=(
         "For non-commercial research and teaching; a use cites Martin et al., ICCV 2001. The pictures are Corel's. "
@@ -158,26 +160,31 @@ def download(url: str, target: Path) -> None:
     partial.replace(target)
 
 
-def extract_bsds500(archive: Path, directory: Path) -> int:
-    """The test pictures of the archive, into directory/test/, by their own names: nothing else is written."""
-    test = directory / "test"
-    test.mkdir(exist_ok=True)
-    count = 0
+BSDS500_SPLITS: Final = {"train": 200, "val": 100, "test": 200}
+
+
+def extract_bsds500(archive: Path, directory: Path) -> dict[str, int]:
+    """The pictures of the archive's splits, into directory/<split>/, by their own names: nothing else is written."""
+    counts = dict.fromkeys(BSDS500_SPLITS, 0)
+    for split in BSDS500_SPLITS:
+        (directory / split).mkdir(exist_ok=True)
     with tarfile.open(archive, "r:gz") as tar:
         for member in tar:
             path = PurePosixPath(member.name)
+            split = path.parent.name
             if (
                 member.isfile()
-                and path.parent == PurePosixPath("BSR/BSDS500/data/images/test")
+                and split in BSDS500_SPLITS
+                and path.parent == PurePosixPath("BSR/BSDS500/data/images") / split
                 and path.suffix == ".jpg"
             ):
                 source = tar.extractfile(member)
                 if source is None:
                     continue
-                with source, (test / path.name).open("wb") as stream:
+                with source, (directory / split / path.name).open("wb") as stream:
                     stream.write(source.read())
-                count += 1
-    return count
+                counts[split] += 1
+    return counts
 
 
 def fetch(dataset: Dataset, digests: dict[str, str], *, record: bool) -> int:
@@ -207,9 +214,10 @@ def fetch(dataset: Dataset, digests: dict[str, str], *, record: bool) -> int:
             print(f"error: {key} has the SHA-256 {digest}, not the {digests[key]} recorded")
             failures += 1
     if dataset is BSDS500 and not failures:
-        count = extract_bsds500(directory / "BSR_bsds500.tgz", directory)
-        print(f"{count} test pictures in {(directory / 'test').as_posix()}")
-        failures += count != 200
+        counts = extract_bsds500(directory / "BSR_bsds500.tgz", directory)
+        for split, count in counts.items():
+            print(f"{count} {split} pictures in {(directory / split).as_posix()}")
+            failures += count != BSDS500_SPLITS[split]
     if not failures:
         print(f"{dataset.name}: {len(dataset.files)} files in {directory.as_posix()}")
     return failures

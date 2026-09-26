@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: 2026 Yuma Kakei <yumasansansan@gmail.com>
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Synthetic test images for JPEG-Unround, and their JPEG files.
+"""Synthetic test images for JPEG-Unround, originals of the photographs, and their JPEG files.
 
     python scripts/test_images.py synthesize [--out data/synthetic]
+    python scripts/test_images.py photos [--photos data/photos] [--out data/photo-originals]
     python scripts/test_images.py encode --cjpeg <cjpeg> --encoder <name> [--source data/synthetic] [--out data/jpeg]
 
 synthesize draws the originals: text, charts, gradients, line art, user
@@ -21,6 +22,13 @@ antialiasing; text is drawn at its size, as a screen draws it.
 The originals are split, per category, into images for tuning parameters (the
 first two of each) and images for testing (the other three): parameters are
 never tuned on the images they are tested with.
+
+photos makes originals of the photographs that scripts/fetch_datasets.py fetched,
+in colour (PPM) and grey (PGM), split alike: for tuning, the first 24 pictures of
+BSDS500's train split by name; for testing, the first 24 of its test split and all
+24 of Kodak's. BSDS500's pictures are JPEG files, decoded by Pillow's libjpeg-turbo:
+their own blocking is in the reference. scripts/photo-originals.sha256 lists the
+bytes they make, and photos checks them as synthesize does.
 
 encode writes each original as JPEG with a cjpeg -- libjpeg-turbo's, pinned by
 the submodule, or mozjpeg's, whose trellis quantization is a case to study -- at
@@ -47,6 +55,8 @@ from PIL import Image, ImageDraw, ImageFont
 
 ROOT: Final = Path(__file__).resolve().parent.parent
 HASHES: Final = ROOT / "scripts" / "test-images.sha256"
+PHOTO_HASHES: Final = ROOT / "scripts" / "photo-originals.sha256"
+PHOTOS_PER_SPLIT: Final = 24
 SCALE: Final = 4  # shapes are drawn this many times larger and averaged down
 QUALITIES: Final = (10, 20, 30, 50, 70, 90)
 SAMPLINGS: Final = {"444": "1x1", "422": "2x1", "420": "2x2"}
@@ -390,24 +400,49 @@ def synthesize(out: Path) -> list[Original]:
     return made
 
 
+def photos(source: Path, out: Path) -> list[Original]:
+    """Originals of the fetched photographs: PPM and the JFIF luma as PGM, by split."""
+    chosen: list[tuple[str, str, Path]] = []
+    train = sorted((source / "bsds500" / "train").glob("*.jpg"))[:PHOTOS_PER_SPLIT]
+    test = sorted((source / "bsds500" / "test").glob("*.jpg"))[:PHOTOS_PER_SPLIT]
+    kodak = sorted((source / "kodak").glob("kodim*.png"))
+    if len(train) < PHOTOS_PER_SPLIT or len(test) < PHOTOS_PER_SPLIT or len(kodak) != PHOTOS_PER_SPLIT:
+        message = f"{source} lacks photographs: fetch kodak and bsds500 with scripts/fetch_datasets.py"
+        raise FileNotFoundError(message)
+    chosen += [("tuning", f"bsds-{path.stem}", path) for path in train]
+    chosen += [("test", f"bsds-{path.stem}", path) for path in test]
+    chosen += [("test", f"kodak-{path.stem}", path) for path in kodak]
+    made = []
+    for split, name, path in chosen:
+        with Image.open(path) as image:
+            pixels = np.asarray(image.convert("RGB"), dtype=np.uint8)
+        colour = out / split / f"{name}.ppm"
+        write_pnm(colour, pixels)
+        made.append(Original(split, name, colour))
+        grey_path = out / split / f"{name}-grey.pgm"
+        write_pnm(grey_path, grey(pixels))
+        made.append(Original(split, f"{name}-grey", grey_path))
+    return made
+
+
 def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def check_hashes(originals: list[Original], out: Path, *, record: bool) -> int:
+def check_hashes(originals: list[Original], out: Path, *, record: bool, hashes: Path = HASHES) -> int:
     lines = [f"{sha256(original.path)}  {original.path.relative_to(out).as_posix()}" for original in originals]
     if record:
-        HASHES.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
-        print(f"recorded {len(lines)} hashes in {HASHES.relative_to(ROOT).as_posix()}")
+        hashes.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
+        print(f"recorded {len(lines)} hashes in {hashes.relative_to(ROOT).as_posix()}")
         return 0
-    expected = HASHES.read_text(encoding="utf-8").splitlines() if HASHES.is_file() else []
+    expected = hashes.read_text(encoding="utf-8").splitlines() if hashes.is_file() else []
     if lines != expected:
         differing = sorted(set(lines) ^ set(expected))
-        print(f"error: {len(differing)} lines differ from {HASHES.relative_to(ROOT).as_posix()}:")
+        print(f"error: {len(differing)} lines differ from {hashes.relative_to(ROOT).as_posix()}:")
         for line in differing[:20]:
             print(f"  {line}")
         return 1
-    print(f"{len(lines)} originals, byte for byte as {HASHES.relative_to(ROOT).as_posix()} lists them")
+    print(f"{len(lines)} originals, byte for byte as {hashes.relative_to(ROOT).as_posix()} lists them")
     return 0
 
 
@@ -460,6 +495,10 @@ def main() -> int:
     make = commands.add_parser("synthesize", help="draw the originals")
     make.add_argument("--out", type=Path, default=ROOT / "data" / "synthetic")
     make.add_argument("--record", action="store_true", help="write the hashes instead of checking them")
+    shot = commands.add_parser("photos", help="make originals of the fetched photographs")
+    shot.add_argument("--photos", type=Path, default=ROOT / "data" / "photos")
+    shot.add_argument("--out", type=Path, default=ROOT / "data" / "photo-originals")
+    shot.add_argument("--record", action="store_true", help="write the hashes instead of checking them")
     write = commands.add_parser("encode", help="write the originals as JPEG with a cjpeg")
     write.add_argument("--cjpeg", type=Path, required=True)
     write.add_argument("--encoder", required=True, help="a name for the encoder, the directory of its files")
@@ -471,6 +510,9 @@ def main() -> int:
     if options.command == "synthesize":
         originals = synthesize(options.out)
         return check_hashes(originals, options.out, record=options.record)
+    if options.command == "photos":
+        originals = photos(options.photos, options.out)
+        return check_hashes(originals, options.out, record=options.record, hashes=PHOTO_HASHES)
     return encode(options.cjpeg, options.encoder, options.source, options.out, options.extra)
 
 

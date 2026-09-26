@@ -21,14 +21,25 @@ levels and steps of 16 bits; the coefficients of the series of 2.2, computed in
 rationals; and, for pictures of integers, the sums and means of the metrics. A
 rational enters floating point once, rounded to the nearest double. With a slack
 $s$, the ends are $((q - \tfrac12) - s) Q$ and $((q + \tfrac12) + s) Q$, with
-1024 added to those of DC last (1.1), in that order, so that every
-implementation rounds them alike.
+1024 added to those of DC last (1.1); they are computed in floating point.
 
 What needs floating point (the basis of the DCT, square roots, logarithms and
 exponentials, and the iterations) is computed in binary64 at least; binary32 is
 not used. A constant is the double nearest to its value, as the cosines of 1.1
 are. The tests take their tolerances from bounds of rounding error, and check
 what holds exactly in exact arithmetic.
+
+In floating point, speed comes first. Where the processor has a fused
+multiply–add, an implementation may fuse a product with the sum or difference
+that takes it, and round once where the two operations would round twice. The
+bounds of rounding error hold all the same: they are derived in the standard
+model, each operation exact to a factor $1 + \delta$ with $|\delta| \le 2^{-53}$
+in binary64, and a fused product is the case $\delta = 0$. What is computed in
+floating point may therefore differ in its last bits between implementations,
+builds and processors; what is rational is computed exactly first, and is the
+same everywhere. A computation that relies on what holds only without rounding,
+such as $x^2 - y^2 \ge 0$ where $|x| \ge |y|$, is written so that no fusing
+breaks it.
 
 The result can be written in binary64, and is then the last iterate's canvas
 itself, cut to the picture, to the last bit: no operation stands between the
@@ -102,6 +113,12 @@ $$ P_{\mathcal{C}}(x) = D^\top \mathrm{clip}(D x, a, b). $$
 Every output of JPEG-Unround lies in $\mathcal{C}$: the coefficients of the
 floating-point result are within their intervals, to $10^{-4} Q_k$, checked
 in binary64. The slack is 0 unless it is asked for.
+
+A slack can have a cost (4.1): the widened interval stays hard, and a coefficient
+that leaves the file's own interval, $[(q_k - \tfrac12) Q_k, (q_k + \tfrac12) Q_k]$
+with 1024 on DC, costs a price per step of the way. The result then leaves that
+interval only where the regularizer gains more than the price; it lies within
+the widened one, as with any slack. By default there is no cost.
 
 Where the original lies (measured in `experiments/results/phase0.md`): a file
 of libjpeg's encoder has the original within its intervals, apart from the
@@ -323,23 +340,29 @@ $$ \|K\|^2 \le \tfrac12 \bigl(17 + \sqrt{33}\bigr) \approx 11.37 < 12. $$
 
 ## 4. The models
 
-*Implemented in `unround/model.py` for one component, and in `unround/frame.py`
+*Implemented in `unround/model.py` for one component, and in `unround/frames.py`
 for several (4.4).*
 
 ### 4.1 The data term and the constraint
 
-With $c = D x$, $\mu \ge 0$, the weights $\omega_k = 1 / Q_k^2$ on AC
-coefficients and $\omega_k = \omega_{\mathrm{DC}} / Q_k^2$ on DC with
-$\omega_{\mathrm{DC}} \ge 0$, and the centres $\hat c_k$ (those of 2.2, or the
-middles of the intervals),
+With $c = D x$, $\mu \ge 0$, the weights $\omega_k = 1 / Q_k^p$ on AC
+coefficients and $\omega_k = \omega_{\mathrm{DC}} / Q_k^p$ on DC with
+$\omega_{\mathrm{DC}} \ge 0$ and $p \ge 0$, and the centres $\hat c_k$ (those of
+2.2, or the middles of the intervals),
 
 $$ G(x) = \frac{\mu}{2} \sum_k \omega_k (c_k - \hat c_k)^2 + \iota_{[a, b]}(c), $$
 
 where $\iota$ is 0 on its set and $+\infty$ off it. $G$ is separable in the
 coefficients, and so are its proximal map and its conjugate. By default
-$\mu = 10^{-3}$, $\omega_{\mathrm{DC}} = 0$ (DC follows no Laplace model, and its
-centre is only the middle of its interval), the centres are the MMSE ones, and
-there is no slack.
+$\mu = 10^{-3}$, $p = 2$, $\omega_{\mathrm{DC}} = 0$ (DC follows no Laplace model,
+and its centre is only the middle of its interval), the centres are the MMSE
+ones, and there is no slack.
+
+$\mu$ can instead follow the quantization of the component:
+$\mu = \mu_s \bar Q^{\,r}$, where $\bar Q$ is the mean of its 64 steps. $\bar Q$ is
+exact (an integer sum over 64), and with $r = 1$ nothing more rounds but the
+product. The scale $\mu_s$ and the power $r$ are options; the rule is not the
+default yet.
 
 **Proximal map.** For $\tau > 0$ and $e = D v$,
 $\mathrm{prox}_{\tau G}(v) = D^\top \zeta$ with
@@ -358,6 +381,24 @@ $$ g_k^\ast(s) = s\, c^\ast - \frac{m_k}{2} (c^\ast - \hat c_k)^2, \qquad
 and where $m_k = 0$ (DC with $\omega_{\mathrm{DC}} = 0$, or $\mu = 0$),
 $g_k^\ast(s) = \max(s\, a_k,\ s\, b_k)$.
 Both are finite everywhere, because the intervals are bounded.
+
+**A slack with a cost.** With a slack $s > 0$ and a price $\beta > 0$ per step
+(1.2), $G$ adds $\sum_k \lambda_k\, \mathrm{dist}(c_k, [a^\circ_k, b^\circ_k])$,
+$\lambda_k = \beta / Q_k$, where $[a^\circ_k, b^\circ_k]$ is the file's own interval
+and $[a_k, b_k]$ the widened one. Beyond $b^\circ_k$ the objective of the proximal
+map is the quadratic above plus the linear $\tau \lambda_k (c - b^\circ_k)$, so with
+$z_k$ the quadratic's minimizer and $d_k = 1 + \tau m_k$,
+
+$$ \zeta_k = \mathrm{clip}\bigl(\max(b^\circ_k,\ z_k - \tau \lambda_k / d_k),\ a_k,\ b_k\bigr)
+   \text{ where } z_k > b^\circ_k, $$
+
+alike below $a^\circ_k$ with $\min(a^\circ_k,\ z_k + \tau \lambda_k / d_k)$, and
+$\zeta_k = z_k$ within $[a^\circ_k, b^\circ_k]$. The conjugate's maximizer is
+$\hat c_k + s / m_k$ where that lies within $[a^\circ_k, b^\circ_k]$; above,
+$\hat c_k + (s - \lambda_k) / m_k$ but not below $b^\circ_k$ nor above $b_k$; alike
+below; and where $m_k = 0$, $b_k$ for $s > \lambda_k$, $b^\circ_k$ for
+$0 < s \le \lambda_k$, and alike for $s < 0$. $g_k^\ast(s)$ is the objective there,
+$s c^\ast - \frac{m_k}{2} (c^\ast - \hat c_k)^2 - \lambda_k \mathrm{dist}(c^\ast, [a^\circ_k, b^\circ_k])$.
 
 ### 4.2 Total variation
 
@@ -792,14 +833,14 @@ moves $G$ by up to $7 \cdot 10^{-5}$, and the DC coefficient of a block converte
 back by up to $3 \cdot 10^{-4}$: more than $10^{-4} Q$ where $Q \le 3$. The
 rationals, rounded to the nearest doubles, leave only rounding.
 
-**The result.** It is computed in binary64, each operation rounded to the
-nearest and none fused, in the order
+**The result.** It is computed in binary64, in the order
 
 $$ R = Y + c_R (C_R - 128), \qquad B = Y + c_B (C_B - 128), \qquad
    G = \bigl(Y - c_{GB} (C_B - 128)\bigr) - c_{GR} (C_R - 128), $$
 
 where $c_R$, $c_B$, $c_{GB}$ and $c_{GR}$ are the doubles nearest to the four
-rationals, from the solution's canvas cut to the picture. The result is these
+rationals, from the solution's canvas cut to the picture. Each product may be
+fused with the sum or difference that takes it (Arithmetic). The result is these
 values themselves: it is neither rounded nor clamped, and a file of binary64
 samples holds them to the last bit. Output of 8 or 16 bits rounds them to the
 nearest, halves away from 0, and clamps them. The YCbCr of the solution can be

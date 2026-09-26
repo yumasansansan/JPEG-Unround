@@ -38,6 +38,7 @@ __all__ = [
     "Dual",
     "Primal",
     "Problem",
+    "beyond",
     "clip",
     "conjugate",
     "data_term",
@@ -45,6 +46,7 @@ __all__ = [
     "make_problem",
     "project",
     "prox",
+    "rule_mu",
     "tgv_objective",
     "tgv_partial_gap",
     "tgv_values",
@@ -70,8 +72,13 @@ class Problem:
     lower and upper are the ends of the coefficients' intervals, and centres the centres
     of the data term, each of shape (rows, columns, 8, 8), for a canvas of samples that are
     not level-shifted: those of DC include LEVEL_SHIFT_DC. steps are the quantization steps
-    Q and weights the weights of the data term, each of shape (8, 8): mu / Q^2 for AC, and
+    Q and weights the weights of the data term, each of shape (8, 8): mu / Q^p for AC, and
     that times the weight of DC (0 by default) for DC.
+
+    With a slack that has a cost, lower and upper are the ends widened by the slack,
+    inner_lower and inner_upper those of the file's own intervals, and costs, of shape
+    (8, 8), what G charges for each unit a coefficient lies beyond them (docs/math.md, 1.2
+    and 4.1); otherwise the three are None.
     """
 
     lower: Array
@@ -79,6 +86,9 @@ class Problem:
     centres: Array
     steps: Array
     weights: Array
+    inner_lower: Array | None = None
+    inner_upper: Array | None = None
+    costs: Array | None = None
 
     @property
     def shape(self) -> tuple[int, int]:
@@ -140,16 +150,45 @@ class Dual:
 class DataTerm:
     """The options of G: the weights and the centres of the data term, and the intervals' slack.
 
-    mu weights the data term, and slack widens every interval by that many steps on each
-    side (docs/math.md, 1.2). The weight of an AC coefficient is mu / Q^2, and that of DC
-    dc_weight times mu / Q^2 (4.1). centres are the data term's: "mmse", the MMSE centres
-    of the Laplace model (2.2), or "midpoint", the middles of the intervals, q Q.
+    mu weights the data term; where it is None, it is mu_scale times the mean of the
+    component's 64 steps to the power mu_power, which follows the quantization. slack widens
+    every interval by that many steps on each side (docs/math.md, 1.2); slack_cost is what
+    leaving the file's own interval costs, within the slack, per step (0: nothing). The
+    weight of an AC coefficient is mu / Q^power, and that of DC dc_weight times it (4.1).
+    centres are the data term's: "mmse", the MMSE centres of the Laplace model (2.2), or
+    "midpoint", the middles of the intervals, q Q.
     """
 
-    mu: float = 1e-3
+    mu: float | None = 1e-3
+    mu_scale: float = 1.0
+    mu_power: float = 1.0
     slack: float = 0.0
     dc_weight: float = 0.0
     centres: Centres = "mmse"
+    power: float = 2.0
+    slack_cost: float = 0.0
+
+
+def _powers(steps: Array, power: float) -> Array:
+    """Q^power: exact for the powers 0, 1 and 2 of steps of 16 bits, and correctly rounded or near it otherwise."""
+    if power == 2.0:  # noqa: PLR2004
+        return np.asarray(steps * steps, dtype=np.float64)
+    if power == 1.0:
+        return np.asarray(steps, dtype=np.float64)
+    return np.asarray(np.power(steps, power), dtype=np.float64)
+
+
+def rule_mu(data: DataTerm, quant_table: npt.ArrayLike) -> float:
+    """mu of the data term: data.mu, or where it is None, mu_scale times the mean step to the power mu_power.
+
+    The mean of the 64 steps is exact: their sum is an integer below 2^22, and dividing it
+    by 64 is exact. The power is 1 by default, which rounds nothing more.
+    """
+    if data.mu is not None:
+        return data.mu
+    steps = np.asarray(quant_table, dtype=np.float64)
+    mean = float(np.sum(steps)) / float(steps.size)
+    return data.mu_scale * (mean if data.mu_power == 1.0 else math.pow(mean, data.mu_power))
 
 
 def make_problem(
@@ -168,9 +207,20 @@ def make_problem(
     is exact, and so is every middle.
     """
     data = DataTerm() if data is None else data
-    mu, slack, dc_weight = data.mu, data.slack, data.dc_weight
+    if not (0.0 <= data.mu_scale < math.inf and -math.inf < data.mu_power < math.inf):
+        message = (
+            f"the scale of mu is at least 0 and finite, and its power finite, not {data.mu_scale} and {data.mu_power}"
+        )
+        raise ValueError(message)
+    mu, slack, dc_weight = rule_mu(data, quant_table), data.slack, data.dc_weight
     if not (0.0 <= mu < math.inf and 0.0 <= slack < math.inf and 0.0 <= dc_weight < math.inf):
         message = f"mu, slack and the weight of DC are at least 0 and finite, not {mu}, {slack} and {dc_weight}"
+        raise ValueError(message)
+    if not 0.0 <= data.power < math.inf:
+        message = f"the power of the steps in the weights is at least 0 and finite, not {data.power}"
+        raise ValueError(message)
+    if not 0.0 <= data.slack_cost < math.inf:
+        message = f"the cost of the slack is at least 0 and finite, not {data.slack_cost}"
         raise ValueError(message)
     if data.centres not in {"mmse", "midpoint"}:
         message = f"the centres are mmse or midpoint, not {data.centres!r}"
@@ -187,7 +237,7 @@ def make_problem(
     if not np.all(steps >= 1.0):
         message = "a quantization step is at least 1"
         raise ValueError(message)
-    weights = mu / (steps * steps)
+    weights = mu / _powers(steps, data.power)
     weights[0, 0] *= dc_weight
     lower = ((levels - 0.5) - slack) * steps
     upper = ((levels + 0.5) + slack) * steps
@@ -195,7 +245,22 @@ def make_problem(
     centres = laplace.centres(coefficients, quant_table, scale) if data.centres == "mmse" else levels * steps
     for bound in (lower, upper, centres):
         bound[:, :, 0, 0] += LEVEL_SHIFT_DC
-    return Problem(lower=lower, upper=upper, centres=centres, steps=steps, weights=weights)
+    if slack == 0.0 or data.slack_cost == 0.0:
+        return Problem(lower=lower, upper=upper, centres=centres, steps=steps, weights=weights)
+    inner_lower = (levels - 0.5) * steps
+    inner_upper = (levels + 0.5) * steps
+    for bound in (inner_lower, inner_upper):
+        bound[:, :, 0, 0] += LEVEL_SHIFT_DC
+    return Problem(
+        lower=lower,
+        upper=upper,
+        centres=centres,
+        steps=steps,
+        weights=weights,
+        inner_lower=inner_lower,
+        inner_upper=inner_upper,
+        costs=data.slack_cost / steps,
+    )
 
 
 def clip(problem: Problem, coefficients: Array) -> Array:
@@ -215,28 +280,87 @@ def excess(problem: Problem, coefficients: Array) -> Array:
     return np.asarray((below + above) / problem.steps, dtype=np.float64)
 
 
+def _inner(problem: Problem) -> tuple[Array, Array, Array]:
+    if problem.inner_lower is None or problem.inner_upper is None or problem.costs is None:
+        message = "a problem whose slack has a cost has its inner intervals and costs"
+        raise ValueError(message)
+    return problem.inner_lower, problem.inner_upper, problem.costs
+
+
+def beyond(problem: Problem, coefficients: Array) -> Array:
+    """How far each coefficient lies beyond the file's own interval (0 within it), in coefficient units."""
+    if problem.costs is None:
+        return np.asarray(
+            np.maximum(problem.lower - coefficients, 0.0) + np.maximum(coefficients - problem.upper, 0.0),
+            dtype=np.float64,
+        )
+    inner_lower, inner_upper, _ = _inner(problem)
+    return np.asarray(
+        np.maximum(inner_lower - coefficients, 0.0) + np.maximum(coefficients - inner_upper, 0.0), dtype=np.float64
+    )
+
+
 def prox(problem: Problem, coefficients: Array, tau: float) -> Array:
-    """The coefficients of prox_{tau G}(v), given those of v (docs/math.md, 4.1)."""
+    """The coefficients of prox_{tau G}(v), given those of v (docs/math.md, 4.1).
+
+    Where the slack has a cost, the minimizer of the quadratic that lies beyond the file's
+    own interval moves back towards it by tau times the cost over 1 + tau weight, but not
+    past its end; then it is clipped to the interval widened by the slack.
+    """
     scaled = tau * problem.weights
-    return clip(problem, (coefficients + scaled * problem.centres) / (1.0 + scaled))
+    moved = (coefficients + scaled * problem.centres) / (1.0 + scaled)
+    if problem.costs is None:
+        return clip(problem, moved)
+    inner_lower, inner_upper, costs = _inner(problem)
+    shrink = tau * costs / (1.0 + scaled)
+    above = np.maximum(inner_upper, moved - shrink)
+    below = np.minimum(inner_lower, moved + shrink)
+    return clip(problem, np.where(moved > inner_upper, above, np.where(moved < inner_lower, below, moved)))
 
 
 def data_term(problem: Problem, coefficients: Array) -> float:
-    """G at coefficients within their intervals: half the sum of weight (c - centre)^2."""
+    """G at coefficients within their intervals: half the sum of weight (c - centre)^2, and the slack's cost."""
     difference = coefficients - problem.centres
-    return 0.5 * float(np.sum(problem.weights * difference * difference))
+    value = 0.5 * float(np.sum(problem.weights * difference * difference))
+    if problem.costs is not None:
+        value += float(np.sum(problem.costs * beyond(problem, coefficients)))
+    return value
 
 
 def conjugate(problem: Problem, coefficients: Array) -> float:
     """G*(xi), given the coefficients s = D xi (docs/math.md, 4.1)."""
     weights = np.broadcast_to(problem.weights, coefficients.shape)
     quadratic = weights > 0.0
-    # Where the weight is 0, the largest of s c over the interval is at one of its ends.
-    linear = np.maximum(coefficients * problem.lower, coefficients * problem.upper)
     m = np.where(quadratic, weights, 1.0)
-    best = np.clip(problem.centres + coefficients / m, problem.lower, problem.upper)
-    curved = coefficients * best - 0.5 * m * (best - problem.centres) ** 2
-    return float(np.sum(np.where(quadratic, curved, linear)))
+    if problem.costs is None:
+        # Where the weight is 0, the largest of s c over the interval is at one of its ends.
+        linear = np.maximum(coefficients * problem.lower, coefficients * problem.upper)
+        best = np.clip(problem.centres + coefficients / m, problem.lower, problem.upper)
+        curved = coefficients * best - 0.5 * m * (best - problem.centres) ** 2
+        return float(np.sum(np.where(quadratic, curved, linear)))
+    inner_lower, inner_upper, costs = _inner(problem)
+    cost = np.broadcast_to(costs, coefficients.shape)
+    # The largest of s c - (m/2) (c - centre)^2 - cost dist(c, inner) over the widened
+    # interval: at the quadratic's own top where that is within the inner interval; beyond
+    # it, at the top of the piece with the cost, but not before the inner end; with no
+    # weight, at the end of the piece whose slope keeps its sign.
+    top = problem.centres + coefficients / m
+    up = np.minimum(np.maximum(problem.centres + (coefficients - cost) / m, inner_upper), problem.upper)
+    down = np.maximum(np.minimum(problem.centres + (coefficients + cost) / m, inner_lower), problem.lower)
+    curved = np.where(top > inner_upper, up, np.where(top < inner_lower, down, top))
+    straight = np.where(
+        coefficients > cost,
+        problem.upper,
+        np.where(
+            coefficients > 0.0,
+            inner_upper,
+            np.where(coefficients < -cost, problem.lower, inner_lower),
+        ),
+    )
+    best = np.where(quadratic, curved, straight)
+    charged = cost * beyond(problem, best)
+    value = coefficients * best - 0.5 * weights * (best - problem.centres) ** 2 - charged
+    return float(np.sum(value))
 
 
 def total_variation(canvas: Array) -> float:

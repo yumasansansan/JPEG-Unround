@@ -4,9 +4,10 @@
 
 The coefficients are the rationals that K_R = 0.299 and K_B = 0.114 make, each the
 double nearest to it, and not the six-digit decimals that T.871 prints: those would
-move a converted block's coefficients by more than 10^-4 of a small step. Each
-operation is rounded to the nearest in the order docs/math.md gives, none fused, so
-that the RGB of a solution is the same to the last bit wherever it is computed.
+move a converted block's coefficients by more than 10^-4 of a small step. The
+operations are in the order docs/math.md gives. NumPy rounds each of them; a compiled
+implementation may fuse a product with the sum that takes it and round once, which
+leaves the bounds of the rounding as they are (docs/math.md, Arithmetic).
 """
 
 from fractions import Fraction
