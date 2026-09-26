@@ -8,6 +8,10 @@ The samples go into the file as they are, bit for bit: no conversion, no scaling
 little-endian byte order, one strip, with SampleFormat 3 (IEEE floating point) and
 BitsPerSample 64: libtiff, tifffile and the like read it as it was written.
 
+The three samples of a colour picture are R, G and B, or JFIF's Y, Cb and Cr, which
+the file then declares: PhotometricInterpretation YCbCr, without subsampling, with
+JFIF's coefficients and full range (docs/math.md, 8).
+
 A classic TIFF addresses at most 4 GiB, which is a little under 2^29 greyscale samples
 in binary64.
 """
@@ -25,7 +29,8 @@ _SHORT: Final = 3
 _LONG: Final = 4
 _RATIONAL: Final = 5
 _HEADER: Final = 8
-_IFD: Final = 2 + 14 * 12 + 4  # the count of entries, fourteen entries, and the next IFD's offset
+_ENTRY: Final = 12
+_IFD: Final = 2 + 4  # the count of entries and the next IFD's offset, besides the entries
 _LIMIT: Final = 2**32
 _GREY: Final = 2  # axes of a greyscale picture: height and width
 _COLOUR: Final = 3  # axes of a colour picture, and its channels
@@ -33,6 +38,9 @@ _BITS: Final = 64
 _IEEE: Final = 3  # SampleFormat: IEEE floating point
 _BLACK_IS_ZERO: Final = 1
 _RGB: Final = 2
+_YCBCR: Final = 6
+_JFIF_COEFFICIENTS: Final = (299, 1000, 587, 1000, 114, 1000)  # K_R, K_G and K_B, as rationals
+_FULL_RANGE: Final = (0, 1, 255, 1, 128, 1, 255, 1, 128, 1, 255, 1)  # black and white of Y, Cb and Cr
 
 
 def _entry(tag: int, kind: int, count: int, value: bytes) -> bytes:
@@ -40,11 +48,12 @@ def _entry(tag: int, kind: int, count: int, value: bytes) -> bytes:
     return struct.pack("<HHI", tag, kind, count) + value.ljust(4, b"\0")
 
 
-def write_float64(path: str | Path, picture: npt.ArrayLike) -> None:
+def write_float64(path: str | Path, picture: npt.ArrayLike, *, ycbcr: bool = False) -> None:
     """Writes a picture of binary64 samples, (height, width) or (height, width, 3), exactly.
 
     The picture's values are the file's samples to the last bit; a picture of another type
-    is refused rather than converted.
+    is refused rather than converted. The three samples of a pixel are R, G and B, or with
+    ycbcr, JFIF's Y, Cb and Cr.
     """
     samples = np.asarray(picture)
     if samples.dtype != np.float64:
@@ -56,6 +65,9 @@ def write_float64(path: str | Path, picture: npt.ArrayLike) -> None:
         message = f"a picture is (height, width) or (height, width, 3), and not empty: {samples.shape}"
         raise ValueError(message)
     height, width, channels = (int(size) for size in samples.shape)
+    if ycbcr and channels != _COLOUR:
+        message = f"Y, Cb and Cr are three samples to a pixel, not {channels}"
+        raise ValueError(message)
     data = np.ascontiguousarray(samples, dtype="<f8").tobytes()
 
     # The layout: the header, the image data, the values that do not fit in an entry, and
@@ -66,17 +78,20 @@ def write_float64(path: str | Path, picture: npt.ArrayLike) -> None:
     formats = struct.pack(f"<{channels}H", *([_IEEE] * channels)) if channels > 1 else b""
     resolution_offset = format_offset + len(formats)
     resolution = struct.pack("<II", 1, 1)
-    ifd_offset = resolution_offset + len(resolution)
+    coefficients_offset = resolution_offset + len(resolution)
+    coefficients = struct.pack("<6I", *_JFIF_COEFFICIENTS) if ycbcr else b""
+    reference_offset = coefficients_offset + len(coefficients)
+    reference = struct.pack("<12I", *_FULL_RANGE) if ycbcr else b""
+    values = bits + formats + resolution + coefficients + reference
+    ifd_offset = reference_offset + len(reference)
     ifd_offset += ifd_offset % 2  # an IFD starts on a word boundary
-    if ifd_offset + _IFD > _LIMIT:
-        message = f"a picture of {height} x {width} x {channels} binary64 samples does not fit a classic TIFF"
-        raise ValueError(message)
+    photometric = _YCBCR if ycbcr else (_RGB if channels == _COLOUR else _BLACK_IS_ZERO)
     entries = [
         _entry(256, _LONG, 1, struct.pack("<I", width)),  # ImageWidth
         _entry(257, _LONG, 1, struct.pack("<I", height)),  # ImageLength
         _entry(258, _SHORT, channels, struct.pack("<I", bits_offset) if bits else struct.pack("<H", _BITS)),
         _entry(259, _SHORT, 1, struct.pack("<H", 1)),  # Compression: none
-        _entry(262, _SHORT, 1, struct.pack("<H", _RGB if channels == _COLOUR else _BLACK_IS_ZERO)),
+        _entry(262, _SHORT, 1, struct.pack("<H", photometric)),  # PhotometricInterpretation
         _entry(273, _LONG, 1, struct.pack("<I", _HEADER)),  # StripOffsets
         _entry(277, _SHORT, 1, struct.pack("<H", channels)),  # SamplesPerPixel
         _entry(278, _LONG, 1, struct.pack("<I", height)),  # RowsPerStrip: one strip
@@ -87,7 +102,17 @@ def write_float64(path: str | Path, picture: npt.ArrayLike) -> None:
         _entry(296, _SHORT, 1, struct.pack("<H", 1)),  # ResolutionUnit: none
         _entry(339, _SHORT, channels, struct.pack("<I", format_offset) if formats else struct.pack("<H", _IEEE)),
     ]
+    if ycbcr:
+        entries += [
+            _entry(529, _RATIONAL, 3, struct.pack("<I", coefficients_offset)),  # YCbCrCoefficients: JFIF's
+            _entry(530, _SHORT, 2, struct.pack("<HH", 1, 1)),  # YCbCrSubSampling: none
+            _entry(531, _SHORT, 1, struct.pack("<H", 1)),  # YCbCrPositioning: centred
+            _entry(532, _RATIONAL, 6, struct.pack("<I", reference_offset)),  # ReferenceBlackWhite: full range
+        ]
+    if ifd_offset + _IFD + _ENTRY * len(entries) > _LIMIT:
+        message = f"a picture of {height} x {width} x {channels} binary64 samples does not fit a classic TIFF"
+        raise ValueError(message)
     ifd = struct.pack("<H", len(entries)) + b"".join(entries) + struct.pack("<I", 0)
     header = b"II" + struct.pack("<HI", 42, ifd_offset)
-    padding = b"\0" * (ifd_offset - resolution_offset - len(resolution))
-    Path(path).write_bytes(header + data + bits + formats + resolution + padding + ifd)
+    padding = b"\0" * (ifd_offset - _HEADER - len(data) - len(values))
+    Path(path).write_bytes(header + data + values + padding + ifd)

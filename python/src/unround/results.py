@@ -8,9 +8,10 @@ from dataclasses import dataclass, field
 import numpy as np
 import numpy.typing as npt
 
+from unround import frames
 from unround.model import Dual, Primal
 
-__all__ = ["History", "Recorder", "Result"]
+__all__ = ["FrameResult", "History", "Recorder", "Result"]
 
 type Array = npt.NDArray[np.float64]
 
@@ -42,6 +43,17 @@ class Result:
     """The last point of a solver, how many iterations it took, and what it recorded."""
 
     primal: Primal
+    dual: Dual | None
+    iterations: int
+    converged: bool
+    history: History
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class FrameResult:
+    """The last point of a solver of a frame (unround.frames), and the rest as Result's."""
+
+    primal: frames.Primal
     dual: Dual | None
     iterations: int
     converged: bool

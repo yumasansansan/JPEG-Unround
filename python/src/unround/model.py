@@ -93,20 +93,30 @@ class Problem:
 
 @dataclass(frozen=True, slots=True)
 class TV:
-    """The weight of total variation (docs/math.md, 4.2)."""
+    """The weight of total variation (docs/math.md, 4.2), and how it takes several channels (4.4).
+
+    channel_weights are the gamma of the channels' differences, 1 for each where None;
+    coupled takes the channels together, pixel by pixel, or each on its own. Neither
+    matters to one channel.
+    """
 
     alpha: float = 1.0
+    channel_weights: tuple[float, ...] | None = None
+    coupled: bool = True
 
 
 @dataclass(frozen=True, slots=True)
 class TGV:
-    """The weights of second-order total generalized variation (docs/math.md, 4.3).
+    """The weights of second-order total generalized variation (docs/math.md, 4.3 and 4.4).
 
     alpha1 weights the first-order part, ||grad x - w||, and alpha0 the second, ||E w||.
+    channel_weights and coupled are those of TV.
     """
 
     alpha1: float = 1.0
     alpha0: float = 2.0
+    channel_weights: tuple[float, ...] | None = None
+    coupled: bool = True
 
 
 @dataclass(frozen=True, slots=True, eq=False)

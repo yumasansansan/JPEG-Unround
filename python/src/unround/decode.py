@@ -1,13 +1,14 @@
 # SPDX-FileCopyrightText: 2026 Yuma Kakei <yumasansansan@gmail.com>
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Decoding a greyscale JPEG file: its one component, reconstructed within its intervals.
+"""Decoding a JPEG file: its components, reconstructed within their intervals (docs/math.md, 1.3 and 8).
 
-The component is reconstructed on its canvas of whole blocks by one of the
-methods, and the picture is cut from it. The methods are the decoder of the
-data term's centres, "mmse" (the MMSE decoder with the default centres,
-docs/math.md, 2.3), TV and TGV by the primal-dual method (5), and TV by the
-subgradient method of jpeg2png's kind (7), which is there to be compared with.
-Colour files, with chroma subsampling, are still to come.
+The components are reconstructed on one canvas (unround.frames) by one of the
+methods, and the picture is cut from it. The methods are the decoder of the data
+term's centres, "mmse" (the MMSE decoder with the default centres, docs/math.md,
+2.3), TV and TGV by the primal-dual method (5), and, for greyscale files, TV by the
+subgradient method of jpeg2png's kind (7), which is there to be compared with. A
+file in YCbCr is solved in YCbCr, and its picture is the RGB that JFIF's
+conversion gives (8); that of a file in RGB, or greyscale, is its canvas.
 """
 
 from dataclasses import dataclass, field
@@ -16,11 +17,12 @@ from typing import Literal
 import numpy as np
 import numpy.typing as npt
 
-from unround import jpegio, pdhg, subgradient
+from unround import colour, frames, jpegio, pdhg, subgradient
+from unround.frames import Frame
 from unround.model import TGV, TV, DataTerm, Problem, make_problem
-from unround.results import Result
+from unround.results import FrameResult
 
-__all__ = ["Decoded", "Method", "Settings", "component_problem", "decode", "decode_component"]
+__all__ = ["Decoded", "Method", "Settings", "component_problem", "decode", "frame_of"]
 
 type Array = npt.NDArray[np.float64]
 type Method = Literal["mmse", "tv", "tgv", "subgradient"]
@@ -30,12 +32,13 @@ type Method = Literal["mmse", "tv", "tgv", "subgradient"]
 class Settings:
     """The method, the model, and the solvers' options.
 
-    data are the options of G (unround.model.DataTerm), tv and tgv the weights of the
-    models, and pdhg and subgradient the options of the solvers.
+    data are the options of G (unround.model.DataTerm), one for every component or one
+    for each; tv and tgv are the weights of the models, with how they take the channels;
+    and pdhg and subgradient the options of the solvers.
     """
 
     method: Method = "tgv"
-    data: DataTerm = field(default_factory=DataTerm)
+    data: DataTerm | tuple[DataTerm, ...] = field(default_factory=DataTerm)
     tv: TV = field(default_factory=TV)
     tgv: TGV = field(default_factory=TGV)
     pdhg: pdhg.Options = field(default_factory=pdhg.Options)
@@ -44,52 +47,89 @@ class Settings:
 
 @dataclass(frozen=True, slots=True, eq=False)
 class Decoded:
-    """A reconstructed component.
+    """A reconstructed file.
 
-    picture is the picture's samples, (height, width), in binary64: the solver's canvas
-    itself, cut to the picture, neither clamped nor rounded, nor changed by any operation
-    (unround.tiff writes it bit for bit). coefficients are those of the whole canvas, each
-    within its interval. result is the solver's, None for the MMSE decoder.
+    picture is in binary64: (height, width) of a greyscale file, and (height, width, 3),
+    RGB, of a colour one. Of a greyscale file or one in RGB, it is the solver's canvas
+    itself, cut to the picture; of one in YCbCr, the RGB that JFIF's conversion gives of
+    that (docs/math.md, 8). It is neither clamped nor rounded (unround.tiff writes it bit
+    for bit). planes are the canvas cut to the picture, (C, height, width), as the solver
+    left it: the Y, Cb and Cr of a file in YCbCr. coefficients are every component's,
+    each within its intervals. result is the solver's, None for the MMSE decoder.
     """
 
     picture: Array
-    coefficients: Array
-    problem: Problem
-    result: Result | None
+    planes: Array
+    color_space: jpegio.ColorSpace
+    coefficients: tuple[Array, ...]
+    frame: Frame
+    result: FrameResult | None
 
 
-def component_problem(component: jpegio.Component, settings: Settings | None = None) -> Problem:
-    """The problem of one component, with the model of the settings."""
+def component_problem(component: jpegio.Component, settings: Settings | None = None, index: int = 0) -> Problem:
+    """The problem of a component, the index-th of its file, with the model of the settings."""
     settings = Settings() if settings is None else settings
-    return make_problem(component.coefficients, component.quant_table, settings.data)
+    data = settings.data if isinstance(settings.data, DataTerm) else settings.data[index]
+    return make_problem(component.coefficients, component.quant_table, data)
 
 
-def decode_component(component: jpegio.Component, settings: Settings | None = None) -> Decoded:
-    """Reconstructs one component without chroma subsampling."""
+def frame_of(image: jpegio.Image, settings: Settings | None = None) -> Frame:
+    """The frame of a file's components (docs/math.md, 1.3), with the model of the settings."""
     settings = Settings() if settings is None else settings
-    problem = component_problem(component, settings)
-    result: Result | None
-    match settings.method:
-        case "mmse":
-            result = None
-            point = pdhg.start(problem)
-        case "tv":
-            result = pdhg.solve_tv(problem, settings.tv, settings.pdhg)
-            point = result.primal
-        case "tgv":
-            result = pdhg.solve_tgv(problem, settings.tgv, settings.pdhg)
-            point = result.primal
-        case "subgradient":
-            result = subgradient.solve_tv(problem, settings.tv, settings.subgradient)
-            point = result.primal
-    picture = point.canvas[: component.height, : component.width]
-    return Decoded(picture=picture, coefficients=point.coefficients, problem=problem, result=result)
+    count = len(image.components)
+    if isinstance(settings.data, tuple) and len(settings.data) != count:
+        message = f"options of G for each of the {count} components, not {len(settings.data)}"
+        raise ValueError(message)
+    problems = [component_problem(component, settings, index) for index, component in enumerate(image.components)]
+    factors = [(component.h_samp_factor, component.v_samp_factor) for component in image.components]
+    return frames.make_frame(problems, factors, (image.height, image.width))
+
+
+def _subgradient(frame: Frame, settings: Settings) -> FrameResult:
+    if len(frame.channels) != 1:
+        message = "the subgradient method is for greyscale files"
+        raise ValueError(message)
+    result = subgradient.solve_tv(frame.channels[0].problem, settings.tv, settings.subgradient)
+    return FrameResult(
+        primal=frames.Primal(coefficients=(result.primal.coefficients,), canvas=result.primal.canvas[np.newaxis]),
+        dual=None,
+        iterations=result.iterations,
+        converged=result.converged,
+        history=result.history,
+    )
 
 
 def decode(data: bytes, settings: Settings | None = None) -> Decoded:
-    """Reconstructs a greyscale JPEG file."""
+    """Reconstructs a JPEG file, greyscale or in colour."""
+    settings = Settings() if settings is None else settings
     image = jpegio.read(data)
-    if len(image.components) != 1:
-        message = f"only greyscale files are decoded so far, and this one has {len(image.components)} components"
-        raise ValueError(message)
-    return decode_component(image.components[0], settings)
+    frame = frame_of(image, settings)
+    result: FrameResult | None
+    match settings.method:
+        case "mmse":
+            result = None
+            point = frames.start(frame)
+        case "tv":
+            result = pdhg.solve_frame_tv(frame, settings.tv, settings.pdhg)
+            point = result.primal
+        case "tgv":
+            result = pdhg.solve_frame_tgv(frame, settings.tgv, settings.pdhg)
+            point = result.primal
+        case "subgradient":
+            result = _subgradient(frame, settings)
+            point = result.primal
+    planes = point.canvas[:, : image.height, : image.width]
+    if image.color_space is jpegio.ColorSpace.YCBCR:
+        picture = colour.to_rgb(planes)
+    elif len(frame.channels) == 1:
+        picture = planes[0]
+    else:
+        picture = planes.transpose(1, 2, 0)
+    return Decoded(
+        picture=picture,
+        planes=planes,
+        color_space=image.color_space,
+        coefficients=point.coefficients,
+        frame=frame,
+        result=result,
+    )

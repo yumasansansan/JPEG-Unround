@@ -8,6 +8,11 @@ solvers stop at the first record where a tolerance of the options is met (the
 duality gap per sample, the gap relative to the primal value, or TGV's partial
 gap per sample), or after the most iterations the options allow. Every value that
 shapes the iterations is an option; the models' defaults stand where none is given.
+
+The solvers work on frames, the components of a file on one canvas
+(unround.frames). solve_tv and solve_tgv take one component, as a frame of one
+channel, and give back its arrays without the channel axis: the iterations are the
+same, operation for operation.
 """
 
 import math
@@ -18,21 +23,11 @@ from typing import Final
 import numpy as np
 import numpy.typing as npt
 
-from unround import dct
-from unround.model import (
-    TGV,
-    TV,
-    Dual,
-    Primal,
-    Problem,
-    clip,
-    prox,
-    tgv_partial_gap,
-    tgv_values,
-    tv_values,
-)
-from unround.operators import div, div2, grad, project_tensors, project_vectors, sym_grad
-from unround.results import Recorder, Result
+from unround import dct, frames
+from unround.frames import Frame
+from unround.model import TGV, TV, Dual, Primal, Problem, clip
+from unround.operators import div, div2, grad, sym_grad
+from unround.results import FrameResult, Recorder, Result
 
 __all__ = [
     "STEP_PRODUCT",
@@ -46,10 +41,13 @@ __all__ = [
     "TV_RATIO",
     "TV_RELAXATION",
     "TV_TOLERANCE",
+    "FrameInitial",
     "Initial",
     "Options",
     "Plan",
     "plan",
+    "solve_frame_tgv",
+    "solve_frame_tv",
     "solve_tgv",
     "solve_tv",
     "start",
@@ -58,12 +56,13 @@ __all__ = [
 
 type Array = npt.NDArray[np.float64]
 type Observer = Callable[[int, Primal, float], None]
+type FrameObserver = Callable[[int, frames.Primal, float], None]
 
 TV_NORM_SQUARED: Final = 8.0
-"""A bound of ||grad||^2 (docs/math.md, 3.3): TV's L^2 by default."""
+"""A bound of ||grad||^2 (docs/math.md, 3.3): TV's L^2 by default, times the largest channel weight squared."""
 
 TGV_NORM_SQUARED: Final = 0.5 * (17.0 + math.sqrt(33.0))
-"""A bound of ||K||^2 for TGV's K(x, w) = (grad x - w, E w) (docs/math.md, 3.3): TGV's L^2 by default."""
+"""A bound of ||K||^2 for TGV's K(x, w) = (grad x - w, E w) (docs/math.md, 3.3): TGV's L^2 by default, alike."""
 
 STEP_PRODUCT: Final = 0.99
 """sigma tau L^2 by default, below 1 as the method's convergence asks (docs/math.md, 5)."""
@@ -92,7 +91,7 @@ _RELAXATION_BELOW: Final = 2.0
 
 @dataclass(frozen=True, slots=True)
 class Options:
-    """When a solver stops, its steps, and how often it records (docs/math.md, 5 and 6.4).
+    """When a solver stops, its steps, and how often it records (docs/math.md, 5, 6.4 and 6.6).
 
     iterations is the most iterations. The solver stops earlier, at the first record where
     one of these holds, each off at 0: the duality gap per sample is at most tolerance; the
@@ -105,6 +104,7 @@ class Options:
     scale_with_weight is False. Every record_every iterations (0: none but the last), and
     after the last, the solver records the primal and dual values, and checks the
     tolerances; with partial_radius, which only TGV takes, it records the partial gap too.
+    Where a frame has free samples, every gap is the partial gap of free_radius, R of 6.6.
     """
 
     iterations: int | None = None
@@ -118,6 +118,7 @@ class Options:
     scale_with_weight: bool = True
     record_every: int = 10
     partial_radius: float | None = None
+    free_radius: float = frames.FREE_RADIUS
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,6 +135,7 @@ class Plan:
     norm_squared: float
     record_every: int
     partial_radius: float | None
+    free_radius: float
 
 
 def plan(options: Options | None, weights: TV | TGV) -> Plan:
@@ -142,7 +144,8 @@ def plan(options: Options | None, weights: TV | TGV) -> Plan:
     The defaults were chosen with the weight alpha of TV, or alpha1 of TGV, of 1. The dual
     variables are in its units and the objective scales with it, so the ratio of the steps
     is the default over its square and the tolerance the default times it, unless
-    scale_with_weight is False. What the method cannot run with raises a ValueError.
+    scale_with_weight is False. L^2 is by default the bound of the model times the largest
+    channel weight squared. What the method cannot run with raises a ValueError.
     """
     options = Options() if options is None else options
     if isinstance(weights, TV):
@@ -160,6 +163,12 @@ def plan(options: Options | None, weights: TV | TGV) -> Plan:
     if not alpha > 0.0:
         message = f"the weight of the first-order term is positive, not {alpha}"
         raise ValueError(message)
+    if weights.channel_weights is not None:
+        if not weights.channel_weights or not all(0.0 < gamma < math.inf for gamma in weights.channel_weights):
+            message = f"the channel weights are positive and finite, not {weights.channel_weights}"
+            raise ValueError(message)
+        largest = max(weights.channel_weights)
+        norm_squared *= largest * largest
     scale = alpha if options.scale_with_weight else 1.0
     settled = Plan(
         iterations=iterations if options.iterations is None else options.iterations,
@@ -172,6 +181,7 @@ def plan(options: Options | None, weights: TV | TGV) -> Plan:
         norm_squared=norm_squared if options.norm_squared is None else options.norm_squared,
         record_every=options.record_every,
         partial_radius=options.partial_radius,
+        free_radius=options.free_radius,
     )
     _check(settled)
     return settled
@@ -200,6 +210,10 @@ def _check(settled: Plan) -> None:
         (
             settled.partial_tolerance == 0.0 or radius is not None,
             "the partial tolerance needs the partial gap's radius",
+        ),
+        (
+            0.0 <= settled.free_radius < math.inf,
+            f"the radius of the free samples is at least 0 and finite, not {settled.free_radius}",
         ),
     )
     wrong = [message for holds, message in ranges if not holds]
@@ -233,6 +247,20 @@ class Initial:
     """
 
     coefficients: Array | None = None
+    w: Array | None = None
+    p: Array | None = None
+    r: Array | None = None
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class FrameInitial:
+    """Where a solver of a frame of C channels on H x W starts, where not at its default.
+
+    As Initial: coefficients for every component, w and p of shape (2, C, H, W), and r of
+    shape (3, C, H, W), projected onto the balls of the regularizer's norm (docs/math.md, 4.4).
+    """
+
+    coefficients: tuple[Array, ...] | None = None
     w: Array | None = None
     p: Array | None = None
     r: Array | None = None
@@ -287,14 +315,216 @@ def _field(given: Array, shape: tuple[int, ...], name: str) -> Array:
     return copy
 
 
-def _first_p(first: Initial | None, shape: tuple[int, int], radius: float) -> Array:
-    if first is None or first.p is None:
-        return np.zeros((2, *shape))
-    return project_vectors(_field(first.p, (2, *shape), "p"), radius)
-
-
 def _due(iteration: int, options: Plan) -> bool:
     return iteration == options.iterations or (options.record_every > 0 and iteration % options.record_every == 0)
+
+
+def _fields(frame: Frame, entries: int) -> tuple[int, ...]:
+    return (entries, len(frame.channels), *frame.shape)
+
+
+def solve_frame_tv(
+    frame: Frame,
+    weights: TV,
+    options: Options | None = None,
+    *,
+    first: FrameInitial | None = None,
+    observe: FrameObserver | None = None,
+) -> FrameResult:
+    """Minimizes the TV model of a frame (docs/math.md, 4.4 and 5).
+
+    options are Options() unless given, with the defaults of TV (plan()). first is where to
+    start, the data term's centres and p = 0 unless given. observe is called with each
+    recorded iteration, its point and its gap per sample, which is what the tolerance is
+    compared with: where samples are free, the partial gap of 6.6.
+
+    Each iteration takes the proximal steps from the current point (x, p) to (x~, p~) and
+    moves the current point to rho (x~, p~) + (1 - rho) (x, p). What is recorded, what is
+    observed and what is returned are (x~, p~): x~ is an output of the proximal map of G, in
+    the constraint set, and p~ is in the dual ball, even where the current point is not.
+    """
+    settled = plan(options, weights)
+    tau, sigma = steps(settled.norm_squared, settled.step_ratio, settled.step_product)
+    rho = settled.relaxation
+    gammas = frames.channel_weights(frame, weights.channel_weights)
+    if first is not None and (first.w is not None or first.r is not None):
+        message = "TV has no field w or r to start from"
+        raise ValueError(message)
+    point = frames.start(frame, None if first is None else first.coefficients)
+    coefficients, canvas = point.coefficients, point.canvas
+    x = canvas
+    if first is None or first.p is None:
+        p = np.zeros(_fields(frame, 2))
+    else:
+        p = frames.project_vectors(_field(first.p, _fields(frame, 2), "p"), weights.alpha, coupled=weights.coupled)
+    p_out = p
+    radius = settled.free_radius
+    recorder = Recorder()
+    recorder.record(0, frames.tv_values(frame, weights, point, Dual(p_out), radius))
+    converged = False
+    iteration = 0
+    while iteration < settled.iterations and not converged:
+        recorder.resume()
+        iteration += 1
+        coefficients, canvas = frames.prox(frame, x + tau * (gammas * div(p)), tau)
+        ascent = p + sigma * (gammas * grad(2.0 * canvas - x))
+        p_out = frames.project_vectors(ascent, weights.alpha, coupled=weights.coupled)
+        if rho == 1.0:
+            x, p = canvas, p_out
+        else:
+            x = rho * canvas + (1.0 - rho) * x
+            p = rho * p_out + (1.0 - rho) * p
+        recorder.pause()
+        if _due(iteration, settled):
+            point = frames.Primal(coefficients=coefficients, canvas=canvas)
+            values = frames.tv_values(frame, weights, point, Dual(p_out), radius)
+            recorder.record(iteration, values)
+            gap, converged = _stops(settled, frame.samples, values)
+            if observe is not None:
+                observe(iteration, point, gap)
+    return FrameResult(
+        primal=frames.Primal(coefficients=coefficients, canvas=canvas),
+        dual=Dual(p_out),
+        iterations=iteration,
+        converged=converged,
+        history=recorder.history(),
+    )
+
+
+def _tgv_start(frame: Frame, weights: TGV, canvas: Array, first: FrameInitial | None) -> tuple[Array, Array, Array]:
+    """w, p and r to start from: those of first, checked, with p and r projected; or grad x, 0 and 0."""
+    vectors, tensors = _fields(frame, 2), _fields(frame, 3)
+    w = grad(canvas) if first is None or first.w is None else _field(first.w, vectors, "w")
+    if first is None or first.p is None:
+        p = np.zeros(vectors)
+    else:
+        p = frames.project_vectors(_field(first.p, vectors, "p"), weights.alpha1, coupled=weights.coupled)
+    if first is None or first.r is None:
+        r = np.zeros(tensors)
+    else:
+        r = frames.project_tensors(_field(first.r, tensors, "r"), weights.alpha0, coupled=weights.coupled)
+    return w, p, r
+
+
+def solve_frame_tgv(
+    frame: Frame,
+    weights: TGV,
+    options: Options | None = None,
+    *,
+    first: FrameInitial | None = None,
+    observe: FrameObserver | None = None,
+) -> FrameResult:
+    """Minimizes the TGV model of a frame (docs/math.md, 4.4 and 5).
+
+    options are Options() unless given, with the defaults of TGV (plan()). first is where to
+    start: the data term's centres, w the gradient of their canvas, and p and r 0, unless
+    given. The gap is that of the feasible dual (6.2), partial where samples are free (6.6).
+    The steps are relaxed as solve_frame_tv's are, and what is recorded, observed and
+    returned are the outputs of the proximal steps.
+    """
+    settled = plan(options, weights)
+    tau, sigma = steps(settled.norm_squared, settled.step_ratio, settled.step_product)
+    rho = settled.relaxation
+    gammas = frames.channel_weights(frame, weights.channel_weights)
+    coupled = weights.coupled
+    point = frames.start(frame, None if first is None else first.coefficients)
+    coefficients, canvas = point.coefficients, point.canvas
+    w, p, r = _tgv_start(frame, weights, canvas, first)
+    x, w_out = canvas, w
+    p_out, r_out = p, r
+    radius = settled.free_radius
+    recorder = Recorder()
+
+    def record(iteration: int, point: frames.Primal, dual: Dual) -> tuple[float, bool]:
+        primal_value, dual_value, theta = frames.tgv_values(frame, weights, point, dual, radius)
+        partial = np.nan
+        if settled.partial_radius is not None:
+            residual = frames.tgv_residual(frame, weights, dual)
+            bound = frames.conjugate(frame, gammas * div(dual.p), radius)
+            partial = primal_value + bound + settled.partial_radius * residual
+        recorder.record(iteration, (primal_value, dual_value), theta, partial)
+        return _stops(settled, frame.samples, (primal_value, dual_value), partial)
+
+    record(0, frames.Primal(coefficients=coefficients, canvas=canvas, w=w_out), Dual(p_out, r_out))
+    converged = False
+    iteration = 0
+    while iteration < settled.iterations and not converged:
+        recorder.resume()
+        iteration += 1
+        coefficients, canvas = frames.prox(frame, x + tau * (gammas * div(p)), tau)
+        w_out = w + tau * (gammas * (p + div2(r)))
+        extrapolated, extrapolated_w = 2.0 * canvas - x, 2.0 * w_out - w
+        ascent = p + sigma * (gammas * (grad(extrapolated) - extrapolated_w))
+        p_out = frames.project_vectors(ascent, weights.alpha1, coupled=coupled)
+        r_out = frames.project_tensors(r + sigma * (gammas * sym_grad(extrapolated_w)), weights.alpha0, coupled=coupled)
+        if rho == 1.0:
+            x, w, p, r = canvas, w_out, p_out, r_out
+        else:
+            x = rho * canvas + (1.0 - rho) * x
+            w = rho * w_out + (1.0 - rho) * w
+            p = rho * p_out + (1.0 - rho) * p
+            r = rho * r_out + (1.0 - rho) * r
+        recorder.pause()
+        if _due(iteration, settled):
+            point = frames.Primal(coefficients=coefficients, canvas=canvas, w=w_out)
+            gap, converged = record(iteration, point, Dual(p_out, r_out))
+            if observe is not None:
+                observe(iteration, point, gap)
+    return FrameResult(
+        primal=frames.Primal(coefficients=coefficients, canvas=canvas, w=w_out),
+        dual=Dual(p_out, r_out),
+        iterations=iteration,
+        converged=converged,
+        history=recorder.history(),
+    )
+
+
+def _frame_first(problem: Problem, first: Initial | None, *, with_w: bool) -> FrameInitial | None:
+    """first, checked against one component's problem, with the channel axis."""
+    coefficients = first_coefficients(first, with_w=with_w)
+    if first is None:
+        return None
+
+    def lifted(given: Array | None, entries: int, name: str) -> Array | None:
+        if given is None:
+            return None
+        return _field(given, (entries, *problem.shape), name)[:, np.newaxis]
+
+    return FrameInitial(
+        coefficients=None if coefficients is None else (coefficients,),
+        w=lifted(first.w, 2, "w"),
+        p=lifted(first.p, 2, "p"),
+        r=lifted(first.r, 3, "r"),
+    )
+
+
+def _point(point: frames.Primal) -> Primal:
+    """The point of a frame of one channel, without the channel axis."""
+    return Primal(
+        coefficients=point.coefficients[0], canvas=point.canvas[0], w=None if point.w is None else point.w[:, 0]
+    )
+
+
+def _observer(observe: Observer | None) -> FrameObserver | None:
+    if observe is None:
+        return None
+
+    def seen(iteration: int, point: frames.Primal, gap: float) -> None:
+        observe(iteration, _point(point), gap)
+
+    return seen
+
+
+def _result(result: FrameResult) -> Result:
+    """The result of a frame of one channel, without the channel axis."""
+    dual = result.dual
+    return Result(
+        primal=_point(result.primal),
+        dual=None if dual is None else Dual(p=dual.p[:, 0], r=None if dual.r is None else dual.r[:, 0]),
+        iterations=result.iterations,
+        converged=result.converged,
+        history=result.history,
+    )
 
 
 def solve_tv(
@@ -305,56 +535,19 @@ def solve_tv(
     first: Initial | None = None,
     observe: Observer | None = None,
 ) -> Result:
-    """Minimizes alpha ||grad x||_{2,1} + G(x) (docs/math.md, 4.2 and 5).
+    """Minimizes alpha ||grad x||_{2,1} + G(x) (docs/math.md, 4.2 and 5): solve_frame_tv of one component.
 
     options are Options() unless given, with the defaults of TV (plan()). first is where to
     start, the data term's centres and p = 0 unless given. observe is called with each
     recorded iteration, its point and its gap per sample, which is what the tolerance is
-    compared with.
-
-    Each iteration takes the proximal steps from the current point (x, p) to (x~, p~) and
-    moves the current point to rho (x~, p~) + (1 - rho) (x, p). What is recorded, what is
-    observed and what is returned are (x~, p~): x~ is an output of the proximal map of G, in
-    the constraint set, and p~ is in the dual ball, even where the current point is not.
+    compared with. What is recorded, observed and returned are the outputs of the proximal
+    steps (solve_frame_tv).
     """
-    settled = plan(options, weights)
-    tau, sigma = steps(settled.norm_squared, settled.step_ratio, settled.step_product)
-    rho = settled.relaxation
-    point = start(problem, first_coefficients(first, with_w=False))
-    coefficients, canvas = point.coefficients, point.canvas
-    x = canvas
-    p = _first_p(first, problem.shape, weights.alpha)
-    p_out = p
-    recorder = Recorder()
-    recorder.record(0, tv_values(problem, weights, point, Dual(p_out)))
-    converged = False
-    iteration = 0
-    while iteration < settled.iterations and not converged:
-        recorder.resume()
-        iteration += 1
-        coefficients = prox(problem, dct.forward(x + tau * div(p)), tau)
-        canvas = dct.inverse(coefficients)
-        p_out = project_vectors(p + sigma * grad(2.0 * canvas - x), weights.alpha)
-        if rho == 1.0:
-            x, p = canvas, p_out
-        else:
-            x = rho * canvas + (1.0 - rho) * x
-            p = rho * p_out + (1.0 - rho) * p
-        recorder.pause()
-        if _due(iteration, settled):
-            point = Primal(coefficients=coefficients, canvas=canvas)
-            values = tv_values(problem, weights, point, Dual(p_out))
-            recorder.record(iteration, values)
-            gap, converged = _stops(settled, problem.samples, values)
-            if observe is not None:
-                observe(iteration, point, gap)
-    return Result(
-        primal=Primal(coefficients=coefficients, canvas=canvas),
-        dual=Dual(p_out),
-        iterations=iteration,
-        converged=converged,
-        history=recorder.history(),
+    frame = frames.one(problem)
+    result = solve_frame_tv(
+        frame, weights, options, first=_frame_first(problem, first, with_w=False), observe=_observer(observe)
     )
+    return _result(result)
 
 
 def solve_tgv(
@@ -367,63 +560,12 @@ def solve_tgv(
 ) -> Result:
     """Minimizes alpha1 ||grad x - w||_{2,1} + alpha0 ||E w||_{F,1} + G(x) (docs/math.md, 4.3 and 5).
 
-    options are Options() unless given, with the defaults of TGV (plan()). first is where to
-    start: the data term's centres, w the gradient of their canvas, and p and r 0, unless
-    given. The gap is that of the feasible dual (6.2). The steps are relaxed as solve_tv's
-    are, and what is recorded, observed and returned are the outputs of the proximal steps.
+    solve_frame_tgv of one component. options are Options() unless given, with the defaults
+    of TGV (plan()). first is where to start: the data term's centres, w the gradient of
+    their canvas, and p and r 0, unless given. The gap is that of the feasible dual (6.2).
     """
-    settled = plan(options, weights)
-    tau, sigma = steps(settled.norm_squared, settled.step_ratio, settled.step_product)
-    rho = settled.relaxation
-    point = start(problem, first_coefficients(first, with_w=True))
-    coefficients, canvas = point.coefficients, point.canvas
-    w = grad(canvas) if first is None or first.w is None else _field(first.w, (2, *problem.shape), "w")
-    if first is None or first.r is None:
-        r = np.zeros((3, *problem.shape))
-    else:
-        r = project_tensors(_field(first.r, (3, *problem.shape), "r"), weights.alpha0)
-    x, w_out = canvas, w
-    p = _first_p(first, problem.shape, weights.alpha1)
-    p_out, r_out = p, r
-    recorder = Recorder()
-
-    def record(iteration: int, point: Primal, dual: Dual) -> tuple[float, bool]:
-        primal_value, dual_value, theta = tgv_values(problem, weights, point, dual)
-        partial = np.nan
-        if settled.partial_radius is not None:
-            partial = tgv_partial_gap(problem, weights, point, dual, settled.partial_radius)
-        recorder.record(iteration, (primal_value, dual_value), theta, partial)
-        return _stops(settled, problem.samples, (primal_value, dual_value), partial)
-
-    record(0, Primal(coefficients=coefficients, canvas=canvas, w=w_out), Dual(p_out, r_out))
-    converged = False
-    iteration = 0
-    while iteration < settled.iterations and not converged:
-        recorder.resume()
-        iteration += 1
-        coefficients = prox(problem, dct.forward(x + tau * div(p)), tau)
-        canvas = dct.inverse(coefficients)
-        w_out = w + tau * (p + div2(r))
-        extrapolated, extrapolated_w = 2.0 * canvas - x, 2.0 * w_out - w
-        p_out = project_vectors(p + sigma * (grad(extrapolated) - extrapolated_w), weights.alpha1)
-        r_out = project_tensors(r + sigma * sym_grad(extrapolated_w), weights.alpha0)
-        if rho == 1.0:
-            x, w, p, r = canvas, w_out, p_out, r_out
-        else:
-            x = rho * canvas + (1.0 - rho) * x
-            w = rho * w_out + (1.0 - rho) * w
-            p = rho * p_out + (1.0 - rho) * p
-            r = rho * r_out + (1.0 - rho) * r
-        recorder.pause()
-        if _due(iteration, settled):
-            point = Primal(coefficients=coefficients, canvas=canvas, w=w_out)
-            gap, converged = record(iteration, point, Dual(p_out, r_out))
-            if observe is not None:
-                observe(iteration, point, gap)
-    return Result(
-        primal=Primal(coefficients=coefficients, canvas=canvas, w=w_out),
-        dual=Dual(p_out, r_out),
-        iterations=iteration,
-        converged=converged,
-        history=recorder.history(),
+    frame = frames.one(problem)
+    result = solve_frame_tgv(
+        frame, weights, options, first=_frame_first(problem, first, with_w=True), observe=_observer(observe)
     )
+    return _result(result)

@@ -16,7 +16,7 @@ import pytest
 
 import rounding
 import synthetic
-from unround import dct, model, operators, pdhg, subgradient
+from unround import dct, frames, model, operators, pdhg, subgradient
 from unround.model import TGV, TV, Dual, Primal
 
 PARTIAL_RADIUS = 20.0
@@ -113,6 +113,11 @@ def test_the_other_options_have_their_defaults_and_are_kept() -> None:
         (pdhg.Options(partial_tolerance=1e-3), TV(), "TV has no partial gap"),
         (None, TGV(math.nan, 2.0), "first-order"),
         (None, TGV(1.0, 0.0), "second-order"),
+        (None, TV(1.0, channel_weights=(1.0, 0.0)), "channel weights"),
+        (None, TGV(channel_weights=(math.inf,)), "channel weights"),
+        (None, TV(1.0, channel_weights=()), "channel weights"),
+        (pdhg.Options(free_radius=-1.0), TV(), "free samples"),
+        (pdhg.Options(free_radius=math.inf), TGV(), "free samples"),
     ],
 )
 def test_the_plan_refuses_what_the_method_cannot_run_with(
@@ -374,3 +379,99 @@ def test_tv_reaches_below_the_subgradient_method() -> None:
     assert primal_dual.history.primal[-1] < stepped.history.primal[-1]
     assert stepped.history.dual[-1] == -np.inf
     assert isinstance(primal_dual.dual, Dual)
+
+
+INVARIANT = 1e-4  # in steps: every output's coefficients are within their intervals to this
+
+
+def test_the_channel_weights_scale_the_bound_of_the_steps() -> None:
+    # L^2 is the model's bound times the largest weight squared: 8 x 4 exactly.
+    assert pdhg.plan(None, TV(channel_weights=(1.0, 2.0, 0.5))).norm_squared == 32.0
+    assert pdhg.plan(None, TGV(channel_weights=(1.0, 1.0, 1.0))).norm_squared == pdhg.TGV_NORM_SQUARED
+    assert pdhg.plan(pdhg.Options(norm_squared=5.0), TV(channel_weights=(3.0,))).norm_squared == 5.0
+    assert pdhg.plan(None, TV()).free_radius == frames.FREE_RADIUS
+
+
+def within_the_frame(frame: frames.Frame, point: frames.Primal) -> None:
+    """The coefficients are within their intervals exactly, and the canvas's own within the invariant.
+
+    The canvas's are within rounding of the coefficients (test_frames bounds it where the
+    step's input is known): some units of 2^-53 of the samples, nine orders of magnitude
+    below the invariant.
+    """
+    for index, channel in enumerate(frame.channels):
+        assert np.all(model.excess(channel.problem, point.coefficients[index]) == 0.0)
+    for excess in frames.excess(frame, point.canvas):
+        assert excess.max() <= INVARIANT
+
+
+@pytest.mark.parametrize(
+    ("ratio", "weights", "threshold"),
+    [((2, 2), TV(1.0), 3e-4), ((2, 2), TV(1.0, coupled=False), 2e-3), ((1, 1), TV(1.0), 5e-6)],
+)
+def test_tv_of_a_colour_frame_converges_within_the_set(ratio: tuple[int, int], weights: TV, threshold: float) -> None:
+    # Measured after 4000 iterations: a gap per sample of 2.3e-5 coupled and 1.1e-4 apart with
+    # the chroma of 4:2:0, a partial gap of the radius 255 (docs/math.md, 6.6); 4.8e-7 with
+    # nothing free, where it is the gap itself. The gaps here are at least 1e-5, and the
+    # values about 1e4, far above their rounding; the canvases keep within 85 to 191, in the
+    # box of the radius.
+    frame, _ = synthetic.colour_frame(20, 30, seed=70, ratio=ratio)
+
+    def observe(iteration: int, point: frames.Primal, gap: float) -> None:  # noqa: ARG001
+        within_the_frame(frame, point)
+
+    options = pdhg.Options(iterations=4000, tolerance=0.0, record_every=500, relaxation=1.0, step_ratio=10.0)
+    result = pdhg.solve_frame_tv(frame, weights, options, observe=observe)
+    history = result.history
+    assert np.all(history.gap > 0.0)
+    assert history.gap[-1] / frame.samples < threshold
+    assert history.gap[-1] < 1e-3 * history.gap[0]
+    assert result.dual is not None
+    norms = frames.vector_norms(result.dual.p, coupled=weights.coupled)
+    assert np.all(norms <= 1.0 + 12.0 * rounding.U)
+
+
+@pytest.mark.parametrize(("weights", "threshold"), [(TGV(1.0, 2.0), 3e-4), (TGV(1.0, 2.0, coupled=False), 6e-3)])
+def test_tgv_of_a_colour_frame_converges_within_the_set(weights: TGV, threshold: float) -> None:
+    # Measured after 6000 iterations, with the chroma of 4:2:0: a gap per sample of 2.8e-5
+    # coupled and 5.8e-4 apart, and the scaling of the dual 1.
+    frame, _ = synthetic.colour_frame(20, 30, seed=70)
+
+    def observe(iteration: int, point: frames.Primal, gap: float) -> None:  # noqa: ARG001
+        within_the_frame(frame, point)
+
+    options = pdhg.Options(iterations=6000, tolerance=0.0, record_every=500, relaxation=1.0, step_ratio=10.0)
+    result = pdhg.solve_frame_tgv(frame, weights, options, observe=observe)
+    history = result.history
+    assert np.all(history.gap > 0.0)
+    assert history.gap[-1] / frame.samples < threshold
+    assert history.scaling[-1] > 0.9
+    assert result.primal.w is not None
+    assert result.primal.w.shape == (2, 3, *frame.shape)
+
+
+def test_a_frame_starts_where_given() -> None:
+    frame, _ = synthetic.colour_frame(20, 30, seed=71)
+    rng = np.random.default_rng(72)
+    fields = (2, 3, *frame.shape)
+    p = rng.normal(0.0, 3.0, size=fields)
+    r = rng.normal(0.0, 3.0, size=(3, 3, *frame.shape))
+    options = pdhg.Options(iterations=0)
+    tv = pdhg.solve_frame_tv(frame, TV(1.5), options, first=pdhg.FrameInitial(p=p))
+    assert tv.dual is not None
+    np.testing.assert_array_equal(tv.dual.p, frames.project_vectors(p, 1.5, coupled=True))
+    first = pdhg.FrameInitial(p=p, r=r, w=np.zeros(fields))
+    tgv = pdhg.solve_frame_tgv(frame, TGV(1.0, 2.0, coupled=False), options, first=first)
+    assert tgv.dual is not None
+    assert tgv.dual.r is not None
+    np.testing.assert_array_equal(tgv.dual.p, frames.project_vectors(p, 1.0, coupled=False))
+    np.testing.assert_array_equal(tgv.dual.r, frames.project_tensors(r, 2.0, coupled=False))
+    start = frames.start(frame)
+    begin = pdhg.solve_frame_tv(frame, TV(), options, first=pdhg.FrameInitial(coefficients=start.coefficients))
+    np.testing.assert_array_equal(begin.primal.canvas, start.canvas)
+    with pytest.raises(ValueError, match="shape"):
+        pdhg.solve_frame_tv(frame, TV(), options, first=pdhg.FrameInitial(p=np.zeros((2, *frame.shape))))
+    with pytest.raises(ValueError, match="TV has no field w or r"):
+        pdhg.solve_frame_tv(frame, TV(), options, first=pdhg.FrameInitial(w=np.zeros(fields)))
+    with pytest.raises(ValueError, match="for each of the 3 components"):
+        pdhg.solve_frame_tv(frame, TV(), options, first=pdhg.FrameInitial(coefficients=start.coefficients[:2]))

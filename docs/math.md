@@ -5,9 +5,7 @@
 
 This is the one statement of the model and of the algorithms, which the three
 implementations follow. Each section says where it is implemented. So far that
-is the Python reference, for one component without chroma subsampling
-(`python/src/unround/`). Chroma subsampling and the coupling of colour
-components are still to be written here, before they are implemented.
+is the Python reference (`python/src/unround/`).
 
 Every value this document gives as a default, of the model, of the steps of
 the solvers and of when they stop, is an option of the implementations: the
@@ -112,6 +110,67 @@ a flat block that rounding moves every sample alike, so the DC coefficient can
 move by up to $8 \times \tfrac12 = 4$. mozjpeg's trellis quantization chooses
 levels up to about two steps from the nearest, and its overshoot deringing
 encodes white samples pushed beyond 255.
+
+### 1.3 Several components on one canvas
+
+A file has one component (greyscale) or three: Y, Cb and Cr, or R, G and B where
+the file says so. Component $c$ has the sampling factors $h_c$ across and $v_c$
+down, and $h_{\max}$ and $v_{\max}$ are the largest of them. Each of its samples
+stands for a cell of
+
+$$ r_c^{\mathrm v} \times r_c^{\mathrm h} = \frac{v_{\max}}{v_c} \times \frac{h_{\max}}{h_c} $$
+
+samples of the picture, and only files where these are integers are taken:
+4:4:4, 4:2:2, 4:2:0, 4:4:0 and 4:1:1 are; the others are refused. A cell has
+$n_c = r_c^{\mathrm v} r_c^{\mathrm h}$ samples.
+
+The unknowns of all the components lie on one canvas, at the resolution of the
+picture. With one component, the canvas is its blocks, as in 1.1. With several,
+it is the picture of $h$ rows and $w$ columns rounded up to whole MCUs,
+
+$$ H = 8 v_{\max} \bigl\lceil h / (8 v_{\max}) \bigr\rceil, \qquad
+   W = 8 h_{\max} \bigl\lceil w / (8 h_{\max}) \bigr\rceil, $$
+
+and each component $c$ is a canvas $x_c$ of $H \times W$ samples. The means of
+its cells are the component's samples, and the first
+$b_c^{\mathrm v} = \lceil h / (8 r_c^{\mathrm v}) \rceil$ rows and
+$b_c^{\mathrm h} = \lceil w / (8 r_c^{\mathrm h}) \rceil$ columns of blocks of
+them are its blocks, as libjpeg counts them. The file's other blocks of the
+component, which complete its MCUs, carry nothing that a decoder shows, and are
+left out. With
+
+$$ (S_c x)_{i,j} = \frac{1}{n_c} \sum_{a < r_c^{\mathrm v}} \sum_{b < r_c^{\mathrm h}}
+   x_{r_c^{\mathrm v} i + a,\ r_c^{\mathrm h} j + b}, $$
+
+$E_c$ the restriction to the component's blocks and $D$ the DCT of 1.1, the
+coefficients of the component are $A_c x_c$, where $A_c = D E_c S_c$. The blocks
+lie within the canvas: with $m = h / (8 v_{\max})$,
+$r_c^{\mathrm v} \lceil h / (8 r_c^{\mathrm v}) \rceil = r_c^{\mathrm v} \lceil v_c m \rceil
+\le v_{\max} \lceil m \rceil$, so that $8 r_c^{\mathrm v} b_c^{\mathrm v} \le H$; and
+across alike.
+
+The rows of $S_c$ have $n_c$ entries $1/n_c$ each, and no two share a column, so
+$S_c S_c^\top = I / n_c$; with $E_c E_c^\top = I$ and $D D^\top = I$,
+
+$$ A_c A_c^\top = \nu_c I, \qquad \nu_c = 1 / n_c. $$
+
+$\nu_c^{-1} A_c^\top$ takes coefficients to the canvas: their inverse DCT, each
+sample repeated over its cell, and 0 beyond the blocks.
+$\Pi_c = \nu_c^{-1} A_c^\top A_c$ is the orthogonal projection onto the canvases
+that are constant on every cell of the blocks and 0 beyond them: it replaces each
+cell of the blocks by its mean, and the samples beyond the blocks by 0. What it
+leaves, $x_c - \Pi_c x_c$ (the deviations of the samples from the means of their
+cells, and the samples beyond the blocks), no interval constrains: those samples
+are free. The samples beyond the blocks all lie beyond the picture. With one
+component, and with several whose canvas is their blocks (4:4:4), $n_c = 1$,
+nothing lies beyond the blocks, $A_c = D$ and $\Pi_c = I$: nothing is free.
+
+The encoder averaged its samples over the cells and rounded the means to
+integers, having filled the picture out to whole MCUs by repeating its last row
+and column (some of the rows after averaging). A canvas that holds the encoder's
+samples within the picture, and elsewhere values that give the cells the means
+the encoder coded, is in the set up to that rounding, as a greyscale picture is
+(1.2).
 
 ## 2. A Laplace model of the AC coefficients
 
@@ -264,7 +323,8 @@ $$ \|K\|^2 \le \tfrac12 \bigl(17 + \sqrt{33}\bigr) \approx 11.37 < 12. $$
 
 ## 4. The models
 
-*Implemented in `unround/model.py`, for one component without subsampling.*
+*Implemented in `unround/model.py` for one component, and in `unround/frame.py`
+for several (4.4).*
 
 ### 4.1 The data term and the constraint
 
@@ -315,6 +375,64 @@ $$ \min_{x, w}\ P(x, w) = \alpha_1 \|\nabla x - w\|_{2,1} + \alpha_0 \|\mathcal{
 This is TGV² itself, an infimal convolution over $w$: where the picture is a
 ramp, $w$ takes up its gradient, and only changes of the ramp cost.
 
+### 4.4 Several components
+
+$G(x) = \sum_c G_c(x_c)$ with $G_c = g_c \circ A_c$ (1.3), where $g_c$ is the $G$
+of 4.1 in the coefficients of component $c$: its intervals, its weights, and its
+centres, whose Laplace scales (2.1) are those of its own coefficients.
+
+**Proximal map.** For a linear map $A$ with $A A^\top = \nu I$, the minimizer of
+$g(Ax) + \frac{1}{2\tau} \|x - v\|^2$ differs from $v$ only within the range of
+$A^\top$: with $x = v + A^\top u$, $Ax = Av + \nu u$ and
+$\|x - v\|^2 = \|Ax - Av\|^2 / \nu$, so that $Ax$ minimizes
+$g(z) + \frac{1}{2 \nu \tau} \|z - Av\|^2$. Hence
+
+$$ \mathrm{prox}_{\tau G_c}(v) = v + \nu_c^{-1} A_c^\top \bigl(\zeta - A_c v\bigr), \qquad
+   \zeta = \mathrm{prox}_{\nu_c \tau\, g_c}(A_c v): $$
+
+the component's coefficients take the proximal map of 4.1 with the step
+$\nu_c \tau$, and the canvas moves by the change, repeated over the cells; the
+free samples stay as they are. $A_c v$ is the DCT of the means $\bar v$ of $v$'s
+cells, and the result is computed as $v$ plus $D^\top \zeta - \bar v$ repeated
+over the cells (0 beyond the blocks); where $n_c = 1$, as $D^\top \zeta$ on the
+blocks, as in 4.1, and $v$ beyond them. The projection onto $\mathcal{C}$ is the
+same with $\zeta = \mathrm{clip}(A_c v, a_c, b_c)$.
+
+**Conjugate.** $G_c^\ast(\xi)$ is finite only where $\xi = \Pi_c \xi$: along a
+free direction $f$ ($A_c f = 0$) with $\langle \xi, f \rangle > 0$,
+$\langle \xi, x + t f \rangle - G_c(x + t f)$ grows without bound. Where
+$\xi = \Pi_c \xi$, $\langle \xi, x \rangle = \nu_c^{-1} \langle A_c \xi, A_c x \rangle$
+and $A_c$ is onto, so
+
+$$ G_c^\ast(\xi) = g_c^\ast\bigl(\nu_c^{-1} A_c \xi\bigr), $$
+
+where $\nu_c^{-1} A_c \xi$ is the DCT of the sums of $\xi$ over the cells of the
+blocks. 6.6 bounds what lies elsewhere.
+
+**Channels.** The regularizers take the channels together, pixel by pixel, or
+each on its own, and weight the differences of channel $c$ by $\gamma_c > 0$.
+Coupled,
+
+$$ \mathrm{TV}(x) = \alpha \sum_{i,j} \Bigl( \sum_c \gamma_c^2\, |(\nabla x_c)_{i,j}|^2 \Bigr)^{1/2}, $$
+
+$$ \mathrm{TGV}(x) = \min_w\ \alpha_1 \sum_{i,j} \Bigl( \sum_c \gamma_c^2\, |(\nabla x_c - w_c)_{i,j}|^2 \Bigr)^{1/2}
+   + \alpha_0 \sum_{i,j} \Bigl( \sum_c \gamma_c^2\, |(\mathcal{E} w_c)_{i,j}|_F^2 \Bigr)^{1/2}; $$
+
+each on its own, the sum over the channels of $\gamma_c$ times the TV or TGV of
+4.2 and 4.3 of $x_c$ (for TGV, each channel with its own $w_c$). Both are
+$F(Kz)$: $K$ is the operator of 4.2 or 4.3 on every channel, times $\gamma_c$,
+and $F$ sums over the pixels the Euclidean norm of all the channels' entries
+(those of a tensor with the off-diagonal twice), coupled, or of each channel's
+alone. The dual balls are those of the same norms, pixel by pixel, and
+$\|K\|^2$ is at most $\max_c \gamma_c^2$ times the bound of 3.3. Coupled, an edge
+that the channels share costs less than the same edges apart
+($\sqrt{a^2 + b^2} \le a + b$), which keeps the chroma's edges where the luma's
+are (Bresson and Chan). With one channel and $\gamma = 1$, both are those of 4.2
+and 4.3. By default the channels are coupled, and every $\gamma_c$ is 1. On the
+colour tuning files, coupled, the 8-bit PSNR of TV's results was 0.6 dB higher
+in the median than apart (by 0.02 to 2.6 dB, file by file), and that of TGV's
+0.3 dB (on 12 files, one of them 0.1 dB lower; `experiments/results/phase2-colour.md`).
+
 ## 5. The primal–dual hybrid gradient method
 
 *Implemented in `unround/pdhg.py`.*
@@ -360,12 +478,21 @@ $$ \begin{aligned}
 with $\bar x = 2 \tilde x - x$ and $\bar w = 2 \tilde w - w$, then each of
 $x, w, p, r$ moves to $\rho$ times its tilde plus $1 - \rho$ times itself.
 
+**Several channels.** $x = (x_c)$, and so are $w$, $p$ and $r$. Every difference
+of channel $c$ is multiplied by $\gamma_c$ (4.4): $\mathrm{div}\, p_c$ in the step
+of $x_c$ becomes $\gamma_c\, \mathrm{div}\, p_c$, $\nabla \bar x_c$ in that of $p_c$
+becomes $\gamma_c \nabla \bar x_c$, and for TGV so do $p_c + \mathrm{div}_2 r_c$,
+$\nabla \bar x_c - \bar w_c$ and $\mathcal{E} \bar w_c$. The proximal map of $G$ is
+that of 4.4, channel by channel, and the projections are onto the balls of 4.4:
+over all the channels at a pixel where they are coupled.
+
 **Steps.** With $L^2$ a bound of $\|K\|^2$, a ratio $\kappa = \tau / \sigma$ and
 a product $\vartheta$ in $(0, 1)$, the steps are
 $\tau = \sqrt{\vartheta \kappa} / L$ and $\sigma = \sqrt{\vartheta / \kappa} / L$,
-so that $\sigma \tau L^2 = \vartheta$. By default $L^2$ is the bound of 3.3 (8 for
-TV, 11.37 for TGV) and $\vartheta = 0.99$; with an $L^2$ below $\|K\|^2$ the
-condition above need not hold, nor the convergence.
+so that $\sigma \tau L^2 = \vartheta$. By default $L^2$ is the bound of 3.3 times
+$\max_c \gamma_c^2$ (8 for TV, 11.37 for TGV, where every $\gamma_c$ is 1) and
+$\vartheta = 0.99$; with an $L^2$ below $\|K\|^2$ the condition above need not
+hold, nor the convergence.
 
 **The ratio.** For the averages $Z^N, Y^N$ of the first $N$ iterates, Theorem 1
 of Chambolle and Pock bounds the gap at a saddle point $(z^\ast, y^\ast)$:
@@ -388,7 +515,9 @@ runs is 2 to 540 for TV and 150 to 2900 for TGV, while the ratios that bring the
 gap down fastest are 10 to 30 for TV and 3 to 10 for TGV. The default ratio
 (6.5) is the one measured to stop soonest.
 
-**Start.** By default $x$ is the MMSE decoder's output (2.3), $w = \nabla x$, and
+**Start.** By default $x$ is the MMSE decoder's output (2.3; with several
+components, $\nu_c^{-1} A_c^\top \hat c_c$ for each, the inverse DCT of its
+centres repeated over its cells, and 128 beyond its blocks), $w = \nabla x$, and
 the dual variables are 0. Any start can be given instead: its coefficients are
 clipped to their intervals, and its $p$ and $r$ projected onto their balls.
 (Starting $w$ at 0 puts it 3 to 10 times nearer
@@ -482,8 +611,9 @@ turning its test off; or else after the most iterations allowed (6.5).
   solution's largest $|w|$. Off by default.
 
 The gaps are sums over the canvas. They are divided by its number of samples,
-so that the tolerance is in the units of the objective per sample and does not
-depend on the size of the picture.
+that of all the channels ($C H W$ for $C$ channels), so that the tolerance is in
+the units of the objective per sample and does not depend on the size of the
+picture.
 
 A gap bounds how far the objective is above its least value, not how far the
 iterate is from the point where it is least. $P$ is strongly convex only in the
@@ -552,11 +682,68 @@ against long runs that went on from the stops along the same paths; against
 the longer runs above, the same stops differ by 0.0008 dB in the median, 0.0062
 dB in the 90th percentile and 0.014 dB at most.
 
+**Colour.** The defaults were chosen on greyscale files, and do not meet the
+criterion on colour ones (`experiments/results/phase2-colour.md`). On the colour
+tuning files in 4:2:0 and 4:4:4 at the qualities 20 and 50 (48 files), TV,
+coupled, stopped at the gap per sample of $2 \cdot 10^{-4}$ (the partial gap of
+6.6 where samples are free) after a median of 2245 iterations, and its RGB's
+PSNR changed against longer runs on another path by 0.0024 dB in the median,
+0.025 dB in the 90th percentile and 0.071 dB at most; at $10^{-4}$, the least
+tolerance those runs tell, by 0.0014, 0.016 and 0.057 dB. There are two causes.
+Y settles within about 2000 iterations, to 0.001 dB, but Cb and Cr keep moving
+for thousands more, and move the RGB by some hundredths of a dB while the gap,
+which they add little to, is already small; two paths come within 0.002 dB of
+each other by 8000 iterations, and within 0.0004 dB by 16000. And on smooth gradients TV keeps changing the picture at
+a gap of $10^{-6}$ per sample, its PSNR falling as it nears its least point:
+that is the staircasing of TV, not an error of the stop. The defaults stand for
+colour files as well, until they are chosen again with the weights of the
+channels.
+
 These are for $\alpha = 1$ (for TGV $\alpha_1 = 1$, with $\alpha_0 = 2 \alpha_1$).
 The dual variables are in units of $\alpha$ and the objective scales with it,
 so with another weight the ratio is divided by $\alpha^2$ and the tolerance
 multiplied by $\alpha$, unless that scaling is turned off. Neither applies to a
 ratio or a tolerance that is given.
+
+### 6.6 Several components: free samples
+
+With free samples (1.3), $G^\ast$ is $+\infty$ off the range of $A^\top$ (4.4), and
+so is the gap at the iterates, where $\xi = -K^\top y$ has deviations within the
+cells, or samples beyond the blocks, that are not 0. The partial gap of 6.3
+bounds $P - P^\ast$ instead, over the set
+
+$$ B_R = \bigl\{x : |(x_c - \Pi_c x_c - m_c)_{i,j}| \le R \text{ for every } c, i, j\bigr\}, $$
+
+where $m_c$ is 128 beyond the blocks of component $c$ and 0 within them: every
+deviation from the mean of a cell is at most $R$, and every sample beyond the
+blocks within $R$ of 128. With $\zeta_c = \xi_c - \Pi_c \xi_c$,
+
+$$ \langle \xi_c, x_c \rangle = \langle \Pi_c \xi_c, \Pi_c x_c \rangle
+   + \langle \zeta_c, x_c - \Pi_c x_c \rangle. $$
+
+$G_c$ depends on $\Pi_c x_c$ alone, and the first part gives
+$g_c^\ast(\nu_c^{-1} A_c \xi_c)$, as in 4.4. The second is at most
+$\langle \zeta_c, m_c \rangle + R \|\zeta_c\|_1$ over the box, which holds the
+deviations of $B_R$ (and more: those of a cell have the sum 0). So
+
+$$ \mathrm{gap}_R = P(x) + \sum_c \Bigl( g_c^\ast\bigl(\nu_c^{-1} A_c \xi_c\bigr)
+   + \langle \zeta_c, m_c \rangle + R\, \|\zeta_c\|_1 \Bigr) $$
+
+is at least $P(x) - P^\ast$ when a solution lies in $B_R$. For TV,
+$\xi_c = \gamma_c\, \mathrm{div}\, p_c$. For TGV, $\xi$ is that of the feasible
+dual of 6.2, $\xi_c = -\gamma_c\, \mathrm{div}\, \mathrm{div}_2 \tilde r_c$, with
+$\theta$ taken over the norm of 4.4; the partial gap of 6.3 takes
+$\xi_c = \gamma_c\, \mathrm{div}\, p_c$ instead, and adds
+$\varrho \sum_c \gamma_c \|p_c + \mathrm{div}_2 r_c\|_{2,1}$ for $|(w_c)_{i,j}| \le \varrho$.
+At a saddle point, $-K^\top y^\ast$ lies in $\partial G(x^\ast)$, which is in the range
+of $A^\top$: $\zeta = 0$, and the gap is 0 whatever $R$ is. Where nothing is free,
+$\zeta = 0$, and this is the gap of 6.1 and 6.2.
+
+$R$ is 255 by default. A solution whose samples lie within $[0, 255]$ is in
+$B_{255}$: its deviations within cells are at most $255 (1 - 1/n_c)$, and its
+samples beyond the blocks within 128 of 128. Nothing keeps the solution within
+$[0, 255]$, and the gap bounds the distance from the least value only as far as
+it does.
 
 ## 7. A subgradient method of jpeg2png's kind
 
@@ -582,12 +769,66 @@ without it, $y^{n+1} = x^{n+1}$. $g$ is a subgradient of
 $P - \iota_{\mathcal{C}}$. The scheme has no convergence guarantee and no
 measure of how far it is from the least value.
 
+## 8. Colour
+
+*Implemented in `unround/colour.py`.*
+
+A file in YCbCr is solved in YCbCr (4.4), and its result is the RGB that the
+conversion of JFIF (ITU-T T.871) gives of the solution. With $K_R = 0.299$,
+$K_B = 0.114$ and $K_G = 1 - K_R - K_B = 0.587$, the YCbCr of JFIF is
+
+$$ Y = K_R R + K_G G + K_B B, \qquad C_B = 128 + \frac{B - Y}{2 (1 - K_B)}, \qquad
+   C_R = 128 + \frac{R - Y}{2 (1 - K_R)}, $$
+
+and its exact inverse is
+
+$$ R = Y + \tfrac{701}{500} (C_R - 128), \qquad B = Y + \tfrac{443}{250} (C_B - 128), \qquad
+   G = Y - \tfrac{25251}{73375} (C_B - 128) - \tfrac{209599}{293500} (C_R - 128), $$
+
+the rationals being $2 (1 - K_R) = 1.402$, $2 (1 - K_B) = 1.772$,
+$2 K_B (1 - K_B) / K_G$ and $2 K_R (1 - K_R) / K_G$. T.871 gives the last two to
+six digits, 0.344136 and 0.714136. Those are off by $2.9 \cdot 10^{-7}$, which
+moves $G$ by up to $7 \cdot 10^{-5}$, and the DC coefficient of a block converted
+back by up to $3 \cdot 10^{-4}$: more than $10^{-4} Q$ where $Q \le 3$. The
+rationals, rounded to the nearest doubles, leave only rounding.
+
+**The result.** It is computed in binary64, each operation rounded to the
+nearest and none fused, in the order
+
+$$ R = Y + c_R (C_R - 128), \qquad B = Y + c_B (C_B - 128), \qquad
+   G = \bigl(Y - c_{GB} (C_B - 128)\bigr) - c_{GR} (C_R - 128), $$
+
+where $c_R$, $c_B$, $c_{GB}$ and $c_{GR}$ are the doubles nearest to the four
+rationals, from the solution's canvas cut to the picture. The result is these
+values themselves: it is neither rounded nor clamped, and a file of binary64
+samples holds them to the last bit. Output of 8 or 16 bits rounds them to the
+nearest, halves away from 0, and clamps them. The YCbCr of the solution can be
+written instead, in binary64: the canvas itself, cut to the picture.
+
+libjpeg's decoder clamps Y, Cb and Cr to 0–255 before it converts them; here
+nothing is clamped before the conversion, and 8-bit output clamps the RGB alone.
+Where a sample of Y overshoots 255 and its chroma is not neutral, the two differ
+by more than rounding.
+
+A file in RGB (Adobe's, without a transform) is solved in R, G and B, and its
+result is the canvas itself.
+
+**Going back.** In the same way, the YCbCr of an RGB picture is
+$Y = (k_R R + k_G G) + k_B B$, $C_B = 128 + k_{CB} (B - Y)$ and
+$C_R = 128 + k_{CR} (R - Y)$, with the doubles nearest to $K_R$, $K_G$, $K_B$,
+$1 / 1.772 = 250 / 443$ and $1 / 1.402 = 500 / 701$. The RGB result converted
+back is the solution to within rounding, and its coefficients are within their
+intervals to within rounding (the tests bound both).
+
 ## References
 
 - K. Bredies, K. Kunisch, T. Pock. Total generalized variation. SIAM Journal on
   Imaging Sciences 3(3), 2010.
 - K. Bredies, M. Holler. Artifact-free decompression and zooming of JPEG
   compressed images with total generalized variation. 2013.
+- X. Bresson, T. F. Chan. Fast dual minimization of the vectorial total
+  variation norm and applications to color image processing. Inverse Problems
+  and Imaging 2(4), 2008.
 - A. Chambolle, T. Pock. A first-order primal-dual algorithm for convex problems
   with applications to imaging. Journal of Mathematical Imaging and Vision 40,
   2011.

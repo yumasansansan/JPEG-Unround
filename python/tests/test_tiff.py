@@ -62,6 +62,29 @@ def test_a_decoded_picture_is_written_as_it_is(tmp_path: Path) -> None:
     np.testing.assert_array_equal(bits(tifffile.imread(path)), bits(decoded.picture))
 
 
+def test_ycbcr_is_declared_as_it_is(tmp_path: Path) -> None:
+    # The planes of a colour file, as the solver left them, through the file and back, which
+    # says they are JFIF's YCbCr: no subsampling, and JFIF's coefficients.
+    samples = np.clip(synthetic.colour_picture(21, 30, seed=62), 0.0, 255.0).astype(np.uint8)
+    stream = io.BytesIO()
+    Image.fromarray(samples).save(stream, format="JPEG", quality=20, subsampling=2)
+    decoded = decode.decode(stream.getvalue(), decode.Settings(method="mmse"))
+    planes = np.moveaxis(decoded.planes, 0, -1)
+    path = tmp_path / "planes.tif"
+    tiff.write_float64(path, planes, ycbcr=True)
+    with tifffile.TiffFile(path) as file:
+        page = file.pages[0]
+        assert isinstance(page, tifffile.TiffPage)
+        assert page.photometric == tifffile.PHOTOMETRIC.YCBCR
+        assert page.tags["YCbCrSubSampling"].value == (1, 1)
+        assert page.tags["YCbCrCoefficients"].value == (299, 1000, 587, 1000, 114, 1000)
+        assert page.tags["ReferenceBlackWhite"].value == (0, 1, 255, 1, 128, 1, 255, 1, 128, 1, 255, 1)
+        read = page.asarray()
+    np.testing.assert_array_equal(bits(read.reshape(planes.shape)), bits(planes))
+    with pytest.raises(ValueError, match="three samples"):
+        tiff.write_float64(tmp_path / "grey.tif", planes[:, :, 0], ycbcr=True)
+
+
 def test_other_types_and_shapes_are_refused(tmp_path: Path) -> None:
     with pytest.raises(TypeError, match="binary64"):
         tiff.write_float64(tmp_path / "a.tif", np.zeros((2, 2), dtype=np.float32))
