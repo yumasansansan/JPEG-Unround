@@ -7,8 +7,9 @@
 //! Settings are made from options by the names of the command line (docs/cli.md).
 //! A file in memory, or components given as arrays, are reconstructed into a result,
 //! whose arrays the caller reads until it frees the result; an observer can follow
-//! the solver's records and stop it. The writers of TIFF and PNM, JFIF's conversion,
-//! the command line, and the C layer's reading of JPEG files are there too.
+//! the solver's records and stop it. The writers of TIFF, PNG and PNM, the turning
+//! of a picture upright, JFIF's conversion, the command line, and the C layer's
+//! reading of JPEG files are there too.
 //!
 //! No panic crosses the interface: each function that computes catches one and
 //! returns [`ERROR_INTERNAL`]. Errors are said in a message buffer that the caller
@@ -24,11 +25,11 @@ use std::slice;
 use jpeg_unround::decode::{self, Component, Decoded, Input, Settings};
 use jpeg_unround::pdhg::Record as SolverRecord;
 use jpeg_unround::results::Stop;
-use jpeg_unround::{Error, cli, colour, output, tiff};
+use jpeg_unround::{Error, cli, colour, orientation, output, tiff};
 use jpegio_sys::{ColorSpace, ffi};
 
 /// The version of this interface: `UNROUND_ABI_VERSION` of the header it matches.
-pub const ABI_VERSION: i32 = 1;
+pub const ABI_VERSION: i32 = 2;
 
 /// Success.
 pub const OK: i32 = 0;
@@ -66,7 +67,7 @@ fn status_of(error: &Error) -> i32 {
         Error::Read(_) => ERROR_READ,
         Error::Unsupported(_) => ERROR_UNSUPPORTED,
         Error::Options(_) => ERROR_OPTIONS,
-        Error::Io(_) => ERROR_IO,
+        Error::Io(_) | Error::Write(_) => ERROR_IO,
     }
 }
 
@@ -841,14 +842,52 @@ unsafe fn hand_over(made: Vec<u8>, bytes: *mut *mut u8, size: *mut u64) {
     unsafe { size.write(length) };
 }
 
-/// The bytes of a TIFF of binary64 samples, `height x width x channels` (1, or 3
-/// interleaved), exactly as they are; with `ycbcr` nonzero, the three samples of a
-/// pixel are JFIF's Y, Cb and Cr, and the file says so. `unround_bytes_free` frees them.
+/// An ICC profile of `size` bytes at `icc`, or none where `icc` is null.
 ///
 /// # Safety
 ///
-/// `samples` is valid for reads of `height x width x channels` doubles; `bytes` and
-/// `size` for writes; `message` for writes of `message_size` bytes, or null.
+/// `icc` is null, or valid for reads of `size` bytes.
+unsafe fn profile<'a>(icc: *const u8, size: u64) -> Result<Option<&'a [u8]>, (i32, String)> {
+    if icc.is_null() {
+        return Ok(None);
+    }
+    let length = narrow(size)?;
+    // SAFETY: the caller promised size bytes at icc.
+    Ok(Some(unsafe { slice::from_raw_parts(icc, length) }))
+}
+
+/// Hands a file over to the caller, and its warning into the message.
+///
+/// # Safety
+///
+/// `bytes` and `size` are valid for writes; `message` for writes of `message_size`
+/// bytes, or null.
+unsafe fn hand_over_written(
+    written: output::Written,
+    bytes: *mut *mut u8,
+    size: *mut u64,
+    message: *mut c_char,
+    message_size: usize,
+) {
+    // SAFETY: the caller's promises are passed on.
+    unsafe { hand_over(written.bytes, bytes, size) };
+    // SAFETY: as above.
+    unsafe { write_message(message, message_size, &written.warning) };
+}
+
+/// The bytes of a TIFF of binary64 samples, `height x width x channels` (1, or 3
+/// interleaved), exactly as they are; with `ycbcr` nonzero, the three samples of a
+/// pixel are JFIF's Y, Cb and Cr, and the file says so. The ICC profile of
+/// `icc_size` bytes at `icc` (none where `icc` is null) is embedded where it goes
+/// with the picture; where it does not, it is left out, and the message says why.
+/// On success the message holds that warning, or an empty string.
+/// `unround_bytes_free` frees the bytes.
+///
+/// # Safety
+///
+/// `samples` is valid for reads of `height x width x channels` doubles; `icc` is
+/// null or valid for reads of `icc_size` bytes; `bytes` and `size` for writes;
+/// `message` for writes of `message_size` bytes, or null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn unround_tiff(
     samples: *const f64,
@@ -856,6 +895,8 @@ pub unsafe extern "C" fn unround_tiff(
     width: u64,
     channels: u64,
     ycbcr: i32,
+    icc: *const u8,
+    icc_size: u64,
     bytes: *mut *mut u8,
     size: *mut u64,
     message: *mut c_char,
@@ -867,10 +908,75 @@ pub unsafe extern "C" fn unround_tiff(
         }
         // SAFETY: the caller promised the samples.
         let values = unsafe { picture(samples, height, width, channels) }?;
-        let made = tiff::float64(values, narrow(height)?, narrow(width)?, narrow(channels)?, ycbcr != 0)
-            .map_err(|error| (status_of(&error), error.to_string()))?;
-        // SAFETY: the caller promised bytes and size valid for writes.
-        unsafe { hand_over(made, bytes, size) };
+        // SAFETY: the caller promised the profile.
+        let icc_profile = unsafe { profile(icc, icc_size) }?;
+        let written = tiff::float64(
+            values,
+            narrow(height)?,
+            narrow(width)?,
+            narrow(channels)?,
+            ycbcr != 0,
+            icc_profile,
+        )
+        .map_err(|error| (status_of(&error), error.to_string()))?;
+        // SAFETY: the caller promised bytes, size and message valid for writes.
+        unsafe { hand_over_written(written, bytes, size, message, message_size) };
+        Ok(())
+    })
+}
+
+/// The bytes of a PNG file of `height x width x channels` samples (1 or 3), of 8
+/// bits, or with `sixteen` nonzero of 16 bits (docs/cli.md), compressed at zlib's
+/// level `compression`, 0 to 9, or -1 for zlib's default; with the ICC profile as
+/// `unround_tiff` takes it. `unround_bytes_free` frees the bytes.
+///
+/// # Safety
+///
+/// As for `unround_tiff`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn unround_png(
+    samples: *const f64,
+    height: u64,
+    width: u64,
+    channels: u64,
+    sixteen: i32,
+    compression: i32,
+    icc: *const u8,
+    icc_size: u64,
+    bytes: *mut *mut u8,
+    size: *mut u64,
+    message: *mut c_char,
+    message_size: usize,
+) -> i32 {
+    guarded(message, message_size, || {
+        if bytes.is_null() || size.is_null() {
+            return Err(refuse("the bytes and the size are not null pointers"));
+        }
+        let level = match compression {
+            -1 => None,
+            level => Some(
+                u8::try_from(level)
+                    .ok()
+                    .filter(|&level| level <= 9)
+                    .ok_or_else(|| (ERROR_OPTIONS, format!("zlib's level is 0 to 9, or -1, not {level}")))?,
+            ),
+        };
+        // SAFETY: the caller promised the samples.
+        let values = unsafe { picture(samples, height, width, channels) }?;
+        // SAFETY: the caller promised the profile.
+        let icc_profile = unsafe { profile(icc, icc_size) }?;
+        let written = output::png(
+            values,
+            narrow(height)?,
+            narrow(width)?,
+            narrow(channels)?,
+            sixteen != 0,
+            level,
+            icc_profile,
+        )
+        .map_err(|error| (status_of(&error), error.to_string()))?;
+        // SAFETY: the caller promised bytes, size and message valid for writes.
+        unsafe { hand_over_written(written, bytes, size, message, message_size) };
         Ok(())
     })
 }
@@ -923,6 +1029,58 @@ pub unsafe extern "C" fn unround_bytes_free(bytes: *mut u8, size: u64) {
     };
     // SAFETY: the caller promised bytes of this length, made by Box::into_raw, freed once.
     drop(unsafe { Box::from_raw(ptr::slice_from_raw_parts_mut(bytes, length)) });
+}
+
+/// The picture of `height x width` pixels of `channels` interleaved samples, turned
+/// upright as EXIF's `orientation` says (1 to 8, or 0 for none, which is 1), into
+/// `turned`; its rows and columns into `turned_height` and `turned_width`, where they
+/// are not null. Every sample of the result is one of the picture's, bit for bit.
+///
+/// # Safety
+///
+/// `samples` is valid for reads, and `turned` for writes, of
+/// `height x width x channels` doubles; `turned_height` and `turned_width` are null
+/// or valid for writes; `message` for writes of `message_size` bytes, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn unround_orient(
+    samples: *const f64,
+    height: u64,
+    width: u64,
+    channels: u64,
+    orientation_value: i32,
+    turned: *mut f64,
+    turned_height: *mut u64,
+    turned_width: *mut u64,
+    message: *mut c_char,
+    message_size: usize,
+) -> i32 {
+    guarded(message, message_size, || {
+        // SAFETY: the caller promised the samples.
+        let values = unsafe { picture(samples, height, width, channels) }?;
+        if turned.is_null() {
+            return Err(refuse("the turned picture is a null pointer"));
+        }
+        let result = orientation::oriented(
+            values,
+            narrow(height)?,
+            narrow(width)?,
+            narrow(channels)?,
+            orientation_value,
+        )
+        .map_err(|error| (status_of(&error), error.to_string()))?;
+        // SAFETY: the caller promised as many writable doubles at turned.
+        let target = unsafe { slice::from_raw_parts_mut(turned, result.samples.len()) };
+        target.copy_from_slice(&result.samples);
+        if !turned_height.is_null() {
+            // SAFETY: the caller promised turned_height valid for a write.
+            unsafe { turned_height.write(wide(result.height)) };
+        }
+        if !turned_width.is_null() {
+            // SAFETY: the caller promised turned_width valid for a write.
+            unsafe { turned_width.write(wide(result.width)) };
+        }
+        Ok(())
+    })
 }
 
 /// JFIF's RGB, `height x width x 3` interleaved, of Y, Cb and Cr planes of
@@ -1007,6 +1165,29 @@ pub extern "C" fn unround_jpeg_abi_version() -> i32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn unround_jpeg_libjpeg_version() -> *const c_char {
     ffi::unround_jpegio_libjpeg_version()
+}
+
+/// The C layer's `unround_jpegio_libpng_version`, through this library.
+#[unsafe(no_mangle)]
+pub extern "C" fn unround_jpeg_libpng_version() -> *const c_char {
+    ffi::unround_jpegio_libpng_version()
+}
+
+/// The C layer's `unround_jpegio_check_icc`, through this library.
+///
+/// # Safety
+///
+/// As `unround/jpegio.h` says of `unround_jpegio_check_icc`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn unround_jpeg_check_icc(
+    profile: *const u8,
+    size: u64,
+    channels: i32,
+    reason: *mut c_char,
+    reason_size: usize,
+) -> i32 {
+    // SAFETY: the caller's promises are those the C layer asks for.
+    unsafe { ffi::unround_jpegio_check_icc(profile, size, channels, reason, reason_size) }
 }
 
 /// The C layer's `unround_jpegio_read`, through this library.

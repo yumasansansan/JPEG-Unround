@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // The C layer (unround/jpegio.h) as C++ sees it: what a read returns owns its
-// memory and frees it when it goes, and a failure comes back as an Error in a
-// std::expected rather than as a status and a buffer. The structures stay the
-// C layer's own; spans give their arrays a length.
+// memory and frees it when it goes, a PNG file comes back as its bytes, and a
+// failure comes back as an Error in a std::expected rather than as a status and
+// a buffer. The structures stay the C layer's own; spans give their arrays a
+// length.
 #ifndef UNROUND_JPEGIO_HPP
 #define UNROUND_JPEGIO_HPP
 
@@ -14,9 +15,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <limits>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
+#include <vector>
 
 namespace unround::jpegio {
 
@@ -26,6 +30,7 @@ enum class Errc : std::int32_t {
   unsupported = UNROUND_JPEGIO_ERROR_UNSUPPORTED,
   limit = UNROUND_JPEGIO_ERROR_LIMIT,
   memory = UNROUND_JPEGIO_ERROR_MEMORY,
+  encode = UNROUND_JPEGIO_ERROR_ENCODE,
 };
 
 struct Error {
@@ -190,6 +195,112 @@ class Planes {
   unround_jpegio_planes planes_{};
   std::string warning_;
 };
+
+// The versions of the libpng and the zlib the C layer is built with.
+[[nodiscard]] inline std::string_view libpng_version(void) noexcept { return unround_jpegio_libpng_version(); }
+
+// Whether an ICC profile goes with a picture of the channels (1: gray, 3: RGB),
+// as libpng takes the profile of an iCCP chunk; why not, where it does not.
+[[nodiscard]] inline std::expected<void, std::string> check_icc(std::span<const std::uint8_t> profile,
+                                                                std::int32_t channels) {
+  detail::Message reason{};
+  if (unround_jpegio_check_icc(profile.data(), profile.size(), channels, reason.data(), reason.size()) == 1) return {};
+  return std::unexpected{detail::to_string(reason)};
+}
+
+// A PNG file that the C layer wrote, and the first warning of its writing (such
+// as an ICC profile that is not written, and why), or an empty string.
+struct PngFile {
+  std::vector<std::uint8_t> bytes;
+  std::string warning;
+};
+
+// How a PNG file is written: zlib's level for the samples and the ICC profile, 0
+// to 9, or -1 for zlib's default; and an ICC profile for the iCCP chunk, none
+// where empty (see unround_jpegio_png).
+struct PngOptions {
+  std::int32_t compression = -1;
+  std::span<const std::uint8_t> icc_profile;
+};
+
+namespace detail {
+
+// Whether a * b * c is the count, without overflowing.
+[[nodiscard]] inline bool product_is(std::uint64_t a, std::uint64_t b, std::uint64_t c, std::size_t count) noexcept {
+  constexpr std::uint64_t most = std::numeric_limits<std::uint64_t>::max();
+  if (a != 0 && b > most / a) return false;
+  const std::uint64_t ab = a * b;
+  if (ab != 0 && c > most / ab) return false;
+  return ab * c == static_cast<std::uint64_t>(count);
+}
+
+// The bytes a writing allocated, freed when this goes.
+class WrittenBytes {
+ public:
+  WrittenBytes(void) noexcept = default;
+  WrittenBytes(const WrittenBytes&) = delete;
+  WrittenBytes& operator=(const WrittenBytes&) = delete;
+  WrittenBytes(WrittenBytes&&) = delete;
+  WrittenBytes& operator=(WrittenBytes&&) = delete;
+  ~WrittenBytes(void) { unround_jpegio_bytes_free(&bytes_); }
+
+  [[nodiscard]] unround_jpegio_bytes* get(void) noexcept { return &bytes_; }
+  [[nodiscard]] std::span<const std::uint8_t> view(void) const noexcept {
+    if (bytes_.data == nullptr) return {};
+    return {bytes_.data, static_cast<std::size_t>(bytes_.size)};
+  }
+
+ private:
+  unround_jpegio_bytes bytes_{};
+};
+
+[[nodiscard]] inline std::expected<PngFile, Error> write_png(std::uint32_t width, std::uint32_t height,
+                                                             std::int32_t channels, std::int32_t bits,
+                                                             const void* samples, std::size_t count,
+                                                             const PngOptions& options) {
+  if (channels < 0 || !product_is(width, height, static_cast<std::uint64_t>(channels), count)) {
+    return std::unexpected{
+        Error{.code = Errc::argument, .message = "the samples are not height * width * channels of them"}};
+  }
+  const unround_jpegio_png png{
+      .width = width,
+      .height = height,
+      .channels = channels,
+      .bits = bits,
+      .compression = options.compression,
+      .reserved = 0,
+      .samples = samples,
+      .icc_profile = options.icc_profile.empty() ? nullptr : options.icc_profile.data(),
+      .icc_profile_size = options.icc_profile.size(),
+  };
+  WrittenBytes file;
+  Message message{};
+  const unround_jpegio_status status = unround_jpegio_write_png(&png, file.get(), message.data(), message.size());
+  if (status != UNROUND_JPEGIO_OK) {
+    return std::unexpected{Error{.code = static_cast<Errc>(status), .message = to_string(message)}};
+  }
+  const std::span<const std::uint8_t> bytes = file.view();
+  return PngFile{.bytes = std::vector<std::uint8_t>(bytes.begin(), bytes.end()), .warning = to_string(message)};
+}
+
+}  // namespace detail
+
+// Writes a picture as a PNG file: height * width pixels of 1 (gray) or 3 (RGB)
+// samples of 8 bits, rows from the top, the samples of a pixel together.
+[[nodiscard]] inline std::expected<PngFile, Error> write_png(std::uint32_t width, std::uint32_t height,
+                                                             std::int32_t channels,
+                                                             std::span<const std::uint8_t> samples,
+                                                             const PngOptions& options = {}) {
+  return detail::write_png(width, height, channels, 8, samples.data(), samples.size(), options);
+}
+
+// The same with samples of 16 bits.
+[[nodiscard]] inline std::expected<PngFile, Error> write_png(std::uint32_t width, std::uint32_t height,
+                                                             std::int32_t channels,
+                                                             std::span<const std::uint16_t> samples,
+                                                             const PngOptions& options = {}) {
+  return detail::write_png(width, height, channels, 16, samples.data(), samples.size(), options);
+}
 
 }  // namespace unround::jpegio
 

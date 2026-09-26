@@ -5,10 +5,10 @@
 #   ci/fuzz.sh <seconds> <corpus directory> <crash directory>
 #
 # Fuzzes the C layer with libFuzzer for the given time, in a build of the fuzz
-# preset that ci/build.sh made. The corpus starts from files that the smoke
-# test writes (c/jpegio/fuzz/smoke.c) and from whatever the directory already
-# holds; an input that fails is written to the crash directory, and the job
-# fails with it.
+# preset that ci/build.sh made. The corpus starts from the JPEG files and the
+# ICC profiles that the smoke test writes (c/jpegio/fuzz/smoke.c) and from
+# whatever the directory already holds; an input that fails is written to the
+# crash directory, and the job fails with it.
 set -euo pipefail
 
 seconds=$1

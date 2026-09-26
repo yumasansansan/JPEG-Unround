@@ -13,16 +13,24 @@
 //! which the file then declares: `PhotometricInterpretation` `YCbCr`, without
 //! subsampling, with JFIF's coefficients and full range (docs/math.md, 8).
 //!
+//! An ICC profile is embedded (`InterColorProfile`, 34675) where it goes with the
+//! picture: where the C layer's check, libpng's for the iCCP chunk of PNG, takes it
+//! for a picture of that many channels ([`jpegio_sys::check_icc`]). For Y, Cb and
+//! Cr, that is a profile of RGB, as in a JPEG file: the colours are those of the
+//! RGB that JFIF's conversion gives.
+//!
 //! A classic TIFF addresses at most 4 GiB, which is a little under 2^29 greyscale
 //! samples in binary64.
 
 use std::path::Path;
 
 use crate::error::Error;
+use crate::output::Written;
 
 const SHORT: u16 = 3;
 const LONG: u16 = 4;
 const RATIONAL: u16 = 5;
+const UNDEFINED: u16 = 7;
 const HEADER: usize = 8;
 const ENTRY: usize = 12;
 const IFD: usize = 2 + 4; // the count of entries and the next IFD's offset, besides the entries
@@ -34,6 +42,7 @@ const RGB: u16 = 2;
 const YCBCR: u16 = 6;
 const JFIF_COEFFICIENTS: [u32; 6] = [299, 1000, 587, 1000, 114, 1000]; // K_R, K_G and K_B, as rationals
 const FULL_RANGE: [u32; 12] = [0, 1, 255, 1, 128, 1, 255, 1, 128, 1, 255, 1]; // black and white of Y, Cb and Cr
+const INTER_COLOR_PROFILE: u16 = 34675;
 
 /// An IFD entry whose value, of at most four bytes, is held in the entry itself.
 fn entry(tag: u16, kind: u16, count: u32, value: &[u8]) -> Vec<u8> {
@@ -69,7 +78,13 @@ struct Layout {
     entries: Vec<Vec<u8>>,
 }
 
-fn layout(height: usize, width: usize, channels: usize, ycbcr: bool) -> Result<Layout, Error> {
+fn layout(
+    height: usize,
+    width: usize,
+    channels: usize,
+    ycbcr: bool,
+    icc_profile: Option<&[u8]>,
+) -> Result<Layout, Error> {
     let size = |value: usize| u32::try_from(value).map_err(|_| Error::Options(format!("{value} does not fit a TIFF")));
     let data_length = height * width * channels * 8;
     // The layout: the header, the image data, the values that do not fit in an entry,
@@ -94,8 +109,11 @@ fn layout(height: usize, width: usize, channels: usize, ycbcr: bool) -> Result<L
     let resolution_offset = format_offset + formats.len();
     let coefficients_offset = resolution_offset + resolution.len();
     let reference_offset = coefficients_offset + coefficients.len();
-    let values_end = reference_offset + reference.len();
-    let ifd_offset = values_end + values_end % 2; // an IFD starts on a word boundary
+    // A value, and an IFD, start on a word boundary.
+    let profile_offset = reference_offset + reference.len();
+    let profile_offset = profile_offset + profile_offset % 2;
+    let values_end = profile_offset + icc_profile.map_or(0, <[u8]>::len);
+    let ifd_offset = values_end + values_end % 2;
     let photometric = if ycbcr {
         YCBCR
     } else if several {
@@ -144,10 +162,20 @@ fn layout(height: usize, width: usize, channels: usize, ycbcr: bool) -> Result<L
         entries.push(entry(531, SHORT, 1, &one)); // YCbCrPositioning: centred
         entries.push(entry(532, RATIONAL, 6, &offset(reference_offset)?)); // ReferenceBlackWhite: full range
     }
+    if let Some(profile) = icc_profile {
+        entries.push(entry(
+            INTER_COLOR_PROFILE,
+            UNDEFINED,
+            size(profile.len())?,
+            &offset(profile_offset)?,
+        ));
+    }
     let mut values = Vec::new();
     for part in [bits, formats, resolution, coefficients, reference] {
         values.extend(part);
     }
+    values.resize(profile_offset - HEADER - data_length, 0);
+    values.extend_from_slice(icc_profile.unwrap_or_default());
     Ok(Layout {
         values,
         ifd_offset,
@@ -157,14 +185,23 @@ fn layout(height: usize, width: usize, channels: usize, ycbcr: bool) -> Result<L
 
 /// The bytes of a TIFF of binary64 samples: `height x width` pixels of `channels`
 /// samples each (1, or 3 interleaved), exactly as they are. With `ycbcr`, the three
-/// samples of a pixel are JFIF's Y, Cb and Cr, and the file says so.
+/// samples of a pixel are JFIF's Y, Cb and Cr, and the file says so. The ICC profile
+/// is embedded where it goes with the picture; otherwise it is left out, and the
+/// warning says why.
 ///
 /// # Errors
 ///
 /// [`Error::Options`] for a picture that is empty, not of that size, not of 1 or 3
 /// channels, of Y, Cb and Cr in other than 3 channels, or too large for a classic
 /// TIFF.
-pub fn float64(samples: &[f64], height: usize, width: usize, channels: usize, ycbcr: bool) -> Result<Vec<u8>, Error> {
+pub fn float64(
+    samples: &[f64],
+    height: usize,
+    width: usize,
+    channels: usize,
+    ycbcr: bool,
+    icc_profile: Option<&[u8]>,
+) -> Result<Written, Error> {
     if height == 0 || width == 0 || !(channels == 1 || channels == 3) || samples.len() != height * width * channels {
         return Err(Error::Options(format!(
             "a picture is height x width x 1 or 3 samples, and not empty: {height} x {width} x {channels}, \
@@ -177,11 +214,19 @@ pub fn float64(samples: &[f64], height: usize, width: usize, channels: usize, yc
             "Y, Cb and Cr are three samples to a pixel, not {channels}"
         )));
     }
+    let mut warning = String::new();
+    let icc_profile = icc_profile.filter(|profile| {
+        let taken = jpegio_sys::check_icc(profile, u32::try_from(channels).unwrap_or(u32::MAX));
+        if let Err(reason) = &taken {
+            warning = format!("the ICC profile is not written: {reason}");
+        }
+        taken.is_ok()
+    });
     let Layout {
         values,
         ifd_offset,
         entries,
-    } = layout(height, width, channels, ycbcr)?;
+    } = layout(height, width, channels, ycbcr, icc_profile)?;
     if ifd_offset + IFD + ENTRY * entries.len() > LIMIT {
         return Err(Error::Options(format!(
             "a picture of {height} x {width} x {channels} binary64 samples does not fit a classic TIFF"
@@ -201,10 +246,11 @@ pub fn float64(samples: &[f64], height: usize, width: usize, channels: usize, yc
         file.extend_from_slice(bytes);
     }
     file.extend_from_slice(&0u32.to_le_bytes());
-    Ok(file)
+    Ok(Written { bytes: file, warning })
 }
 
-/// Writes [`float64`] of a picture to a file.
+/// Writes [`float64`] of a picture to a file, and returns the warning of its
+/// writing, or an empty string.
 ///
 /// # Errors
 ///
@@ -216,8 +262,9 @@ pub fn write_float64(
     width: usize,
     channels: usize,
     ycbcr: bool,
-) -> Result<(), Error> {
-    let bytes = float64(samples, height, width, channels, ycbcr)?;
-    std::fs::write(path, bytes)?;
-    Ok(())
+    icc_profile: Option<&[u8]>,
+) -> Result<String, Error> {
+    let written = float64(samples, height, width, channels, ycbcr, icc_profile)?;
+    std::fs::write(path, written.bytes)?;
+    Ok(written.warning)
 }

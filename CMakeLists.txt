@@ -280,6 +280,7 @@ endif()
 # The parts
 
 include(Libjpeg)
+include(Libpng)
 add_subdirectory(c/jpegio)
 if(UNROUND_WITH_CPP)
   add_subdirectory(cpp)

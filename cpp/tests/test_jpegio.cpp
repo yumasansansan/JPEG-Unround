@@ -4,13 +4,17 @@
 // Tests of the C++ face of the C layer: a read through it returns what the C
 // layer returns; what it returns owns its memory, which a move hands over and
 // nothing frees twice; a failure comes back as a value; and several threads
-// read at once, each getting what one thread alone gets.
+// read at once, each getting what one thread alone gets. A PNG file written
+// through it reads back with libpng as the picture that went in, with its ICC
+// profile, or without one the check refuses; a wrong picture is refused.
 
 #include "unround/jpegio.hpp"
 
 #include "test_jpeg.h"
+#include "test_png.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <barrier>
 #include <cstddef>
@@ -220,6 +224,109 @@ void test_threads(void) {
   CHECK(mismatches.load() == 0);
 }
 
+// A well-formed ICC profile of version 2, a monitor's, of the data color space
+// given: its header, one tag, and the tag's data.
+std::vector<std::uint8_t> profile_of(std::size_t size, std::string_view space) {
+  std::vector<std::uint8_t> profile(size, 0);
+  const auto put = [&profile](std::size_t at, std::uint32_t value) {
+    for (std::size_t i = 0; i < 4; ++i) profile[at + i] = static_cast<std::uint8_t>(value >> (24 - 8 * i));
+  };
+  const auto text = [&profile](std::size_t at, std::string_view four) {
+    for (std::size_t i = 0; i < 4; ++i) profile[at + i] = static_cast<std::uint8_t>(four[i]);
+  };
+  put(0, static_cast<std::uint32_t>(size));
+  profile[8] = 2;
+  text(12, "mntr");
+  text(16, space);
+  text(20, "XYZ ");
+  text(36, "acsp");
+  put(68, 0x0000F6D6U);  // the illuminant D50
+  put(72, 0x00010000U);
+  put(76, 0x0000D32DU);
+  put(128, 1);
+  text(132, "desc");
+  put(136, 144);
+  put(140, static_cast<std::uint32_t>(size - 144));
+  for (std::size_t i = 144; i < size; ++i) profile[i] = static_cast<std::uint8_t>(i * 13U);
+  return profile;
+}
+
+// The file read back by libpng; checks that it is the picture, and returns its
+// profile.
+template <typename Sample>
+std::vector<std::uint8_t> read_back(const jpegio::PngFile& file, std::uint32_t width, std::uint32_t height,
+                                    std::int32_t channels, std::span<const Sample> samples) {
+  test_png back{};
+  std::array<char, 256> message{};
+  std::vector<std::uint8_t> profile;
+  if (!CHECK(test_png_read(file.bytes.data(), file.bytes.size(), &back, message.data(), message.size()) == 0)) {
+    std::println(stderr, "  {}", message.data());
+    return profile;
+  }
+  CHECK(back.width == width && back.height == height && back.channels == channels);
+  CHECK(back.bits == static_cast<std::int32_t>(8 * sizeof(Sample)));
+  const std::span<const Sample> read{static_cast<const Sample*>(back.samples), samples.size()};
+  CHECK(std::ranges::equal(read, samples));
+  CHECK(back.warning[0] == '\0');
+  if (back.icc_profile != nullptr) {
+    profile.assign(back.icc_profile, back.icc_profile + back.icc_profile_size);
+  }
+  test_png_free(&back);
+  return profile;
+}
+
+void test_png_files(void) {
+  constexpr std::size_t pixels = std::size_t{7} * 5;
+  std::vector<std::uint8_t> eight(pixels * 3);
+  std::vector<std::uint16_t> sixteen(pixels * 3);
+  for (std::size_t i = 0; i < eight.size(); ++i) {
+    eight[i] = static_cast<std::uint8_t>(i * 37U);
+    sixteen[i] = static_cast<std::uint16_t>(i * 4099U);
+  }
+  for (const std::int32_t channels : {1, 3}) {
+    const std::size_t count = pixels * static_cast<std::size_t>(channels);
+    const auto small = std::span<const std::uint8_t>{eight}.first(count);
+    const auto large = std::span<const std::uint16_t>{sixteen}.first(count);
+    const auto file8 = jpegio::write_png(7, 5, channels, small);
+    if (CHECK(file8.has_value())) {
+      CHECK(file8->warning.empty());
+      CHECK(read_back(*file8, 7, 5, channels, small).empty());
+    }
+    const auto file16 = jpegio::write_png(7, 5, channels, large, {.compression = 9, .icc_profile = {}});
+    if (CHECK(file16.has_value())) CHECK(read_back(*file16, 7, 5, channels, large).empty());
+  }
+
+  // The profile goes with the picture of its color space, and is left out of
+  // another, with the check's reason.
+  const std::vector<std::uint8_t> rgb = profile_of(500, "RGB ");
+  CHECK(jpegio::check_icc(rgb, 3).has_value());
+  const auto refused = jpegio::check_icc(rgb, 1);
+  CHECK(!refused.has_value() && !refused.error().empty());
+  const auto small = std::span<const std::uint8_t>{eight};
+  const auto with = jpegio::write_png(7, 5, 3, small, {.compression = -1, .icc_profile = rgb});
+  if (CHECK(with.has_value())) {
+    CHECK(with->warning.empty());
+    CHECK(read_back(*with, 7, 5, 3, small) == rgb);
+  }
+  const auto gray = small.first(pixels);
+  const auto without = jpegio::write_png(7, 5, 1, gray, {.compression = -1, .icc_profile = rgb});
+  if (CHECK(without.has_value())) {
+    CHECK(without->warning == "the ICC profile is not written: " + refused.error());
+    CHECK(read_back(*without, 7, 5, 1, gray).empty());
+  }
+
+  // Wrong pictures.
+  const auto short_samples = jpegio::write_png(7, 5, 3, small.first(100));
+  CHECK(!short_samples.has_value() && short_samples.error().code == jpegio::Errc::argument);
+  const auto two = jpegio::write_png(5, 7, 2, small.first(70));
+  CHECK(!two.has_value() && two.error().code == jpegio::Errc::argument && !two.error().message.empty());
+  const auto level = jpegio::write_png(7, 5, 3, small, {.compression = 10, .icc_profile = {}});
+  CHECK(!level.has_value() && level.error().code == jpegio::Errc::argument);
+  const auto huge = jpegio::write_png(0xFFFFFFFFU, 0xFFFFFFFFU, 3, small);
+  CHECK(!huge.has_value() && huge.error().code == jpegio::Errc::argument);
+  CHECK(jpegio::libpng_version().starts_with("libpng 1.6."));
+}
+
 }  // namespace
 
 int main(void) {
@@ -231,6 +338,7 @@ int main(void) {
     test_errors();
     test_planes();
     test_threads();
+    test_png_files();
     std::println(stderr, "{} of {} checks failed", failures.load(), checks.load());
   } catch (const std::exception& error) {
     (void)std::fputs(error.what(), stderr);

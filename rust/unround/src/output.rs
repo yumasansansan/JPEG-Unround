@@ -1,10 +1,24 @@
 // SPDX-FileCopyrightText: 2026 Yuma Kakei <yumasansansan@gmail.com>
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Pictures of 8 or 16 bits, rounded from the binary64 result, and the PNM files
-//! that hold them.
+//! Pictures of 8 or 16 bits, rounded from the binary64 result, and the PNG and PNM
+//! files that hold them.
+//!
+//! A PNG file is written by the C layer, with libpng: gray or RGB, not interlaced,
+//! with the file's ICC profile where the profile goes with the picture.
+
+use jpegio_sys::{ErrorKind, Png, Samples};
 
 use crate::error::Error;
+
+/// The bytes of a file, and the first warning of its writing, or an empty string.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Written {
+    /// The file.
+    pub bytes: Vec<u8>,
+    /// Such as an ICC profile that is not written, and why.
+    pub warning: String,
+}
 
 /// The integer nearest to a sample, halves away from 0, clamped to `0..=top`.
 ///
@@ -62,6 +76,21 @@ fn finite(samples: &[f64]) -> Result<(), Error> {
     Err(Error::Options(format!("a sample to quantize is not finite: {sample}")))
 }
 
+/// [`Error::Options`] for a picture that is empty, of other than 1 or 3 channels, or
+/// not of `height x width` pixels.
+fn shape(samples: &[f64], height: usize, width: usize, channels: usize) -> Result<(), Error> {
+    let count = height
+        .checked_mul(width)
+        .and_then(|pixels| pixels.checked_mul(channels));
+    if !(channels == 1 || channels == 3) || count != Some(samples.len()) || height == 0 || width == 0 {
+        return Err(Error::Options(format!(
+            "a picture of {height} x {width} x 1 or 3 samples, not empty, and not of {} samples in {channels} channels",
+            samples.len()
+        )));
+    }
+    Ok(())
+}
+
 /// The bytes of a PNM file of `height x width` pixels of 1 (`P5`) or 3 (`P6`)
 /// interleaved samples, of 8 bits, or of 16 bits, most significant byte first.
 ///
@@ -70,12 +99,7 @@ fn finite(samples: &[f64]) -> Result<(), Error> {
 /// [`Error::Options`] for a picture that is not of that size, of other than 1 or 3
 /// channels, or of samples that are not finite.
 pub fn pnm(samples: &[f64], height: usize, width: usize, channels: usize, sixteen: bool) -> Result<Vec<u8>, Error> {
-    if !(channels == 1 || channels == 3) || samples.len() != height * width * channels || height == 0 || width == 0 {
-        return Err(Error::Options(format!(
-            "a picture of {height} x {width} x 1 or 3 samples, not empty, and not of {} samples in {channels} channels",
-            samples.len()
-        )));
-    }
+    shape(samples, height, width, channels)?;
     let kind = if channels == 1 { "P5" } else { "P6" };
     let top = if sixteen { 65535 } else { 255 };
     let mut file = format!("{kind}\n{width} {height}\n{top}\n").into_bytes();
@@ -87,6 +111,66 @@ pub fn pnm(samples: &[f64], height: usize, width: usize, channels: usize, sixtee
         file.extend(eight_bits(samples)?);
     }
     Ok(file)
+}
+
+/// The bytes of a PNG file of `height x width` pixels of 1 (gray) or 3 (RGB)
+/// interleaved samples, of 8 bits as [`eight_bits`] rounds them or of 16 as
+/// [`sixteen_bits`] does; compressed at zlib's level `compression`, 0 to 9 (`None`:
+/// zlib's default), which is the ICC profile's too. The ICC profile is written where
+/// it goes with the picture ([`jpegio_sys::check_icc`]); otherwise it is left out,
+/// and the warning says why.
+///
+/// # Errors
+///
+/// [`Error::Options`] for a picture that is not of that size, of other than 1 or 3
+/// channels, larger than PNG allows, or of samples that are not finite, and a level
+/// above 9; [`Error::Write`] where the C layer could not write the file.
+pub fn png(
+    samples: &[f64],
+    height: usize,
+    width: usize,
+    channels: usize,
+    sixteen: bool,
+    compression: Option<u8>,
+    icc_profile: Option<&[u8]>,
+) -> Result<Written, Error> {
+    shape(samples, height, width, channels)?;
+    // PNG's limit of a side, 2^31 - 1.
+    let side = |value: usize| {
+        u32::try_from(value)
+            .ok()
+            .filter(|&side| side <= 0x7FFF_FFFF)
+            .ok_or_else(|| Error::Options(format!("a side of {value} pixels is larger than PNG allows")))
+    };
+    let (rows, columns) = (side(height)?, side(width)?);
+    if let Some(level) = compression.filter(|&level| level > 9) {
+        return Err(Error::Options(format!("zlib's level is 0 to 9, not {level}")));
+    }
+    let eight;
+    let sixteen_samples;
+    let samples = if sixteen {
+        sixteen_samples = sixteen_bits(samples)?;
+        Samples::Sixteen(&sixteen_samples)
+    } else {
+        eight = eight_bits(samples)?;
+        Samples::Eight(&eight)
+    };
+    let png = Png {
+        width: columns,
+        height: rows,
+        channels: if channels == 1 { 1 } else { 3 },
+        samples,
+        compression,
+        icc_profile,
+    };
+    match jpegio_sys::write_png(&png) {
+        Ok(written) => Ok(Written {
+            bytes: written.bytes,
+            warning: written.warning,
+        }),
+        Err(error) if error.kind() == ErrorKind::Argument => Err(Error::Options(error.message().to_owned())),
+        Err(error) => Err(Error::Write(error)),
+    }
 }
 
 #[cfg(test)]

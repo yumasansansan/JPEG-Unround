@@ -6,13 +6,15 @@
 //! A reader of baseline TIFF written here from the specification (TIFF 6.0: the
 //! header, the IFD and its entries, the strip) reads the files back; the samples are
 //! compared as the integers of their bits, so that -0.0 differs from 0.0 and nothing
-//! rounds.
+//! rounds. An ICC profile has to be in the file as it was given, where it goes with
+//! the picture, and be left out, with a warning, where it does not.
 
 mod support;
 
 use std::collections::BTreeMap;
 
 use jpeg_unround::tiff;
+use support::metadata;
 use support::synthetic::Numbers;
 
 /// The entries of the first IFD, by tag: their type, count, and the four bytes of
@@ -86,6 +88,15 @@ impl Read {
             .collect()
     }
 
+    /// The bytes of an UNDEFINED entry of more than four.
+    fn undefined(&self, tag: u16) -> &[u8] {
+        let (kind, count, value) = self.entries[&tag];
+        assert_eq!(kind, 7);
+        let offset = index(u32::from_le_bytes(value));
+        assert_eq!(offset % 2, 0, "a value on a word boundary");
+        &self.bytes[offset..offset + index(count)]
+    }
+
     fn samples(&self) -> Vec<u64> {
         let offset = index(self.numbers(273)[0]);
         let length = index(self.numbers(279)[0]);
@@ -123,7 +134,10 @@ fn awkward(count: usize) -> Vec<f64> {
 fn the_samples_are_written_bit_for_bit() {
     for (height, width, channels) in [(1, 1, 1), (7, 13, 1), (21, 30, 1), (5, 6, 3)] {
         let picture = awkward(height * width * channels);
-        let file = Read::new(tiff::float64(&picture, height, width, channels, false).expect("a file"));
+        let written = tiff::float64(&picture, height, width, channels, false, None).expect("a file");
+        assert_eq!(written.warning, "");
+        let file = Read::new(written.bytes);
+        assert!(!file.entries.contains_key(&34675), "no profile");
         let widths = u32::try_from(width).expect("fits");
         let heights = u32::try_from(height).expect("fits");
         let samples = u32::try_from(channels).expect("fits");
@@ -144,7 +158,7 @@ fn the_samples_are_written_bit_for_bit() {
 #[test]
 fn ycbcr_is_declared_as_it_is() {
     let picture = awkward(4 * 5 * 3);
-    let file = Read::new(tiff::float64(&picture, 4, 5, 3, true).expect("a file"));
+    let file = Read::new(tiff::float64(&picture, 4, 5, 3, true, None).expect("a file").bytes);
     assert_eq!(file.numbers(262), [6]);
     assert_eq!(file.numbers(530), [1, 1]);
     assert_eq!(file.numbers(531), [1]);
@@ -152,14 +166,63 @@ fn ycbcr_is_declared_as_it_is() {
     assert_eq!(file.rationals(532), [0, 1, 255, 1, 128, 1, 255, 1, 128, 1, 255, 1]);
     let bits: Vec<u64> = picture.iter().map(|value| value.to_bits()).collect();
     assert_eq!(file.samples(), bits);
-    let error = tiff::float64(&picture[..20], 4, 5, 1, true).expect_err("refused");
+    let error = tiff::float64(&picture[..20], 4, 5, 1, true, None).expect_err("refused");
     assert!(error.to_string().contains("three samples"), "{error}");
 }
 
 #[test]
 fn other_shapes_are_refused() {
     for (samples, height, width, channels) in [(8, 2, 2, 2), (0, 0, 3, 1), (5, 2, 2, 1)] {
-        let error = tiff::float64(&vec![0.0; samples], height, width, channels, false).expect_err("refused");
+        let error = tiff::float64(&vec![0.0; samples], height, width, channels, false, None).expect_err("refused");
         assert!(error.to_string().contains("height x width"), "{error}");
+    }
+}
+
+#[test]
+fn the_icc_profile_is_embedded_where_it_goes() {
+    // Profiles of an even length and of an odd one, which the IFD after it has to
+    // start on a word boundary for; gray and RGB, and Y, Cb and Cr, whose colours
+    // are those of RGB.
+    for (channels, ycbcr, space, size) in [
+        (1, false, b"GRAY", 300),
+        (1, false, b"GRAY", 301),
+        (3, false, b"RGB ", 1001),
+        (3, true, b"RGB ", 998),
+    ] {
+        let picture = awkward(3 * 7 * channels);
+        let profile = metadata::profile(size, *space, 7);
+        let written = tiff::float64(&picture, 3, 7, channels, ycbcr, Some(&profile)).expect("a file");
+        assert_eq!(written.warning, "");
+        let file = Read::new(written.bytes);
+        assert_eq!(file.entries[&34675].1, u32::try_from(size).expect("fits"));
+        assert_eq!(file.undefined(34675), profile.as_slice());
+        let bits: Vec<u64> = picture.iter().map(|value| value.to_bits()).collect();
+        assert_eq!(file.samples(), bits);
+        assert_eq!(
+            file.numbers(262),
+            [if ycbcr {
+                6
+            } else if channels == 3 {
+                2
+            } else {
+                1
+            }]
+        );
+    }
+
+    // A profile of another color space than the picture's, or not well formed, is
+    // left out with the C layer's reason.
+    let rgb = metadata::profile(400, *b"RGB ", 1);
+    let mut broken = rgb.clone();
+    broken[36..40].copy_from_slice(b"ascp");
+    for (channels, profile) in [(1, &rgb), (3, &metadata::profile(400, *b"GRAY", 1)), (3, &broken)] {
+        let picture = awkward(2 * 2 * channels);
+        let reason = jpegio_sys::check_icc(profile, u32::try_from(channels).expect("fits")).expect_err("refused");
+        let written = tiff::float64(&picture, 2, 2, channels, false, Some(profile)).expect("a file");
+        assert_eq!(written.warning, format!("the ICC profile is not written: {reason}"));
+        let file = Read::new(written.bytes);
+        assert!(!file.entries.contains_key(&34675), "no profile");
+        let bits: Vec<u64> = picture.iter().map(|value| value.to_bits()).collect();
+        assert_eq!(file.samples(), bits);
     }
 }

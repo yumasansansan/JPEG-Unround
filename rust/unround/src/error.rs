@@ -18,6 +18,8 @@ pub enum Error {
     Options(String),
     /// A file that could not be written or read.
     Io(std::io::Error),
+    /// A PNG file that the C layer could not write.
+    Write(jpegio_sys::Error),
 }
 
 impl fmt::Display for Error {
@@ -26,6 +28,7 @@ impl fmt::Display for Error {
             Self::Read(error) => write!(formatter, "the file is not read: {error}"),
             Self::Unsupported(message) | Self::Options(message) => formatter.write_str(message),
             Self::Io(error) => write!(formatter, "{error}"),
+            Self::Write(error) => write!(formatter, "the file is not written: {error}"),
         }
     }
 }
@@ -33,7 +36,7 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Read(error) => Some(error),
+            Self::Read(error) | Self::Write(error) => Some(error),
             Self::Io(error) => Some(error),
             Self::Unsupported(_) | Self::Options(_) => None,
         }

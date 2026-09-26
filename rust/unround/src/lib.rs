@@ -25,7 +25,8 @@
 //! - [`decode`]: a file, reconstructed by one of the methods.
 //! - [`tiff`]: the result in binary64, written bit for bit.
 //! - [`exact`]: what is rational, computed exactly, and sums in a fixed order.
-//! - [`output`]: pictures of 8 or 16 bits, and PNM files.
+//! - [`output`]: pictures of 8 or 16 bits, and PNG and PNM files.
+//! - [`orientation`]: a picture turned upright as its EXIF orientation says.
 //! - [`cli`]: the command line, `unround` (docs/cli.md).
 #![forbid(unsafe_code)]
 
@@ -40,6 +41,7 @@ pub mod kernels;
 pub mod laplace;
 pub mod model;
 pub mod operators;
+pub mod orientation;
 pub mod output;
 pub mod pdhg;
 pub mod planar;

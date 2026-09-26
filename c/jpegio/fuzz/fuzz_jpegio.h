@@ -9,8 +9,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
-// Reads the bytes as a JPEG file and decodes its planes, and aborts when the C
-// layer breaks a promise about what it returns. It always returns 0.
+// Reads the bytes as a JPEG file and decodes its planes, writes its ICC profile
+// and the bytes themselves as a profile into PNG files and reads them back, and
+// aborts when the C layer breaks a promise about what it returns. It always
+// returns 0.
 int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size);
 
 #endif

@@ -7,12 +7,13 @@
 //! memory -- the quantized DCT coefficients of every component, the quantization
 //! table each was quantized with, the sampling factors, the ICC profile and the
 //! EXIF orientation -- and decodes the component planes as libjpeg's standard
-//! decoder does, before upsampling and color conversion. [`ffi`] declares its
-//! structures and functions as C has them. [`Image`] and [`Planes`] own what a
-//! read returns, free it when they are dropped, and give its arrays as slices.
+//! decoder does, before upsampling and color conversion. And it writes PNG files
+//! with libpng. [`ffi`] declares its structures and functions as C has them.
+//! [`Image`] and [`Planes`] own what a read returns, free it when they are
+//! dropped, and give its arrays as slices; [`write_png`] returns a file's bytes.
 //!
 //! [`testing`] writes JPEG files from coefficients, for tests, with libjpeg's own
-//! encoder.
+//! encoder, and reads PNG files back with libpng.
 //!
 //! All the unsafe code of the Rust implementation is in this crate: the other
 //! crates forbid it.
@@ -20,8 +21,9 @@
 pub mod ffi;
 pub mod testing;
 
-use std::ffi::{CStr, c_char};
+use std::ffi::{CStr, c_char, c_void};
 use std::fmt;
+use std::ptr;
 use std::slice;
 
 /// What went wrong, as the C layer's status says it.
@@ -37,6 +39,8 @@ pub enum ErrorKind {
     Limit,
     /// An allocation that failed.
     Memory,
+    /// A file that libpng could not write.
+    Encode,
 }
 
 impl ErrorKind {
@@ -47,6 +51,7 @@ impl ErrorKind {
             ffi::ERROR_UNSUPPORTED => Some(Self::Unsupported),
             ffi::ERROR_LIMIT => Some(Self::Limit),
             ffi::ERROR_MEMORY => Some(Self::Memory),
+            ffi::ERROR_ENCODE => Some(Self::Encode),
             _ => None,
         }
     }
@@ -58,11 +63,13 @@ impl ErrorKind {
             Self::Unsupported => "unsupported",
             Self::Limit => "limit",
             Self::Memory => "memory",
+            Self::Encode => "encode",
         }
     }
 }
 
-/// A JPEG file that the C layer could not read, or would not.
+/// A JPEG file that the C layer could not read, or would not; or a PNG file that it
+/// could not write.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Error {
     kind: ErrorKind,
@@ -590,4 +597,162 @@ pub fn libjpeg_version() -> &'static str {
     // SAFETY: the C layer returns a NUL-terminated string of static storage.
     let text = unsafe { CStr::from_ptr(version) };
     text.to_str().unwrap_or("")
+}
+
+/// The versions of the libpng and the zlib the C layer is built with.
+#[must_use]
+pub fn libpng_version() -> &'static str {
+    let version = ffi::unround_jpegio_libpng_version();
+    if version.is_null() {
+        return "";
+    }
+    // SAFETY: the C layer returns a NUL-terminated string of static storage.
+    let text = unsafe { CStr::from_ptr(version) };
+    text.to_str().unwrap_or("")
+}
+
+/// Whether an ICC profile goes with a picture of `channels` samples to a pixel (1:
+/// gray, 3: RGB): what libpng checks of the profile of an iCCP chunk when it reads
+/// one, and drops the profile for (`unround_jpegio_check_icc`).
+///
+/// # Errors
+///
+/// Why it does not.
+pub fn check_icc(profile: &[u8], channels: u32) -> Result<(), String> {
+    let mut reason: [c_char; MESSAGE_SIZE] = [0; MESSAGE_SIZE];
+    let channels = i32::try_from(channels).unwrap_or(i32::MAX);
+    // SAFETY: profile is valid for profile.len() bytes and reason for MESSAGE_SIZE,
+    // for the length of the call.
+    let accepted = unsafe {
+        ffi::unround_jpegio_check_icc(
+            profile.as_ptr(),
+            u64::try_from(profile.len()).unwrap_or(u64::MAX),
+            channels,
+            reason.as_mut_ptr(),
+            MESSAGE_SIZE,
+        )
+    };
+    if accepted == 1 {
+        Ok(())
+    } else {
+        Err(message_text(&reason))
+    }
+}
+
+/// The samples of a picture to write as PNG.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Samples<'a> {
+    /// 8 bits each.
+    Eight(&'a [u8]),
+    /// 16 bits each.
+    Sixteen(&'a [u16]),
+}
+
+/// A picture to write as a PNG file: `height x width` pixels of 1 (gray) or 3
+/// (RGB) samples, rows from the top, each from the left, the samples of a pixel
+/// together.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Png<'a> {
+    /// Pixels across, 1 or more.
+    pub width: u32,
+    /// Rows, 1 or more.
+    pub height: u32,
+    /// Samples to a pixel: 1 or 3.
+    pub channels: u32,
+    /// `height * width * channels` samples.
+    pub samples: Samples<'a>,
+    /// zlib's level for the samples and the ICC profile, 0 (none) to 9 (the most), or
+    /// `None` for zlib's default (6).
+    pub compression: Option<u8>,
+    /// An ICC profile for the iCCP chunk. One that [`check_icc`] refuses is left
+    /// out, with a warning; one of more than 8000000 bytes, which libpng's readers
+    /// leave out unless they allow more, is written with a warning.
+    pub icc_profile: Option<&'a [u8]>,
+}
+
+/// A PNG file that the C layer wrote, and the first warning of its writing, or an
+/// empty string.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Written {
+    /// The bytes of the file.
+    pub bytes: Vec<u8>,
+    /// The first warning, such as an ICC profile that is not written, and why.
+    pub warning: String,
+}
+
+fn refused(message: impl Into<String>) -> Error {
+    Error {
+        kind: ErrorKind::Argument,
+        message: message.into(),
+    }
+}
+
+/// Writes a picture as a PNG file (`unround_jpegio_write_png`): 8 or 16 bits a
+/// sample, not interlaced, with the ICC profile given.
+///
+/// # Errors
+///
+/// [`ErrorKind::Argument`] for a picture that is empty, not of 1 or 3 channels, or
+/// not of as many samples as its size says, or a level above 9; and the errors of
+/// the writing ([`ErrorKind::Memory`], [`ErrorKind::Encode`], [`ErrorKind::Limit`]).
+pub fn write_png(png: &Png<'_>) -> Result<Written, Error> {
+    let (samples, length, bits) = match png.samples {
+        Samples::Eight(samples) => (samples.as_ptr().cast::<c_void>(), samples.len(), 8),
+        Samples::Sixteen(samples) => (samples.as_ptr().cast::<c_void>(), samples.len(), 16),
+    };
+    let count = to_usize(png.width)
+        .checked_mul(to_usize(png.height))
+        .and_then(|pixels| pixels.checked_mul(to_usize(png.channels)));
+    if count != Some(length) {
+        return Err(refused(format!(
+            "a picture of {} x {} pixels of {} samples, not of {length} samples",
+            png.height, png.width, png.channels
+        )));
+    }
+    let channels = i32::try_from(png.channels).map_err(|_| refused("a PNG picture here has 1 or 3 channels"))?;
+    let (icc_profile, icc_profile_size) = match png.icc_profile {
+        Some(profile) => (
+            profile.as_ptr(),
+            u64::try_from(profile.len()).map_err(|_| refused("the ICC profile is too large"))?,
+        ),
+        None => (ptr::null(), 0),
+    };
+    let raw = ffi::Png {
+        width: png.width,
+        height: png.height,
+        channels,
+        bits,
+        compression: png.compression.map_or(-1, i32::from),
+        reserved: 0,
+        samples,
+        icc_profile,
+        icc_profile_size,
+    };
+    let mut file = ffi::Bytes::EMPTY;
+    let mut message: [c_char; MESSAGE_SIZE] = [0; MESSAGE_SIZE];
+    // SAFETY: raw points to samples of the count its size declares (checked above)
+    // and to a profile of its size, which live for the length of the call; file and
+    // message are valid for writes, message for MESSAGE_SIZE bytes.
+    let status =
+        unsafe { ffi::unround_jpegio_write_png(&raw const raw, &raw mut file, message.as_mut_ptr(), MESSAGE_SIZE) };
+    let text = message_text(&message);
+    if status != ffi::OK {
+        return Err(Error::from_status(status, text));
+    }
+    let bytes = match usize::try_from(file.size) {
+        Ok(size) if !file.data.is_null() => {
+            // SAFETY: a successful writing allocates file.size bytes at file.data.
+            unsafe { slice::from_raw_parts(file.data, size) }.to_vec()
+        }
+        _ => Vec::new(),
+    };
+    // SAFETY: file is what the successful writing filled in, freed only here.
+    unsafe { ffi::unround_jpegio_bytes_free(&raw mut file) };
+    if bytes.is_empty() {
+        return Err(Error {
+            kind: ErrorKind::Encode,
+            message: "the C layer returned no file".into(),
+        });
+    }
+    Ok(Written { bytes, warning: text })
 }

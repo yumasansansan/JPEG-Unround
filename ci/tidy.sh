@@ -8,13 +8,14 @@
 # checks that .clang-tidy names, on the compile commands of build/<preset>. Each
 # file that the build compiles is read once, however many targets compile it,
 # and the headers of those directories are read along with them. Nothing of
-# libjpeg-turbo is reported: its headers are included from the build directory's
-# installation, which the pattern of what is ours leaves out.
+# libjpeg-turbo, libpng or zlib-ng is reported: their headers are included from
+# the build directory's installations, which the pattern of what is ours leaves
+# out.
 #
 # clang-tidy reads each file with the very options the build compiles it with,
-# so the preset is configured here, and libjpeg-turbo is built and installed,
-# since the C layer includes its headers; nothing of this project's own code is
-# compiled. .clang-tidy makes every check an error, so anything reported fails
+# so the preset is configured here, and libjpeg-turbo, zlib-ng and libpng are
+# built and installed, since the C layer includes their headers; nothing of this
+# project's own code is compiled. .clang-tidy makes every check an error, so anything reported fails
 # the script.
 set -euo pipefail
 
@@ -26,7 +27,7 @@ fi
 
 build=build/$preset
 cmake --preset "$preset" > /dev/null
-cmake --build --preset "$preset" --target libjpeg-turbo > /dev/null
+cmake --build --preset "$preset" --target libjpeg-turbo libpng > /dev/null
 
 # A file that several targets compile has a compile command for each of them,
 # and clang-tidy would read it once for every command; the checks say the same

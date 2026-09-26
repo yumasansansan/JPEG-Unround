@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # The C++ implementation. So far it is the C++ face of the C layer
-# (include/unround/jpegio.hpp), with its tests.
+# (include/unround/jpegio.hpp), with its tests, which read PNG files back with
+# libpng.
 
 find_package(Threads REQUIRED)
 
@@ -14,7 +15,7 @@ target_compile_features(unround_cpp INTERFACE cxx_std_26)
 
 if(UNROUND_BUILD_TESTS)
   add_executable(unround_cpp_jpegio_test tests/test_jpegio.cpp)
-  target_link_libraries(unround_cpp_jpegio_test PRIVATE unround::cpp unround_test_jpeg)
+  target_link_libraries(unround_cpp_jpegio_test PRIVATE unround::cpp unround_test_jpeg unround_test_png)
   unround_target_defaults(unround_cpp_jpegio_test)
   unround_add_test(cpp.jpegio unround_cpp_jpegio_test)
 

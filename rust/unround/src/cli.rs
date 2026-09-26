@@ -7,6 +7,7 @@
 //! model and of the solvers can be given. The command line is checked as a whole:
 //! every option that is refused is named at once.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::fmt::Write as _;
@@ -18,7 +19,8 @@ use std::process::ExitCode;
 use crate::decode::{self, Method, Settings};
 use crate::error::Error;
 use crate::model::{Centres, DataTerm};
-use crate::output;
+use crate::orientation;
+use crate::output::{self, Written};
 use crate::pdhg::Record;
 use crate::results::{History, Stop};
 use crate::tiff;
@@ -33,7 +35,8 @@ Reconstructs the JPEG file INPUT within its quantization intervals and writes th
 result to OUTPUT (by default next to INPUT). INPUT and OUTPUT may be - for the
 standard input and output. docs/cli.md states every option and its default.
 
-Output:      --format tiff|pnm  --bits 8|16  --ycbcr  --overwrite
+Output:      --format tiff|png|pnm  --bits 8|16  --compression 0-9  --ycbcr
+             --orientation apply|keep  --no-icc  --overwrite
 Method:      --method mmse|tv|tgv|subgradient  --alpha A  --alpha1 A  --alpha0 A
              --channel-weights G,G,G  --channels coupled|apart
 Data term:   --mu X|rule  --mu-scale S  --mu-power R  --weight-power P  --dc-weight W
@@ -51,6 +54,8 @@ Reports:     -v, --verbose  -q, --quiet  --report PATH  --version  -h, --help
 const VALUED: &[&str] = &[
     "format",
     "bits",
+    "compression",
+    "orientation",
     "method",
     "alpha",
     "alpha1",
@@ -88,6 +93,7 @@ const VALUED: &[&str] = &[
 /// The options that take none.
 const FLAGS: &[&str] = &[
     "ycbcr",
+    "no-icc",
     "overwrite",
     "no-weight-scaling",
     "no-momentum",
@@ -103,17 +109,28 @@ const FLAGS: &[&str] = &[
 pub enum Format {
     /// TIFF of binary64 samples, bit for bit.
     Tiff,
+    /// PNG of 8 or 16 bits.
+    Png,
     /// PNM of 8 or 16 bits.
     Pnm,
 }
 
-/// The bits of a sample of PNM.
+/// The bits of a sample of PNG and PNM.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Bits {
     /// 8 bits, 0 to 255.
     Eight,
     /// 16 bits, 0 to 65535, where 255 is 65535.
     Sixteen,
+}
+
+/// How the result is turned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Orientation {
+    /// Upright, as the file's EXIF orientation says.
+    Apply,
+    /// As the file stores the picture.
+    Keep,
 }
 
 /// What goes to standard error besides errors.
@@ -136,10 +153,16 @@ pub struct Command {
     pub output: PathBuf,
     /// The format of the result.
     pub format: Format,
-    /// The bits of PNM samples.
+    /// The bits of PNG and PNM samples.
     pub bits: Bits,
+    /// zlib's level of PNG, 0 to 9, or `None` for zlib's default.
+    pub compression: Option<u8>,
     /// Whether TIFF holds the Y, Cb and Cr of the solution.
     pub ycbcr: bool,
+    /// Whether the result is turned upright as the file's EXIF orientation says.
+    pub orientation: Orientation,
+    /// Whether the file's ICC profile goes into TIFF and PNG.
+    pub icc: bool,
     /// Whether a file that exists may be overwritten.
     pub overwrite: bool,
     /// The method, the model and the solvers' options.
@@ -481,7 +504,10 @@ fn settings(reader: &mut Reader<'_>) -> Settings {
 const OUTPUT_OPTIONS: &[&str] = &[
     "format",
     "bits",
+    "compression",
     "ycbcr",
+    "orientation",
+    "no-icc",
     "overwrite",
     "report",
     "verbose",
@@ -641,6 +667,7 @@ fn format_of(path: &Path) -> Option<Format> {
     let extension = path.extension()?.to_str()?.to_ascii_lowercase();
     match extension.as_str() {
         "tif" | "tiff" => Some(Format::Tiff),
+        "png" => Some(Format::Png),
         "pgm" | "ppm" | "pnm" => Some(Format::Pnm),
         _ => None,
     }
@@ -665,9 +692,28 @@ pub fn parse(arguments: Vec<OsString>) -> Result<Request, Vec<String>> {
         errors: &mut errors,
     };
     let settings = settings(&mut reader);
-    let format = reader.choice("format", &[("tiff", Format::Tiff), ("pnm", Format::Pnm)]);
+    let format = reader.choice(
+        "format",
+        &[("tiff", Format::Tiff), ("png", Format::Png), ("pnm", Format::Pnm)],
+    );
     let bits = reader.choice("bits", &[("8", Bits::Eight), ("16", Bits::Sixteen)]);
-    let (ycbcr, overwrite) = (reader.flag("ycbcr"), reader.flag("overwrite"));
+    let compression = reader.text("compression").map(str::to_owned);
+    let compression = compression.and_then(|text| match text.parse::<u8>() {
+        Ok(level) if level <= 9 => Some(level),
+        _ => {
+            reader
+                .errors
+                .push(format!("--compression is a whole number from 0 to 9, not {text}"));
+            None
+        }
+    });
+    let orientation = reader
+        .choice(
+            "orientation",
+            &[("apply", Orientation::Apply), ("keep", Orientation::Keep)],
+        )
+        .unwrap_or(Orientation::Apply);
+    let (ycbcr, overwrite, icc) = (reader.flag("ycbcr"), reader.flag("overwrite"), !reader.flag("no-icc"));
     let (verbose, quiet) = (reader.flag("verbose"), reader.flag("quiet"));
     let report = reader.text("report").map(PathBuf::from);
     if verbose && quiet {
@@ -689,12 +735,16 @@ pub fn parse(arguments: Vec<OsString>) -> Result<Request, Vec<String>> {
     if ycbcr && format != Format::Tiff {
         errors.push("--ycbcr is for TIFF".into());
     }
-    if bits.is_some() && format != Format::Pnm {
-        errors.push("--bits is for PNM".into());
+    if bits.is_some() && format == Format::Tiff {
+        errors.push("--bits is for PNG and PNM".into());
+    }
+    if given.values.contains_key("compression") && format != Format::Png {
+        errors.push("--compression is for PNG".into());
     }
     let output = named.unwrap_or_else(|| {
         let extension = match format {
             Format::Tiff => "tif",
+            Format::Png => "png",
             Format::Pnm => "pnm",
         };
         if input == Path::new("-") {
@@ -711,7 +761,10 @@ pub fn parse(arguments: Vec<OsString>) -> Result<Request, Vec<String>> {
         output,
         format,
         bits: bits.unwrap_or(Bits::Eight),
+        compression,
         ycbcr,
+        orientation,
+        icc,
         overwrite,
         settings,
         report,
@@ -753,9 +806,21 @@ fn json_list(values: &[f64]) -> String {
     format!("[{}]", items.join(", "))
 }
 
+/// What the writing of the result did besides: whether it turned the picture,
+/// whether the file holds the ICC profile, and its warnings.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Outcome {
+    /// Whether the picture was turned upright.
+    pub oriented: bool,
+    /// Whether the file holds the ICC profile.
+    pub icc_profile: bool,
+    /// The warnings of the writing.
+    pub warnings: Vec<String>,
+}
+
 /// The report of a reconstruction, as a JSON object (docs/cli.md).
 #[must_use]
-pub fn report(command: &Command, decoded: &decode::Decoded) -> String {
+pub fn report(command: &Command, decoded: &decode::Decoded, outcome: &Outcome) -> String {
     let method = match command.settings.method {
         Method::Mmse => "mmse",
         Method::Tv => "tv",
@@ -773,6 +838,11 @@ pub fn report(command: &Command, decoded: &decode::Decoded) -> String {
     let _ = writeln!(text, "  \"height\": {},", decoded.height);
     let _ = writeln!(text, "  \"width\": {},", decoded.width);
     let _ = writeln!(text, "  \"color_space\": {},", json_string(space));
+    let _ = writeln!(text, "  \"exif_orientation\": {},", decoded.exif_orientation);
+    let _ = writeln!(text, "  \"oriented\": {},", outcome.oriented);
+    let _ = writeln!(text, "  \"icc_profile\": {},", outcome.icc_profile);
+    let warnings: Vec<String> = outcome.warnings.iter().map(|warning| json_string(warning)).collect();
+    let _ = writeln!(text, "  \"warnings\": [{}],", warnings.join(", "));
     let _ = writeln!(text, "  \"method\": {},", json_string(method));
     let settings: Vec<String> = options_of(&command.settings)
         .iter()
@@ -840,6 +910,78 @@ fn write_output(path: &Path, bytes: &[u8], overwrite: bool) -> Result<(), Error>
     Ok(())
 }
 
+/// The file of the result, as the command asks for it, and what its writing did.
+fn write(command: &Command, decoded: &decode::Decoded) -> Result<(Written, Outcome), (u8, String)> {
+    let (samples, channels) = if command.ycbcr {
+        if decoded.color_space != jpegio_sys::ColorSpace::YCbCr {
+            return Err((2, "--ycbcr is for files in YCbCr".into()));
+        }
+        // The planes, interleaved as a TIFF of chunky samples holds them.
+        let size = decoded.height * decoded.width;
+        let mut interleaved = Vec::with_capacity(3 * size);
+        for pixel in 0..size {
+            for channel in 0..3 {
+                interleaved.push(decoded.planes[channel * size + pixel]);
+            }
+        }
+        (Cow::Owned(interleaved), 3)
+    } else {
+        (Cow::Borrowed(decoded.picture.as_slice()), decoded.channels)
+    };
+    let failed = |error: Error| (3, error.to_string());
+    let turn = command.orientation == Orientation::Apply && !matches!(decoded.exif_orientation, 0 | 1);
+    let (samples, height, width) = if turn {
+        let turned = orientation::oriented(
+            &samples,
+            decoded.height,
+            decoded.width,
+            channels,
+            decoded.exif_orientation,
+        )
+        .map_err(failed)?;
+        (Cow::Owned(turned.samples), turned.height, turned.width)
+    } else {
+        (samples, decoded.height, decoded.width)
+    };
+    let icc_profile = decoded.icc_profile.as_deref().filter(|_| command.icc);
+    let sixteen = command.bits == Bits::Sixteen;
+    let written = match command.format {
+        Format::Tiff => tiff::float64(&samples, height, width, channels, command.ycbcr, icc_profile),
+        Format::Png => output::png(
+            &samples,
+            height,
+            width,
+            channels,
+            sixteen,
+            command.compression,
+            icc_profile,
+        ),
+        Format::Pnm => output::pnm(&samples, height, width, channels, sixteen).map(|bytes| Written {
+            bytes,
+            warning: if icc_profile.is_some() {
+                "PNM holds no ICC profile: the file's is not written".to_owned()
+            } else {
+                String::new()
+            },
+        }),
+    }
+    .map_err(failed)?;
+    let outcome = Outcome {
+        oriented: turn,
+        // Both writers leave out a profile that the C layer's check refuses.
+        icc_profile: command.format != Format::Pnm
+            && icc_profile.is_some_and(|profile| {
+                jpegio_sys::check_icc(profile, u32::try_from(channels).unwrap_or(u32::MAX)).is_ok()
+            }),
+        warnings: if written.warning.is_empty() {
+            Vec::new()
+        } else {
+            vec![written.warning.clone()]
+        },
+    };
+    Ok((written, outcome))
+}
+
 /// Runs a command: reads, reconstructs, and writes.
 ///
 /// # Errors
@@ -867,39 +1009,16 @@ pub fn run(command: &Command) -> Result<(), (u8, String)> {
         };
         (status, format!("{}: {error}", command.input.display()))
     })?;
-    let bytes = match command.format {
-        Format::Tiff => {
-            let (samples, channels) = if command.ycbcr {
-                if decoded.color_space != jpegio_sys::ColorSpace::YCbCr {
-                    return Err((2, "--ycbcr is for files in YCbCr".into()));
-                }
-                // The planes, interleaved as a TIFF of chunky samples holds them.
-                let size = decoded.height * decoded.width;
-                let mut interleaved = Vec::with_capacity(3 * size);
-                for pixel in 0..size {
-                    for channel in 0..3 {
-                        interleaved.push(decoded.planes[channel * size + pixel]);
-                    }
-                }
-                (interleaved, 3)
-            } else {
-                (decoded.picture.clone(), decoded.channels)
-            };
-            tiff::float64(&samples, decoded.height, decoded.width, channels, command.ycbcr)
-        }
-        Format::Pnm => output::pnm(
-            &decoded.picture,
-            decoded.height,
-            decoded.width,
-            decoded.channels,
-            command.bits == Bits::Sixteen,
-        ),
-    }
-    .map_err(|error| (3, error.to_string()))?;
-    write_output(&command.output, &bytes, command.overwrite)
+    let (written, outcome) = write(command, &decoded)?;
+    write_output(&command.output, &written.bytes, command.overwrite)
         .map_err(|error| (3, format!("{}: {error}", command.output.display())))?;
+    if command.verbosity != Verbosity::Quiet {
+        for warning in &outcome.warnings {
+            eprintln!("unround: {}: {warning}", command.output.display());
+        }
+    }
     if let Some(path) = &command.report {
-        write_output(path, report(command, &decoded).as_bytes(), true)
+        write_output(path, report(command, &decoded, &outcome).as_bytes(), true)
             .map_err(|error| (3, format!("{}: {error}", path.display())))?;
     }
     if command.verbosity != Verbosity::Quiet
@@ -1110,7 +1229,45 @@ mod tests {
         };
         assert_eq!(command.output, PathBuf::from("picture.pnm"));
         assert_eq!(command.bits, Bits::Sixteen);
+        assert_eq!(command.orientation, Orientation::Apply);
+        assert!(command.icc);
         assert_eq!(parse(arguments("--version")), Ok(Request::Version));
         assert!(parse(arguments("--ycbcr --format pnm in.jpg")).is_err());
+
+        let Ok(Request::Run(command)) = parse(arguments(
+            "--compression 9 --bits 16 --orientation keep --no-icc picture.jpg out.PNG",
+        )) else {
+            panic!("the arguments are taken");
+        };
+        assert_eq!(command.format, Format::Png);
+        assert_eq!(command.compression, Some(9));
+        assert_eq!(command.orientation, Orientation::Keep);
+        assert!(!command.icc);
+        let Ok(Request::Run(command)) = parse(arguments("--format png picture.jpg")) else {
+            panic!("the arguments are taken");
+        };
+        assert_eq!(command.output, PathBuf::from("picture.png"));
+        assert_eq!(command.compression, None);
+        let Ok(Request::Run(command)) = parse(arguments("picture.jpg")) else {
+            panic!("the arguments are taken");
+        };
+        assert_eq!(
+            (command.format, command.output),
+            (Format::Tiff, PathBuf::from("picture.tif"))
+        );
+        let Err(errors) = parse(arguments(
+            "--compression 10 --orientation upright --bits 16 in.jpg out.tif",
+        )) else {
+            panic!("the arguments are refused");
+        };
+        let all = errors.join("\n");
+        for fragment in [
+            "--compression is a whole number from 0 to 9",
+            "--orientation is one of apply, keep",
+            "--compression is for PNG",
+            "--bits is for PNG and PNM",
+        ] {
+            assert!(all.contains(fragment), "{fragment} in {all}");
+        }
     }
 }

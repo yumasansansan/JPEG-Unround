@@ -9,8 +9,9 @@
 // (docs/cli.md), as strings. A JPEG file in memory, or components given as
 // arrays, are reconstructed into a result, whose arrays stay valid until the
 // result is freed; an observer can follow the solver's records and stop it.
-// The writers of TIFF and PNM, JFIF's conversion, the command line itself, and
-// the C layer's reading of JPEG files (unround/jpegio.h) are here too.
+// The writers of TIFF, PNG and PNM, the turning of a picture upright, JFIF's
+// conversion, the command line itself, and the C layer's reading of JPEG files
+// (unround/jpegio.h) are here too.
 //
 // Every function that computes returns a status, and says what went wrong in a
 // message buffer that the caller gives (NUL-terminated, cut at a character's
@@ -34,7 +35,7 @@
 extern "C" {
 #endif
 
-#define UNROUND_ABI_VERSION 1
+#define UNROUND_ABI_VERSION 2
 
 // What a function of the interface reports.
 typedef enum unround_status : int32_t {
@@ -154,8 +155,7 @@ const double* unround_result_coefficients(const unround_result* result, uint64_t
 // of the intervals and the centres of the data term, one for each coefficient;
 // 3 and 4 the quantization steps and the weights of the data term, one for each
 // frequency (64).
-const double* unround_result_problem(const unround_result* result, uint64_t component, int32_t which,
-                                     uint64_t* count);
+const double* unround_result_problem(const unround_result* result, uint64_t component, int32_t which, uint64_t* count);
 
 // A component's block rows and columns, and the canvas's samples per sample of
 // the component down and across.
@@ -184,9 +184,20 @@ int32_t unround_result_exif_orientation(const unround_result* result);
 
 // The bytes of a TIFF of binary64 samples, height x width x channels (1, or 3
 // interleaved), exactly as they are; with ycbcr nonzero, JFIF's Y, Cb and Cr,
-// which the file declares. unround_bytes_free frees them.
+// which the file declares. The ICC profile of icc_size bytes at icc (none where
+// icc is null) is embedded where it goes with the picture (unround_jpeg_check_icc);
+// where it does not, it is left out, and on success the message says why (it
+// holds that warning, or an empty string). unround_bytes_free frees the bytes.
 unround_status unround_tiff(const double* samples, uint64_t height, uint64_t width, uint64_t channels, int32_t ycbcr,
-                            uint8_t** bytes, uint64_t* size, char* message, size_t message_size);
+                            const uint8_t* icc, uint64_t icc_size, uint8_t** bytes, uint64_t* size, char* message,
+                            size_t message_size);
+
+// The bytes of a PNG file of 8 bits, or with sixteen nonzero 16 bits
+// (docs/cli.md), compressed at zlib's level compression, 0 to 9, or -1 for
+// zlib's default; with the ICC profile as unround_tiff takes it.
+unround_status unround_png(const double* samples, uint64_t height, uint64_t width, uint64_t channels, int32_t sixteen,
+                           int32_t compression, const uint8_t* icc, uint64_t icc_size, uint8_t** bytes, uint64_t* size,
+                           char* message, size_t message_size);
 
 // The bytes of a PNM file of 8 bits, or with sixteen nonzero 16 bits
 // (docs/cli.md).
@@ -194,6 +205,14 @@ unround_status unround_pnm(const double* samples, uint64_t height, uint64_t widt
                            uint8_t** bytes, uint64_t* size, char* message, size_t message_size);
 
 void unround_bytes_free(uint8_t* bytes, uint64_t size);
+
+// The picture of height x width pixels of channels interleaved samples turned
+// upright as EXIF's orientation says (1 to 8, or 0 for none), into turned, which
+// holds as many doubles; its rows and columns into *turned_height and
+// *turned_width where they are not null. The samples move bit for bit.
+unround_status unround_orient(const double* samples, uint64_t height, uint64_t width, uint64_t channels,
+                              int32_t orientation, double* turned, uint64_t* turned_height, uint64_t* turned_width,
+                              char* message, size_t message_size);
 
 // JFIF's RGB, height x width x 3 interleaved, of Y, Cb and Cr planes one after
 // another; and back.
@@ -209,6 +228,9 @@ int32_t unround_main(size_t count, const char* const* arguments);
 
 int32_t unround_jpeg_abi_version(void);
 const char* unround_jpeg_libjpeg_version(void);
+const char* unround_jpeg_libpng_version(void);
+int32_t unround_jpeg_check_icc(const uint8_t* profile, uint64_t size, int32_t channels, char* reason,
+                               size_t reason_size);
 unround_jpegio_status unround_jpeg_read(const uint8_t* data, size_t size, const unround_jpegio_options* options,
                                         unround_jpegio_image* image, char* message, size_t message_size);
 void unround_jpeg_image_free(unround_jpegio_image* image);

@@ -9,12 +9,12 @@
 //! Rust enums, since a value C might return outside an enum would make one
 //! undefined.
 
-use std::ffi::c_char;
+use std::ffi::{c_char, c_void};
 use std::mem::{offset_of, size_of};
 use std::ptr;
 
 /// `UNROUND_JPEGIO_ABI_VERSION` of the header these declarations follow.
-pub const ABI_VERSION: i32 = 1;
+pub const ABI_VERSION: i32 = 2;
 /// `UNROUND_JPEGIO_MAX_COMPONENTS`.
 pub const MAX_COMPONENTS: usize = 4;
 /// `UNROUND_JPEGIO_BLOCK_SIZE`: the coefficients of a block.
@@ -34,6 +34,8 @@ pub const ERROR_UNSUPPORTED: Status = 3;
 pub const ERROR_LIMIT: Status = 4;
 /// `UNROUND_JPEGIO_ERROR_MEMORY`: an allocation failed.
 pub const ERROR_MEMORY: Status = 5;
+/// `UNROUND_JPEGIO_ERROR_ENCODE`: libpng could not write the file.
+pub const ERROR_ENCODE: Status = 6;
 
 /// `UNROUND_JPEGIO_GRAYSCALE`.
 pub const GRAYSCALE: i32 = 1;
@@ -140,6 +142,50 @@ pub struct Planes {
     pub planes: [Plane; MAX_COMPONENTS],
 }
 
+/// `unround_jpegio_png`: a picture to write as a PNG file, rows from the top, the
+/// samples of a pixel together.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct Png {
+    /// 1 or more.
+    pub width: u32,
+    /// 1 or more.
+    pub height: u32,
+    /// 1 (gray) or 3 (RGB).
+    pub channels: i32,
+    /// 8 or 16.
+    pub bits: i32,
+    /// zlib's level for the samples and the ICC profile, 0 to 9; -1 for zlib's default.
+    pub compression: i32,
+    /// 0.
+    pub reserved: i32,
+    /// `height * width * channels` samples: `u8` for 8 bits, `u16` in this machine's
+    /// byte order for 16.
+    pub samples: *const c_void,
+    /// An ICC profile for the iCCP chunk, or a null pointer.
+    pub icc_profile: *const u8,
+    /// The bytes of the ICC profile.
+    pub icc_profile_size: u64,
+}
+
+/// `unround_jpegio_bytes`: bytes that the C layer allocated.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct Bytes {
+    /// The bytes, or a null pointer.
+    pub data: *mut u8,
+    /// How many.
+    pub size: u64,
+}
+
+impl Bytes {
+    /// No bytes, as the C layer leaves them after a failure or a free.
+    pub const EMPTY: Self = Self {
+        data: ptr::null_mut(),
+        size: 0,
+    };
+}
+
 impl Component {
     /// A component with nothing in it, as the C layer leaves one it does not fill in.
     pub const EMPTY: Self = Self {
@@ -205,6 +251,10 @@ const _: () = assert!(offset_of!(Image, components) == 40);
 const _: () = assert!(offset_of!(Image, icc_profile) == 712);
 const _: () = assert!(size_of::<Plane>() == 24);
 const _: () = assert!(size_of::<Planes>() == 104);
+const _: () = assert!(size_of::<Png>() == 48);
+const _: () = assert!(offset_of!(Png, samples) == 24);
+const _: () = assert!(offset_of!(Png, icc_profile_size) == 40);
+const _: () = assert!(size_of::<Bytes>() == 16);
 
 unsafe extern "C" {
     /// `UNROUND_JPEGIO_ABI_VERSION` of the library that is linked.
@@ -213,6 +263,10 @@ unsafe extern "C" {
     /// The name and version of the libjpeg the C layer is built with, as a
     /// NUL-terminated string of static storage.
     pub safe fn unround_jpegio_libjpeg_version() -> *const c_char;
+
+    /// The versions of the libpng and the zlib the C layer is built with, as a
+    /// NUL-terminated string of static storage.
+    pub safe fn unround_jpegio_libpng_version() -> *const c_char;
 
     /// Reads the coefficients and the metadata of a JPEG file in memory.
     ///
@@ -258,4 +312,42 @@ unsafe extern "C" {
     ///
     /// `planes` is null, or valid planes that a decoding filled in or that are empty.
     pub fn unround_jpegio_planes_free(planes: *mut Planes);
+
+    /// Whether an ICC profile goes with a picture of the channels: 1 when it does, 0
+    /// when it does not, with why in `reason`.
+    ///
+    /// # Safety
+    ///
+    /// `profile` is null or valid for reads of `size` bytes, and `reason` is valid
+    /// for writes of `reason_size` bytes (or null when that is 0).
+    pub fn unround_jpegio_check_icc(
+        profile: *const u8,
+        size: u64,
+        channels: i32,
+        reason: *mut c_char,
+        reason_size: usize,
+    ) -> i32;
+
+    /// Writes a picture as a PNG file into memory.
+    ///
+    /// # Safety
+    ///
+    /// `png` is null or valid, with samples valid for reads of as many samples as it
+    /// declares and a profile valid for reads of its size; `file` is valid for
+    /// writes, and `message` for writes of `message_size` bytes (or null when that
+    /// is 0). On success, `file` owns memory that only `unround_jpegio_bytes_free`
+    /// may free.
+    pub fn unround_jpegio_write_png(
+        png: *const Png,
+        file: *mut Bytes,
+        message: *mut c_char,
+        message_size: usize,
+    ) -> Status;
+
+    /// Frees what a successful writing allocated, and empties the bytes.
+    ///
+    /// # Safety
+    ///
+    /// `bytes` is null, or bytes that a writing filled in or that are empty.
+    pub fn unround_jpegio_bytes_free(bytes: *mut Bytes);
 }

@@ -5,12 +5,12 @@
 #         -DNM=<llvm-nm> -DOBJDUMP=<llvm-objdump> -P check_exports.cmake
 #
 # Checks that the shared C layer exports the functions that its header declares
-# with UNROUND_JPEGIO_API, and nothing else. libjpeg-turbo is linked into it, and
-# its functions have to stay inside: a process that loads the library may have
-# another libjpeg loaded as well, and the two must not take each other's
-# functions. The exports are read from the export table of a DLL, from the
-# dynamic symbols of an ELF object, and from the external symbols of a Mach-O
-# one, whose names begin with an underscore.
+# with UNROUND_JPEGIO_API, and nothing else. libjpeg-turbo, libpng and zlib-ng
+# are linked into it, and their functions have to stay inside: a process that
+# loads the library may have another libjpeg, libpng or zlib loaded as well, and
+# the two must not take each other's functions. The exports are read from the
+# export table of a DLL, from the dynamic symbols of an ELF object, and from the
+# external symbols of a Mach-O one, whose names begin with an underscore.
 
 foreach(variable IN ITEMS LIBRARY HEADER NM OBJDUMP)
   if(NOT DEFINED ${variable})

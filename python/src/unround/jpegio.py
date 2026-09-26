@@ -8,6 +8,8 @@ with, the sampling factors, the ICC profile and the EXIF orientation -- and
 decodes the component planes as libjpeg's standard decoder does, before
 upsampling and color conversion. Here the results are copied into NumPy arrays,
 which are read-only, and the C layer's memory is freed before a function returns.
+Its check of an ICC profile, libpng's for the iCCP chunk of PNG, is here too; its
+writing of PNG files is the reference implementation's (unround.native.png_bytes).
 
 The C layer is in two libraries: its own, which CMake builds with
 -DUNROUND_WITH_PYTHON=ON into python/ of the build directory, and the reference
@@ -40,12 +42,14 @@ __all__ = [
     "LibraryNotFoundError",
     "Planes",
     "abi_version",
+    "check_icc",
     "decode_planes",
     "libjpeg_version",
+    "libpng_version",
     "read",
 ]
 
-ABI_VERSION: Final = 1
+ABI_VERSION: Final = 2
 """UNROUND_JPEGIO_ABI_VERSION of the C layer whose structures this module mirrors."""
 
 _MAX_COMPONENTS: Final = 4
@@ -127,6 +131,7 @@ class ErrorKind(enum.IntEnum):
     UNSUPPORTED = 3
     LIMIT = 4
     MEMORY = 5
+    ENCODE = 6
 
 
 class ColorSpace(enum.IntEnum):
@@ -265,6 +270,8 @@ def _library() -> tuple[ctypes.CDLL, str]:
     signatures: tuple[tuple[str, object, tuple[object, ...]], ...] = (
         ("abi_version", ctypes.c_int32, ()),
         ("libjpeg_version", ctypes.c_char_p, ()),
+        ("libpng_version", ctypes.c_char_p, ()),
+        ("check_icc", ctypes.c_int32, (ctypes.c_char_p, ctypes.c_uint64, ctypes.c_int32, *message)),
         (
             "read",
             ctypes.c_int32,
@@ -310,6 +317,27 @@ def libjpeg_version() -> str:
     library, prefix = _library()
     version: bytes = getattr(library, prefix + "libjpeg_version")()
     return version.decode("ascii")
+
+
+def libpng_version() -> str:
+    """The versions of the libpng and the zlib the C layer is built with."""
+    library, prefix = _library()
+    version: bytes = getattr(library, prefix + "libpng_version")()
+    return version.decode("ascii")
+
+
+def check_icc(profile: bytes, channels: int) -> str | None:
+    """Why an ICC profile does not go with a picture of that many channels (1 gray, 3 RGB), or None.
+
+    The checks are those libpng makes of the profile of an iCCP chunk when it reads one, and drops the
+    profile for; the writers of TIFF and PNG leave out a profile that fails them.
+    """
+    if not 0 <= channels <= _INT32_MAX:
+        message = f"channels is {channels}, not 0 to 2**31 - 1"
+        raise ValueError(message)
+    reason = ctypes.create_string_buffer(_MESSAGE_SIZE)
+    accepted = _call("check_icc", profile, len(profile), channels, reason, _MESSAGE_SIZE)
+    return None if accepted == 1 else reason.value.decode("utf-8", "replace")
 
 
 def _options(max_pixels: int, max_scans: int, *, warnings_are_errors: bool) -> _Options:

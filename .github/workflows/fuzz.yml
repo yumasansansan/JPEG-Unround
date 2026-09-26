@@ -4,8 +4,9 @@
 # The long fuzzing. Once a day, and whenever it is started by hand, the fuzz
 # target of the C layer runs with libFuzzer on Ubuntu, in the build of the fuzz
 # preset (the address and undefined sanitizers), for twenty minutes or for as
-# long as the run is asked to (ci/fuzz.sh). The corpus starts from the files the
-# smoke test writes; the inputs that fail are kept as an artifact.
+# long as the run is asked to (ci/fuzz.sh). The corpus starts from the JPEG
+# files and the ICC profiles the smoke test writes; the inputs that fail are
+# kept as an artifact.
 #
 # The one action, actions/upload-artifact, is pinned to the commit of its
 # release.

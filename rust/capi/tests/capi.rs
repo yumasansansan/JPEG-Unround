@@ -9,8 +9,8 @@ use std::ptr;
 use std::slice;
 
 use jpeg_unround::decode::{self, Method, Settings};
-use jpeg_unround::{colour, output, pdhg, tiff};
-use jpegio_sys::testing::{File, Layout};
+use jpeg_unround::{colour, orientation, output, pdhg, tiff};
+use jpegio_sys::testing::{File, Layout, read_png};
 use unround_capi as capi;
 use unround_capi::{UnroundInput, UnroundRecord, UnroundResult, UnroundSettings};
 
@@ -40,6 +40,8 @@ fn grey_file() -> (Vec<u8>, Vec<i16>, [u16; 64]) {
         quant_tables: vec![table],
         progressive: false,
         arithmetic: false,
+        icc_profile: Vec::new(),
+        exif: Vec::new(),
     };
     let data = file.write(slice::from_ref(&levels)).expect("a file");
     (data, levels, table)
@@ -116,11 +118,14 @@ fn picture_of(result: *const UnroundResult) -> (Vec<f64>, u64, u64, u64) {
 
 #[test]
 fn the_versions_are_those_of_the_header() {
-    assert_eq!(capi::unround_abi_version(), 1);
+    assert_eq!(capi::unround_abi_version(), 2);
     // SAFETY: the version is a NUL-terminated string of static storage.
     let version = unsafe { CStr::from_ptr(capi::unround_version()) };
     assert!(version.to_string_lossy().starts_with("unround "));
-    assert_eq!(capi::unround_jpeg_abi_version(), 1);
+    assert_eq!(capi::unround_jpeg_abi_version(), 2);
+    // SAFETY: as above.
+    let libpng = unsafe { CStr::from_ptr(capi::unround_jpeg_libpng_version()) };
+    assert_eq!(libpng.to_string_lossy(), jpegio_sys::libpng_version());
 }
 
 #[test]
@@ -359,6 +364,8 @@ fn the_writers_and_the_conversion_are_the_library_s() {
                 3,
                 3,
                 ycbcr,
+                ptr::null(),
+                0,
                 &raw mut bytes,
                 &raw mut size,
                 ptr::null_mut(),
@@ -368,7 +375,12 @@ fn the_writers_and_the_conversion_are_the_library_s() {
         assert_eq!(status, capi::OK);
         // SAFETY: the interface handed over size bytes.
         let written = unsafe { slice::from_raw_parts(bytes, usize::try_from(size).expect("fits")) }.to_vec();
-        assert_eq!(written, tiff::float64(&samples, 2, 3, 3, ycbcr == 1).expect("a file"));
+        assert_eq!(
+            written,
+            tiff::float64(&samples, 2, 3, 3, ycbcr == 1, None)
+                .expect("a file")
+                .bytes
+        );
         // SAFETY: the bytes are freed once, with their size.
         unsafe { capi::unround_bytes_free(bytes, size) };
     }
@@ -414,4 +426,207 @@ fn the_command_line_runs_through_the_interface() {
     let pointers: Vec<*const c_char> = arguments.iter().map(|argument| argument.as_ptr()).collect();
     // SAFETY: the pointers lead to NUL-terminated strings that live for the call.
     assert_eq!(unsafe { capi::unround_main(pointers.len(), pointers.as_ptr()) }, 2);
+}
+
+/// A well-formed ICC profile of version 2, a monitor's, of the data color space
+/// given: its header, one tag, and the tag's data.
+fn profile(size: usize, space: [u8; 4]) -> Vec<u8> {
+    let mut bytes: Vec<u8> = (0..size)
+        .map(|index| u8::try_from(index % 241).expect("fits"))
+        .collect();
+    bytes[..132].fill(0);
+    let put = |bytes: &mut Vec<u8>, at: usize, value: u32| bytes[at..at + 4].copy_from_slice(&value.to_be_bytes());
+    put(&mut bytes, 0, u32::try_from(size).expect("a small profile"));
+    bytes[8] = 2;
+    bytes[12..16].copy_from_slice(b"mntr");
+    bytes[16..20].copy_from_slice(&space);
+    bytes[20..24].copy_from_slice(b"XYZ ");
+    bytes[36..40].copy_from_slice(b"acsp");
+    put(&mut bytes, 68, 0x0000_F6D6);
+    put(&mut bytes, 72, 0x0001_0000);
+    put(&mut bytes, 76, 0x0000_D32D);
+    put(&mut bytes, 128, 1);
+    bytes[132..136].copy_from_slice(b"desc");
+    put(&mut bytes, 136, 144);
+    put(&mut bytes, 140, u32::try_from(size - 144).expect("a small profile"));
+    bytes
+}
+
+/// The bytes a writer of the interface handed over, freed; and its message.
+fn taken(bytes: *mut u8, size: u64, message: &[c_char]) -> (Vec<u8>, String) {
+    // SAFETY: the interface handed over size bytes at bytes.
+    let file = unsafe { slice::from_raw_parts(bytes, usize::try_from(size).expect("fits")) }.to_vec();
+    // SAFETY: the bytes are freed once, with their size.
+    unsafe { capi::unround_bytes_free(bytes, size) };
+    // SAFETY: the interface wrote a NUL-terminated message into the buffer.
+    let text = unsafe { CStr::from_ptr(message.as_ptr()) }
+        .to_string_lossy()
+        .into_owned();
+    (file, text)
+}
+
+#[test]
+fn png_and_the_icc_profile_are_the_library_s() {
+    let samples: Vec<f64> = (0..4 * 5 * 3).map(|index| f64::from(index) * 4.5 - 7.0).collect();
+    let rgb = profile(420, *b"RGB ");
+    let gray = profile(420, *b"GRAY");
+    for (icc, sixteen, compression) in [(None, 0, -1), (Some(&rgb), 1, 9), (Some(&gray), 0, 0)] {
+        let (mut bytes, mut size) = (ptr::null_mut::<u8>(), 0u64);
+        let mut message: [c_char; 256] = [1; 256];
+        let (pointer, length) = icc.map_or((ptr::null(), 0), |icc| (icc.as_ptr(), icc.len()));
+        // SAFETY: samples has 4 x 5 x 3 doubles, the profile its length, and bytes,
+        // size and message are valid for writes, message for 256 bytes.
+        let status = unsafe {
+            capi::unround_png(
+                samples.as_ptr(),
+                4,
+                5,
+                3,
+                sixteen,
+                compression,
+                pointer,
+                u64::try_from(length).expect("fits"),
+                &raw mut bytes,
+                &raw mut size,
+                message.as_mut_ptr(),
+                256,
+            )
+        };
+        assert_eq!(status, capi::OK);
+        let (file, warning) = taken(bytes, size, &message);
+        let expected = output::png(
+            &samples,
+            4,
+            5,
+            3,
+            sixteen == 1,
+            u8::try_from(compression).ok(),
+            icc.map(Vec::as_slice),
+        )
+        .expect("a file");
+        assert_eq!((file.clone(), warning), (expected.bytes, expected.warning.clone()));
+        let back = read_png(&file).expect("a PNG file");
+        assert_eq!(back.icc_profile.as_ref(), icc.filter(|_| expected.warning.is_empty()));
+
+        // TIFF takes the profile as PNG does.
+        let (mut bytes, mut size) = (ptr::null_mut::<u8>(), 0u64);
+        // SAFETY: as above.
+        let status = unsafe {
+            capi::unround_tiff(
+                samples.as_ptr(),
+                4,
+                5,
+                3,
+                0,
+                pointer,
+                u64::try_from(length).expect("fits"),
+                &raw mut bytes,
+                &raw mut size,
+                message.as_mut_ptr(),
+                256,
+            )
+        };
+        assert_eq!(status, capi::OK);
+        let written = tiff::float64(&samples, 4, 5, 3, false, icc.map(Vec::as_slice)).expect("a file");
+        assert_eq!(taken(bytes, size, &message), (written.bytes, written.warning));
+    }
+
+    // A level out of range is refused, and said.
+    let (mut bytes, mut size) = (ptr::null_mut::<u8>(), 0u64);
+    let mut message: [c_char; 256] = [0; 256];
+    // SAFETY: as above.
+    let status = unsafe {
+        capi::unround_png(
+            samples.as_ptr(),
+            4,
+            5,
+            3,
+            0,
+            10,
+            ptr::null(),
+            0,
+            &raw mut bytes,
+            &raw mut size,
+            message.as_mut_ptr(),
+            256,
+        )
+    };
+    assert_eq!(status, capi::ERROR_OPTIONS);
+    assert!(bytes.is_null());
+    // SAFETY: the interface wrote a NUL-terminated message.
+    let text = unsafe { CStr::from_ptr(message.as_ptr()) }
+        .to_string_lossy()
+        .into_owned();
+    assert!(text.contains("0 to 9"), "{text}");
+
+    // The check of the C layer, through the interface.
+    let mut reason: [c_char; 256] = [0; 256];
+    // SAFETY: the profile has its length, and reason 256 writable bytes.
+    let accepted = unsafe {
+        capi::unround_jpeg_check_icc(
+            gray.as_ptr(),
+            u64::try_from(gray.len()).expect("fits"),
+            3,
+            reason.as_mut_ptr(),
+            256,
+        )
+    };
+    assert_eq!(accepted, 0);
+    // SAFETY: the C layer wrote a NUL-terminated reason.
+    let reason = unsafe { CStr::from_ptr(reason.as_ptr()) }
+        .to_string_lossy()
+        .into_owned();
+    assert_eq!(Err(reason), jpegio_sys::check_icc(&gray, 3));
+}
+
+#[test]
+fn a_picture_turns_as_the_library_turns_it() {
+    let samples: Vec<f64> = (0..3 * 4 * 3).map(|index| f64::from(index) + 0.25).collect();
+    for orientation_value in 0..=8 {
+        let mut turned = vec![0.0; samples.len()];
+        let (mut height, mut width) = (0u64, 0u64);
+        // SAFETY: both arrays have 3 x 4 x 3 doubles, and the sizes are valid for writes.
+        let status = unsafe {
+            capi::unround_orient(
+                samples.as_ptr(),
+                3,
+                4,
+                3,
+                orientation_value,
+                turned.as_mut_ptr(),
+                &raw mut height,
+                &raw mut width,
+                ptr::null_mut(),
+                0,
+            )
+        };
+        assert_eq!(status, capi::OK);
+        let expected = orientation::oriented(&samples, 3, 4, 3, orientation_value).expect("a picture");
+        assert_eq!(turned, expected.samples);
+        let size = |value: usize| u64::try_from(value).expect("fits");
+        assert_eq!((height, width), (size(expected.height), size(expected.width)));
+    }
+    let mut turned = vec![0.0; samples.len()];
+    let mut message: [c_char; 128] = [0; 128];
+    // SAFETY: as above, with a message of 128 bytes.
+    let status = unsafe {
+        capi::unround_orient(
+            samples.as_ptr(),
+            3,
+            4,
+            3,
+            9,
+            turned.as_mut_ptr(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+            message.as_mut_ptr(),
+            128,
+        )
+    };
+    assert_eq!(status, capi::ERROR_OPTIONS);
+    // SAFETY: the interface wrote a NUL-terminated message.
+    let text = unsafe { CStr::from_ptr(message.as_ptr()) }
+        .to_string_lossy()
+        .into_owned();
+    assert!(text.contains("1 to 8"), "{text}");
 }

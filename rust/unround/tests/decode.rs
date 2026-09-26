@@ -38,6 +38,8 @@ fn grey_file(seed: u64) -> (Vec<u8>, Vec<i16>, [u16; 64]) {
         quant_tables: vec![table],
         progressive: false,
         arithmetic: false,
+        icc_profile: Vec::new(),
+        exif: Vec::new(),
     };
     let data = file.write(std::slice::from_ref(&levels)).expect("a file");
     (data, levels, table)
@@ -54,6 +56,8 @@ fn colour_file(seed: u64, ratio: (usize, usize)) -> Vec<u8> {
         quant_tables: components.iter().map(|(_, table, _)| *table).collect(),
         progressive: true,
         arithmetic: false,
+        icc_profile: Vec::new(),
+        exif: Vec::new(),
     };
     let levels: Vec<Vec<i16>> = components.into_iter().map(|(levels, _, _)| levels).collect();
     file.write(&levels).expect("a file")

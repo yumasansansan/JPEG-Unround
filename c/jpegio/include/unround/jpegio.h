@@ -1,18 +1,18 @@
 // SPDX-FileCopyrightText: 2026 Yuma Kakei <yumasansansan@gmail.com>
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// The C layer between libjpeg-turbo and the three implementations of
+// The C layer between libjpeg-turbo and libpng and the three implementations of
 // JPEG-Unround (C++, Rust and Python). It reads what the reconstruction needs
 // from a JPEG file held in memory -- the quantized DCT coefficients of every
 // component, the quantization table each was quantized with, the sampling
 // factors, the ICC profile and the EXIF orientation -- and it decodes the
 // component planes the way libjpeg's standard decoder does, before upsampling
-// and color conversion.
+// and color conversion. And it writes PNG files, with libpng and zlib-ng.
 //
-// libjpeg reports errors with longjmp, and the jump never leaves this layer:
-// every function returns a status, and the message of a failure is copied into
-// the caller's buffer. Nothing here keeps global state, so different images
-// can be read on different threads at once.
+// libjpeg and libpng report errors with longjmp, and the jump never leaves this
+// layer: every function returns a status, and the message of a failure is copied
+// into the caller's buffer. Nothing here keeps global state, so different images
+// can be read and written on different threads at once.
 //
 // Coefficients and quantization tables are in natural (row-major) order, not
 // in the zigzag order of the file: coefficient k of a block, times entry k of
@@ -42,7 +42,7 @@
 extern "C" {
 #endif
 
-#define UNROUND_JPEGIO_ABI_VERSION 1
+#define UNROUND_JPEGIO_ABI_VERSION 2
 #define UNROUND_JPEGIO_MAX_COMPONENTS 4
 #define UNROUND_JPEGIO_BLOCK_SIZE 64
 
@@ -54,6 +54,7 @@ typedef enum unround_jpegio_status : int32_t {
   UNROUND_JPEGIO_ERROR_UNSUPPORTED = 3,  // a JPEG outside this project's scope (12-bit, lossless, CMYK, ...)
   UNROUND_JPEGIO_ERROR_LIMIT = 4,        // larger than the options allow
   UNROUND_JPEGIO_ERROR_MEMORY = 5,       // an allocation failed
+  UNROUND_JPEGIO_ERROR_ENCODE = 6,       // libpng could not write the file
 } unround_jpegio_status;
 
 // The color space of the components, as the file declares it.
@@ -128,12 +129,46 @@ typedef struct unround_jpegio_planes {
   unround_jpegio_plane planes[UNROUND_JPEGIO_MAX_COMPONENTS];
 } unround_jpegio_planes;
 
+// A picture to write as a PNG file: rows from the top, each from the left, the
+// samples of a pixel together (gray, or red, green and blue).
+typedef struct unround_jpegio_png {
+  uint32_t width;    // 1 or more
+  uint32_t height;   // 1 or more
+  int32_t channels;  // 1 (gray) or 3 (RGB)
+  int32_t bits;      // 8 or 16
+  // zlib's level for the samples and the ICC profile, 0 (none) to 9 (the most);
+  // -1 for zlib's default, 6.
+  int32_t compression;
+  int32_t reserved;  // 0
+  // height * width * channels samples: uint8_t for 8 bits, uint16_t in this
+  // machine's byte order for 16.
+  const void* samples;
+  // An ICC profile for the iCCP chunk, or a null pointer. It is written when
+  // unround_jpegio_check_icc() accepts it for the picture's channels; otherwise
+  // the file is written without it, and the message says why. A profile that
+  // compresses into an iCCP chunk shorter than libpng's reading takes (92 bytes)
+  // is stored uncompressed instead. libpng's readers leave out by default a
+  // profile of more than 8000000 bytes; such a profile is written, with a warning.
+  const uint8_t* icc_profile;
+  uint64_t icc_profile_size;
+} unround_jpegio_png;
+
+// Bytes that this layer allocated.
+typedef struct unround_jpegio_bytes {
+  uint8_t* data;
+  uint64_t size;
+} unround_jpegio_bytes;
+
 // UNROUND_JPEGIO_ABI_VERSION of the library that is loaded.
 UNROUND_JPEGIO_API int32_t unround_jpegio_abi_version(void);
 
 // The name and version of the libjpeg this layer is built with, such as
 // "libjpeg-turbo 3.2.0 (libjpeg API 62)".
 UNROUND_JPEGIO_API const char* unround_jpegio_libjpeg_version(void);
+
+// The versions of the libpng and the zlib this layer is built with, such as
+// "libpng 1.6.58, zlib-ng 2.3.3".
+UNROUND_JPEGIO_API const char* unround_jpegio_libpng_version(void);
 
 // Reads the coefficients and the metadata of a JPEG file in memory. On
 // success, image owns what it points to until unround_jpegio_image_free(), and
@@ -159,6 +194,31 @@ unround_jpegio_decode_planes(const uint8_t* data, size_t size, const unround_jpe
 // Frees what a successful unround_jpegio_decode_planes() allocated, and
 // empties planes. A null pointer, or empty planes, is accepted.
 UNROUND_JPEGIO_API void unround_jpegio_planes_free(unround_jpegio_planes* planes);
+
+// Whether an ICC profile goes with a picture of the channels (1: gray, 3: RGB):
+// what libpng checks of the profile of an iCCP chunk when it reads one, and drops
+// the profile for -- at least 132 bytes, the length its header gives, a multiple
+// of 4 from version 4 on, the signature 'acsp', its tags within it, a rendering
+// intent below 0xFFFF, a class that is neither abstract nor a device link, the
+// picture's data color space ('GRAY' or 'RGB '), and XYZ or Lab as its connection
+// space. Returns 1 when it does; 0 when it does not, with why in reason (when
+// reason_size > 0, NUL-terminated and cut to reason_size).
+UNROUND_JPEGIO_API int32_t unround_jpegio_check_icc(const uint8_t* profile, uint64_t size, int32_t channels,
+                                                    char* reason, size_t reason_size);
+
+// Writes a picture as a PNG file into memory: 8 or 16 bits a sample, gray or RGB,
+// not interlaced, with the ICC profile given (see unround_jpegio_png). On success,
+// file owns the bytes until unround_jpegio_bytes_free(), and message (when
+// message_size > 0) holds the first warning -- such as an ICC profile that was not
+// written, and why -- or an empty string when there was none. On failure, file is
+// left empty and message holds a description of the failure.
+[[nodiscard]] UNROUND_JPEGIO_API unround_jpegio_status unround_jpegio_write_png(const unround_jpegio_png* png,
+                                                                                unround_jpegio_bytes* file,
+                                                                                char* message, size_t message_size);
+
+// Frees what a successful unround_jpegio_write_png() allocated, and empties bytes.
+// A null pointer, or empty bytes, is accepted.
+UNROUND_JPEGIO_API void unround_jpegio_bytes_free(unround_jpegio_bytes* bytes);
 
 #ifdef __cplusplus
 }

@@ -22,22 +22,71 @@ replaced by that of the format (`.tif` for TIFF). A file that exists is not
 overwritten unless `--overwrite` is given.
 
 `--format FORMAT` chooses the format; without it, the extension of `OUTPUT` does
-(`.tif` and `.tiff` for TIFF, `.pgm`, `.ppm` and `.pnm` for PNM), and without
-either, TIFF.
+(`.tif` and `.tiff` for TIFF, `.png` for PNG, `.pgm`, `.ppm` and `.pnm` for PNM),
+and without either, TIFF.
 
 - `tiff`: the result in binary64, bit for bit: TIFF 6.0, little-endian, one strip,
   64-bit IEEE floating-point samples, neither rounded nor clamped. A greyscale file
   gives one sample to a pixel, a colour one R, G and B, or with `--ycbcr` the Y, Cb
   and Cr of the solution, which the file declares (`PhotometricInterpretation`
-  YCbCr, JFIF's coefficients, full range, no subsampling).
+  YCbCr, JFIF's coefficients, full range, no subsampling). The ICC profile is
+  embedded as `InterColorProfile` (34675).
+- `png`: 8-bit or 16-bit samples, greyscale or RGB, not interlaced, rounded as
+  PNM's are (below), with the ICC profile in an `iCCP` chunk named `ICC profile`.
+  `--compression N` is zlib's level of the samples and of the profile, 0 (none)
+  to 9 (the most); without it, zlib's default, 6. The file is written by libpng
+  and zlib-ng. A profile that compresses into an `iCCP` chunk shorter than
+  libpng's reading takes (92 bytes) is stored uncompressed instead, and a profile
+  of more than 8000000 bytes, which libpng's readers leave out unless they allow
+  more, is written with a warning.
 - `pnm`: 8-bit or 16-bit samples, `P5` (greyscale) or `P6` (colour). `--bits 8`
   (the default) rounds each sample to the nearest integer, halves away from 0, and
   clamps it to 0–255; `--bits 16` scales it by 257 first and clamps it to 0–65535,
-  so that 255 is white in both.
+  so that 255 is white in both. PNM holds no ICC profile: where the file has one,
+  a warning says that it is not written.
 
-`--ycbcr` is for TIFF and colour files in YCbCr only. The samples are as the file
-stores them: its EXIF orientation is not applied, and its ICC profile is not
-copied. PNG output, with the ICC profile, is to come.
+`--bits` is for PNG and PNM, `--compression` for PNG, and `--ycbcr` for TIFF and
+colour files in YCbCr.
+
+### Orientation
+
+`--orientation apply` (the default) turns the result upright as the file's EXIF
+orientation (the tag `Orientation`, 274, of its APP1 marker) says; `--orientation
+keep` writes the picture as the file stores it. A file without the tag, or with a
+value other than 1 to 8, is written as stored. Value `o` says where the stored
+picture's first row and first column are to be seen; pixel `(r, c)` of the result,
+of the stored picture `S` of `h` rows and `w` columns, is:
+
+| `o` | First row, first column | Result | Size |
+|---|---|---|---|
+| 1 | top, left | `S[r][c]` | `h x w` |
+| 2 | top, right | `S[r][w-1-c]` | `h x w` |
+| 3 | bottom, right | `S[h-1-r][w-1-c]` | `h x w` |
+| 4 | bottom, left | `S[h-1-r][c]` | `h x w` |
+| 5 | left, top | `S[c][r]` | `w x h` |
+| 6 | right, top | `S[h-1-c][r]` | `w x h` |
+| 7 | right, bottom | `S[h-1-c][w-1-r]` | `w x h` |
+| 8 | left, bottom | `S[c][w-1-r]` | `w x h` |
+
+The pixels move and none changes: TIFF's samples are still the result's, bit for
+bit, and `--ycbcr` turns the Y, Cb and Cr alike. The orientation is applied to the
+result only; the reconstruction is of the picture as the file stores it.
+
+### ICC profile
+
+The file's ICC profile (its APP2 markers) goes into TIFF and PNG where it goes
+with the picture, as libpng takes the profile of an `iCCP` chunk when it reads
+one: at least 132 bytes, the length its header gives, a multiple of 4 from version
+4 on, the signature `acsp`, its tags within it, a rendering intent below 0xFFFF, a
+class that is neither abstract (`abst`) nor a device link (`link`), the data colour
+space of the picture (`GRAY` for greyscale, `RGB ` for colour, and for the Y, Cb
+and Cr of `--ycbcr`, whose colours are those of the RGB that JFIF's conversion
+gives, as in the JPEG file), and XYZ or Lab as its connection space. A profile
+that fails is left out, with a warning that says why. `--no-icc` writes no
+profile.
+
+Warnings go to standard error, after the file is written (not with `--quiet`), and
+into the report.
 
 ## The method and the model
 
@@ -107,10 +156,14 @@ one value for each (4.1, 4.4).
   sample, the primal and dual values, and the solver's seconds.
 - `-q`, `--quiet`: nothing but errors.
 - `--report PATH`: a JSON object with what was done: the version, the input, the
-  size, the colour space, the method, the solver's iterations, why it stopped
-  (`converged`, `iterations`, `observer`, `stationary`), and every record
-  (`iterations`, `seconds`, `primal`, `dual`, `scaling`, `partial_gap`, the last
-  two `null` where not taken). `-` writes it to standard output.
+  size as the file stores it, the colour space, the file's EXIF orientation
+  (`exif_orientation`, 0 where it has none), whether the result was turned
+  (`oriented`), whether the output holds the ICC profile (`icc_profile`), the
+  warnings of the writing (`warnings`), the method, the settings, the solver's
+  iterations, why it stopped (`converged`, `iterations`, `observer`,
+  `stationary`), and every record (`iterations`, `seconds`, `primal`, `dual`,
+  `scaling`, `partial_gap`, the last two `null` where not taken). `-` writes it to
+  standard output.
 - `--version`: the version and the implementation, and nothing else.
 - `-h`, `--help`: the options.
 

@@ -27,6 +27,7 @@ from hypothesis import given
 from hypothesis import strategies as st
 from PIL import Image
 
+import pngfile
 import rounding
 import synthetic
 from unround import colour, decode, jpegio, native, pdhg, subgradient, tiff
@@ -515,6 +516,144 @@ def test_the_pnm_rounds_halves_away_from_zero() -> None:
         native.pnm_bytes(np.array([[np.nan]]))
 
 
+def icc_profile(size: int, space: bytes, seed: int = 0) -> bytes:
+    """A well-formed ICC profile of version 2, a monitor's, of the data color space given: its header,
+    one tag, and the tag's data."""
+    profile = bytearray(np.random.default_rng(seed).integers(0, 256, size=size, dtype=np.uint8).tobytes())
+    profile[:132] = bytes(132)
+    struct.pack_into(">I", profile, 0, size)
+    profile[8] = 2
+    profile[12:24] = b"mntr" + space + b"XYZ "
+    profile[36:40] = b"acsp"
+    struct.pack_into(">III", profile, 68, 0x0000F6D6, 0x00010000, 0x0000D32D)  # the illuminant D50
+    struct.pack_into(">I4sII", profile, 128, 1, b"desc", 144, size - 144)
+    return bytes(profile)
+
+
+def tiff_profile(data: bytes) -> bytes | None:
+    """The ICC profile of a little-endian TIFF's first IFD (InterColorProfile, 34675), or None."""
+    assert data[:4] == b"II*\x00"
+    (ifd,) = struct.unpack_from("<I", data, 4)
+    (count,) = struct.unpack_from("<H", data, ifd)
+    for entry in range(count):
+        tag, kind, length, offset = struct.unpack_from("<HHII", data, ifd + 2 + 12 * entry)
+        if tag == 34675:
+            assert kind == 7
+            return data[offset : offset + length]
+    return None
+
+
+def pnm_samples(picture: npt.NDArray[np.float64], *, sixteen: bool) -> npt.NDArray[np.int64]:
+    """The samples of the PNM file of the picture: those that PNG has to hold too."""
+    data = native.pnm_bytes(picture, sixteen=sixteen)
+    body = data.split(b"\n", 3)[3]
+    values = np.frombuffer(body, dtype=">u2" if sixteen else np.uint8).astype(np.int64)
+    return values.reshape(picture.shape[0], picture.shape[1], -1)
+
+
+@pytest.mark.parametrize("sixteen", [False, True])
+@pytest.mark.parametrize("shape", [(1, 1), (6, 9), (5, 7, 3)])
+def test_the_png_holds_the_pnm_s_samples(shape: tuple[int, ...], *, sixteen: bool) -> None:
+    picture = np.random.default_rng(72).uniform(-20.0, 280.0, size=shape)
+    picture.flat[:3] = [0.5, 254.5, 0.49999999999999994][: picture.size]
+    for compression in [None, 0, 9]:
+        read = pngfile.read(native.png_bytes(picture, sixteen=sixteen, compression=compression))
+        assert read.bits == (16 if sixteen else 8)
+        assert read.icc_profile is None
+        np.testing.assert_array_equal(read.samples, pnm_samples(picture, sixteen=sixteen))
+    with pytest.raises(ValueError, match="0 to 9"):
+        native.png_bytes(picture, compression=10)
+    with pytest.raises(native.UnroundError, match="not finite"):
+        native.png_bytes(np.full(shape, np.nan))
+
+
+def test_the_icc_profile_goes_where_it_goes_with_the_picture() -> None:
+    rng = np.random.default_rng(73)
+    rgb, gray = icc_profile(500, b"RGB "), icc_profile(301, b"GRAY")
+    assert jpegio.check_icc(rgb, 3) is None
+    assert jpegio.check_icc(gray, 1) is None
+    for picture, profile in [(rng.uniform(0.0, 255.0, size=(4, 5, 3)), rgb), (rng.uniform(0.0, 255.0, (4, 5)), gray)]:
+        read = pngfile.read(native.png_bytes(picture, icc_profile=profile))
+        assert (read.icc_profile, read.icc_name) == (profile, b"ICC profile")
+        assert tiff_profile(native.tiff_bytes(picture, icc_profile=profile)) == profile
+    ycbcr = native.tiff_bytes(rng.uniform(0.0, 255.0, size=(4, 5, 3)), ycbcr=True, icc_profile=rgb)
+    assert tiff_profile(ycbcr) == rgb
+
+    # A profile of another color space, or not well formed, is left out with a warning that says why.
+    broken = rgb[:36] + b"ascp" + rgb[40:]
+    for picture, profile in [(rng.uniform(0.0, 255.0, size=(4, 5)), rgb), (rng.uniform(0.0, 255.0, (4, 5, 3)), gray)]:
+        channels = 1 if picture.ndim == 2 else 3
+        for refused in (profile, broken):
+            reason = jpegio.check_icc(refused, channels)
+            assert reason
+            with pytest.warns(native.UnroundWarning, match="the ICC profile is not written") as caught:
+                data = native.png_bytes(picture, icc_profile=refused)
+            assert str(caught[0].message) == f"the ICC profile is not written: {reason}"
+            assert pngfile.read(data).icc_profile is None
+            with pytest.warns(native.UnroundWarning, match="the ICC profile is not written"):
+                assert tiff_profile(native.tiff_bytes(picture, icc_profile=refused)) is None
+
+
+def turned_by_numpy(picture: npt.NDArray[np.float64], orientation: int) -> npt.NDArray[np.float64]:
+    """The picture turned upright with NumPy's flips and rotations."""
+    match orientation:
+        case 2:
+            turned = picture[:, ::-1]
+        case 3:
+            turned = picture[::-1, ::-1]
+        case 4:
+            turned = picture[::-1, :]
+        case 5:
+            turned = picture.swapaxes(0, 1)
+        case 6:
+            turned = np.rot90(picture, k=-1)
+        case 7:
+            turned = picture.swapaxes(0, 1)[::-1, ::-1]
+        case 8:
+            turned = np.rot90(picture, k=1)
+        case _:
+            turned = picture
+    return turned
+
+
+def test_a_picture_turns_as_numpy_turns_it() -> None:
+    rng = np.random.default_rng(74)
+    for shape in [(3, 5), (70, 66, 3), (1, 4, 3)]:
+        picture = rng.uniform(-1.0, 256.0, size=shape)
+        picture.flat[0] = -0.0
+        for orientation in range(9):
+            turned = native.oriented(picture, orientation)
+            expected = turned_by_numpy(picture, orientation)
+            assert turned.shape == expected.shape
+            np.testing.assert_array_equal(bits(turned), bits(expected))
+    with pytest.raises(native.UnroundError, match="1 to 8"):
+        native.oriented(np.zeros((2, 2)), 9)
+
+
+def test_the_command_line_writes_the_picture_upright_with_its_profile(tmp_path: Path) -> None:
+    exif = Image.Exif()
+    exif[0x0112] = 8
+    profile = icc_profile(640, b"RGB ", seed=5)
+    data = colour_file("4:2:0", exif=exif.tobytes(), icc_profile=profile)
+    source = tmp_path / "in.jpg"
+    source.write_bytes(data)
+    decoded = native.decode(data, decode.Settings(method="mmse"))
+    upright = native.oriented(decoded.picture, 8)
+    assert upright.shape == (30, 21, 3)
+    for name, arguments in [("out.png", ["--bits", "16"]), ("out.tif", [])]:
+        target = tmp_path / name
+        assert native.main(["--method", "mmse", "--quiet", *arguments, str(source), str(target)]) == 0
+        if name.endswith(".png"):
+            read = pngfile.read(target.read_bytes())
+            np.testing.assert_array_equal(read.samples, pnm_samples(upright, sixteen=True))
+            assert read.icc_profile == profile
+        else:
+            assert target.read_bytes() == native.tiff_bytes(upright, icc_profile=profile)
+    kept = tmp_path / "kept.tif"
+    assert native.main(["--method", "mmse", "--orientation", "keep", "--no-icc", str(source), str(kept)]) == 0
+    assert kept.read_bytes() == native.tiff_bytes(decoded.picture)
+
+
 def test_the_conversions_are_jfif_s() -> None:
     # The Python implementation's, within the rounding of both, which may fuse products
     # and sums or not. Each output is a dot product of at most three terms, whose
@@ -555,14 +694,23 @@ def test_the_c_layer_is_read_through_either_library(monkeypatch: pytest.MonkeyPa
     # implementation's, which passes the same functions on.
     data = colour_file("4:2:0")
     own, own_planes = jpegio.read(data), jpegio.decode_planes(data)
+    profiles = [icc_profile(400, b"RGB "), icc_profile(400, b"GRAY"), b"acsp"]
+    own_checks = [jpegio.check_icc(profile, channels) for profile in profiles for channels in (1, 3)]
+    own_libpng = jpegio.libpng_version()
     monkeypatch.delenv("UNROUND_JPEGIO_LIBRARY", raising=False)
     jpegio._library.cache_clear()
     try:
         _, prefix = jpegio._library()
         assert prefix == "unround_jpeg_"
         through, planes = jpegio.read(data), jpegio.decode_planes(data)
+        assert [jpegio.check_icc(profile, channels) for profile in profiles for channels in (1, 3)] == own_checks
+        assert jpegio.libpng_version() == own_libpng
     finally:
         jpegio._library.cache_clear()
+    assert own_checks[0] is not None
+    assert own_checks[1] is None
+    assert own_checks[2] is None
+    assert own_libpng.startswith("libpng 1.6.")
     for field in ("width", "height", "color_space", "max_h_samp_factor", "max_v_samp_factor", "icc_profile"):
         assert getattr(through, field) == getattr(own, field)
     for one, other in zip(through.components, own.components, strict=True):

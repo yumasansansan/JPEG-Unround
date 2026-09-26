@@ -7,7 +7,9 @@ over as the command line's options (docs/cli.md), each number as the shortest
 decimal that reads back as the same double; the results come back as NumPy arrays,
 copied, and the library's memory is freed before a function returns. The settings
 are the dataclasses of the Python implementation (unround.decode.Settings and what
-it holds), so that the two take the same values.
+it holds), so that the two take the same values. A writer that leaves something out
+-- an ICC profile that does not go with the picture -- says so with a warning,
+UnroundWarning, and returns the file.
 
 The library is the one at the path in the environment variable UNROUND_LIBRARY, or
 else the one in unround/_native, where a wheel carries it; cargo build --release -p
@@ -20,6 +22,7 @@ import ctypes
 import enum
 import functools
 import sys
+import warnings
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Final
@@ -41,10 +44,13 @@ __all__ = [
     "Status",
     "Stop",
     "UnroundError",
+    "UnroundWarning",
     "decode",
     "held_options",
     "main",
     "options",
+    "oriented",
+    "png_bytes",
     "pnm_bytes",
     "solve",
     "tiff_bytes",
@@ -56,7 +62,7 @@ __all__ = [
 type Array = npt.NDArray[np.float64]
 type Observer = Callable[["Record"], bool | None]
 
-ABI_VERSION: Final = 1
+ABI_VERSION: Final = 2
 """UNROUND_ABI_VERSION of the interface this module mirrors."""
 
 _MESSAGE_SIZE: Final = 4096
@@ -143,6 +149,10 @@ class LibraryNotFoundError(RuntimeError):
     """The library is not where this module looks for it, or is not of its version."""
 
 
+class UnroundWarning(UserWarning):
+    """What a writer left out of a file it wrote, and why."""
+
+
 def _declare(library: ctypes.CDLL, name: str, result: object, *arguments: object) -> None:
     function = getattr(library, name)
     function.argtypes = arguments
@@ -176,9 +186,12 @@ def _declare_all(library: ctypes.CDLL) -> None:
     _declare(library, "unround_result_record_values", doubles, handle, i32, u64_out)
     _declare(library, "unround_result_icc_profile", ctypes.POINTER(ctypes.c_uint8), handle, u64_out)
     _declare(library, "unround_result_exif_orientation", i32, handle)
-    written = (doubles, u64, u64, u64, i32, bytes_out, u64_out, *message)
-    _declare(library, "unround_tiff", i32, *written)
-    _declare(library, "unround_pnm", i32, *written)
+    written = (bytes_out, u64_out, *message)
+    icc = (ctypes.c_char_p, u64)
+    _declare(library, "unround_tiff", i32, doubles, u64, u64, u64, i32, *icc, *written)
+    _declare(library, "unround_png", i32, doubles, u64, u64, u64, i32, i32, *icc, *written)
+    _declare(library, "unround_pnm", i32, doubles, u64, u64, u64, i32, *written)
+    _declare(library, "unround_orient", i32, doubles, u64, u64, u64, i32, doubles, u64_out, u64_out, *message)
     _declare(library, "unround_bytes_free", None, ctypes.POINTER(ctypes.c_uint8), u64)
     _declare(library, "unround_to_rgb", i32, doubles, u64, u64, doubles)
     _declare(library, "unround_to_ycbcr", i32, doubles, u64, u64, doubles)
@@ -647,7 +660,9 @@ def _samples(picture: npt.ArrayLike) -> tuple[Array, int, int, int]:
     raise ValueError(message)
 
 
-def _written(name: str, picture: npt.ArrayLike, flag: int) -> bytes:
+def _written(name: str, picture: npt.ArrayLike, *arguments: object) -> bytes:
+    """The file a writer of the library makes of the picture, with the arguments after its size; its
+    warning, where it has one, as an UnroundWarning."""
     library = _library()
     samples, height, width, channels = _samples(picture)
     pointer = ctypes.POINTER(ctypes.c_uint8)()
@@ -655,27 +670,89 @@ def _written(name: str, picture: npt.ArrayLike, flag: int) -> bytes:
     message = ctypes.create_string_buffer(_MESSAGE_SIZE)
     doubles = samples.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
     status = getattr(library, name)(
-        doubles, height, width, channels, flag, ctypes.byref(pointer), ctypes.byref(size), message, _MESSAGE_SIZE
+        doubles, height, width, channels, *arguments, ctypes.byref(pointer), ctypes.byref(size), message, _MESSAGE_SIZE
     )
+    text = message.value.decode("utf-8", "replace")
     if status != Status.OK:
-        raise UnroundError(Status(status), message.value.decode("utf-8", "replace"))
+        raise UnroundError(Status(status), text)
     try:
-        return ctypes.string_at(pointer, int(size.value))
+        data = ctypes.string_at(pointer, int(size.value))
     finally:
         library.unround_bytes_free(pointer, size)
+    if text:
+        warnings.warn(text, UnroundWarning, stacklevel=3)
+    return data
 
 
-def tiff_bytes(picture: npt.ArrayLike, *, ycbcr: bool = False) -> bytes:
+def _profile(icc_profile: bytes | None) -> tuple[bytes | None, int]:
+    return (None, 0) if icc_profile is None else (bytes(icc_profile), len(icc_profile))
+
+
+def tiff_bytes(picture: npt.ArrayLike, *, ycbcr: bool = False, icc_profile: bytes | None = None) -> bytes:
     """A TIFF of the picture's samples in binary64, bit for bit: (height, width), or (height, width, 3).
 
-    With ycbcr, the three samples of a pixel are JFIF's Y, Cb and Cr, and the file says so.
+    With ycbcr, the three samples of a pixel are JFIF's Y, Cb and Cr, and the file says so. The ICC
+    profile is embedded where it goes with the picture (jpegio.check_icc); otherwise it is left out, with
+    an UnroundWarning.
     """
-    return _written("unround_tiff", picture, 1 if ycbcr else 0)
+    return _written("unround_tiff", picture, 1 if ycbcr else 0, *_profile(icc_profile))
+
+
+def png_bytes(
+    picture: npt.ArrayLike,
+    *,
+    sixteen: bool = False,
+    compression: int | None = None,
+    icc_profile: bytes | None = None,
+) -> bytes:
+    """A PNG file of the picture's samples, rounded to 8 bits, or to 16, as a PNM file's (docs/cli.md).
+
+    compression is zlib's level, 0 to 9, or None for zlib's default; the ICC profile is written as
+    tiff_bytes embeds it.
+    """
+    level = -1 if compression is None else compression
+    if not -1 <= level <= 9:  # noqa: PLR2004
+        message = f"zlib's level is 0 to 9, or None, not {compression}"
+        raise ValueError(message)
+    return _written("unround_png", picture, 1 if sixteen else 0, level, *_profile(icc_profile))
 
 
 def pnm_bytes(picture: npt.ArrayLike, *, sixteen: bool = False) -> bytes:
     """A PNM file of the picture's samples, rounded to 8 bits, or to 16 (docs/cli.md)."""
     return _written("unround_pnm", picture, 1 if sixteen else 0)
+
+
+def oriented(picture: npt.ArrayLike, orientation: int) -> Array:
+    """The picture, (height, width) or (height, width, channels), turned upright as EXIF's orientation says.
+
+    orientation is 1 to 8, or 0 where the file has none, which is 1; from 5 on, the rows become columns.
+    Every sample of the result is one of the picture's, bit for bit.
+    """
+    library = _library()
+    samples, height, width, channels = _samples(picture)
+    if not -(2**31) <= orientation < 2**31:
+        text = f"an EXIF orientation is 1 to 8, or 0 for none, not {orientation}"
+        raise ValueError(text)
+    turned = np.empty(samples.size, dtype=np.float64)
+    rows, columns = ctypes.c_uint64(), ctypes.c_uint64()
+    message = ctypes.create_string_buffer(_MESSAGE_SIZE)
+    doubles = ctypes.POINTER(ctypes.c_double)
+    status = library.unround_orient(
+        samples.ctypes.data_as(doubles),
+        height,
+        width,
+        channels,
+        orientation,
+        turned.ctypes.data_as(doubles),
+        ctypes.byref(rows),
+        ctypes.byref(columns),
+        message,
+        _MESSAGE_SIZE,
+    )
+    if status != Status.OK:
+        raise UnroundError(Status(status), message.value.decode("utf-8", "replace"))
+    shape = (int(rows.value), int(columns.value))
+    return turned.reshape(shape if samples.ndim == 2 else (*shape, channels))  # noqa: PLR2004
 
 
 def to_rgb(planes: npt.ArrayLike) -> Array:
