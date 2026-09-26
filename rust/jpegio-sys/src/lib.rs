@@ -11,10 +11,14 @@
 //! structures and functions as C has them. [`Image`] and [`Planes`] own what a
 //! read returns, free it when they are dropped, and give its arrays as slices.
 //!
+//! [`testing`] writes JPEG files from coefficients, for tests, with libjpeg's own
+//! encoder.
+//!
 //! All the unsafe code of the Rust implementation is in this crate: the other
 //! crates forbid it.
 
 pub mod ffi;
+pub mod testing;
 
 use std::ffi::{CStr, c_char};
 use std::fmt;

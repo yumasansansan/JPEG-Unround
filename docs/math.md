@@ -3,9 +3,11 @@
 
 # The mathematics of JPEG-Unround
 
-This is the one statement of the model and of the algorithms, which the three
-implementations follow. Each section says where it is implemented. So far that
-is the Python reference (`python/src/unround/`).
+This is the one statement of the model and of the algorithms, which the
+implementations follow. Each section says in which module it is implemented: a
+module of the Rust reference implementation (`rust/unround/src/`, the crate
+`jpeg-unround`), and one of the same name of the Python implementation
+(`python/src/unround/`), which the Rust one replaces.
 
 Every value this document gives as a default, of the model, of the steps of
 the solvers and of when they stop, is an option of the implementations: the
@@ -52,8 +54,7 @@ rounded from it.
 
 ### 1.1 Samples, blocks and the DCT
 
-*Implemented in `unround/dct.py`; the intervals and the projection in
-`unround/model.py`.*
+*Implemented in `dct`; the intervals and the projection in `model`.*
 
 A component is decoded on its **canvas**: the whole blocks that its
 coefficients cover, $H = 8\,B_y$ rows of $W = 8\,B_x$ samples. The picture is
@@ -191,7 +192,7 @@ the encoder coded, is in the set up to that rounding, as a greyscale picture is
 
 ## 2. A Laplace model of the AC coefficients
 
-*Implemented in `unround/laplace.py`.*
+*Implemented in `laplace`.*
 
 ### 2.1 The scale, from the quantized coefficients
 
@@ -287,7 +288,7 @@ $\mathcal{C}$, and is the default starting point of the solvers below.
 
 ## 3. Finite differences
 
-*Implemented in `unround/operators.py`.*
+*Implemented in `operators`.*
 
 ### 3.1 Gradient and divergence
 
@@ -340,8 +341,7 @@ $$ \|K\|^2 \le \tfrac12 \bigl(17 + \sqrt{33}\bigr) \approx 11.37 < 12. $$
 
 ## 4. The models
 
-*Implemented in `unround/model.py` for one component, and in `unround/frames.py`
-for several (4.4).*
+*Implemented in `model` for one component, and in `frames` for several (4.4).*
 
 ### 4.1 The data term and the constraint
 
@@ -476,7 +476,7 @@ in the median than apart (by 0.02 to 2.6 dB, file by file), and that of TGV's
 
 ## 5. The primal–dual hybrid gradient method
 
-*Implemented in `unround/pdhg.py`.*
+*Implemented in `pdhg`.*
 
 Both models are $\min_z F(K z) + G(z)$ with $F$ a norm, and so the saddle-point
 problem $\min_z \max_y \langle K z, y \rangle + G(z) - F^\ast(y)$, where
@@ -590,7 +590,7 @@ TGV's. (`experiments/results/phase2-solver.md`.)
 
 ## 6. When to stop: duality gaps
 
-*Implemented in `unround/model.py` and `unround/pdhg.py`.*
+*Implemented in `frames` and `pdhg`.*
 
 The dual of $\min F(Kz) + G(z)$ is $\max_y -F^\ast(y) - G^\ast(-K^\top y)$.
 For any feasible pair, the gap $P(z) - D(y) \ge P(z) - P^\ast \ge 0$ bounds
@@ -685,7 +685,7 @@ and its 90th percentile, and the largest difference is reported.
 
 ### 6.5 The defaults
 
-*In `unround/pdhg.py` (`TV_RATIO`, `TV_RELAXATION`, `TV_TOLERANCE`,
+*In `pdhg` (`TV_RATIO`, `TV_RELAXATION`, `TV_TOLERANCE`,
 `TV_ITERATIONS`, and those of TGV), chosen on the tuning images by
 `experiments/phase2_solver.py` (`experiments/results/phase2-solver.md`).*
 
@@ -788,7 +788,7 @@ it does.
 
 ## 7. A subgradient method of jpeg2png's kind
 
-*Implemented in `unround/subgradient.py`, to compare with.*
+*Implemented in `subgradient`, to compare with.*
 
 jpeg2png minimizes a non-smooth objective within $\mathcal{C}$ by normalized
 subgradient steps, a step length that falls as $1/\sqrt{n}$, and the
@@ -812,7 +812,7 @@ measure of how far it is from the least value.
 
 ## 8. Colour
 
-*Implemented in `unround/colour.py`.*
+*Implemented in `colour`.*
 
 A file in YCbCr is solved in YCbCr (4.4), and its result is the RGB that the
 conversion of JFIF (ITU-T T.871) gives of the solution. With $K_R = 0.299$,

@@ -3,5 +3,12 @@
 version = 4
 
 [[package]]
+name = "jpeg-unround"
+version = "0.1.0"
+dependencies = [
+ "jpegio-sys",
+]
+
+[[package]]
 name = "jpegio-sys"
 version = "0.1.0"

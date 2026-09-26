@@ -3,3 +3,5 @@
 #
 # Names that documentation writes as names, not as code ("..": and clippy's own).
 doc-valid-idents = ["CMake", ".."]
+# The mathematics names its variables x, w, p and r, and so does the code that follows it.
+single-char-binding-names-threshold = 8

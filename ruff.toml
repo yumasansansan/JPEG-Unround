@@ -1,10 +1,10 @@
 # SPDX-FileCopyrightText: 2026 Yuma Kakei <yumasansansan@gmail.com>
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# The Python outside the package -- scripts/, experiments/ and ci/ -- is held to
-# the rules of the package (python/pyproject.toml).
+# The Python outside the package -- scripts/, experiments/, ci/ and conformance/ --
+# is held to the rules of the package (python/pyproject.toml).
 extend = "python/pyproject.toml"
-src = ["python/src", "scripts", "experiments", "ci"]
+src = ["python/src", "scripts", "experiments", "ci", "conformance"]
 # The feature probes are not held to these rules yet.
 extend-exclude = ["tools"]
 
@@ -14,3 +14,5 @@ extend-exclude = ["tools"]
 "scripts/**" = ["T201", "S603", "S607", "PLR2004"]
 "experiments/**" = ["T201", "S603", "S607", "PLR2004"]
 "ci/**" = ["T201", "S603", "S607", "PLR2004"]
+# The references are drawn with fixed seeds, for tests and not for secrets.
+"conformance/**" = ["T201", "S311", "PLR2004"]

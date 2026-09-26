@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: 2026 Yuma Kakei <yumasansansan@gmail.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+[package]
+name = "jpeg-unround"
+description = "JPEG decoding that removes compression artifacts within the quantization intervals"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "unround"
+path = "src/main.rs"
+
+[dependencies]
+jpegio-sys = { path = "../jpegio-sys" }
+
+[lints]
+workspace = true

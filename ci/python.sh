@@ -9,7 +9,9 @@
 # Python implementation (python/) in the micromamba environment of
 # environment.yml, with the library it just built: ruff (the rules and the
 # layout), mypy (strict) and pytest. The Python outside the package (scripts/,
-# experiments/ and ci/, with ruff.toml) is held to the same rules and types.
+# experiments/, ci/ and conformance/, with ruff.toml) is held to the same rules
+# and types, and the exact references of conformance/ are checked against their
+# definitions.
 #
 # The environment is the one named jpeg-unround, which `micromamba create -f
 # environment.yml` makes, or the one at the prefix in UNROUND_PYTHON_PREFIX, which
@@ -59,7 +61,8 @@ echo "== python/"
   in_environment python -X utf8 -m pytest
 )
 
-echo "== scripts/, experiments/ and ci/"
+echo "== scripts/, experiments/, ci/ and conformance/"
 in_environment ruff check
 in_environment ruff format --check
-MYPYPATH=python/src in_environment mypy --config-file python/pyproject.toml scripts experiments ci
+MYPYPATH=python/src in_environment mypy --config-file python/pyproject.toml scripts experiments ci conformance
+in_environment python conformance/references.py --check
