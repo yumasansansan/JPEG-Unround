@@ -34,6 +34,9 @@ pub const CB_FROM_BLUE: f64 = 250.0 / 443.0;
 /// `1 / 1.402 = 500 / 701`.
 pub const CR_FROM_RED: f64 = 500.0 / 701.0;
 
+/// The pixels that [`to_rgb`] converts at a time.
+const RUN: usize = 64;
+
 /// The RGB of JFIF of one pixel's Y, Cb and Cr:
 /// `R = Y + c_R (Cr - 128)`, `B = Y + c_B (Cb - 128)`,
 /// `G = (Y - c_GB (Cb - 128)) - c_GR (Cr - 128)`.
@@ -77,8 +80,27 @@ pub fn to_rgb(planes: &[f64], height: usize, width: usize) -> Result<Vec<f64>, E
     let (luma, rest) = planes.split_at(size);
     let (blue, red) = rest.split_at(size);
     let mut picture = vec![0.0; 3 * size];
-    for (((pixel, &y), &cb), &cr) in picture.as_chunks_mut::<3>().0.iter_mut().zip(luma).zip(blue).zip(red) {
-        *pixel = rgb_of(y, cb, cr);
+    // A run of pixels at a time: their R, G and B side by side, and then interleaved.
+    let (mut r, mut g, mut b) = ([0.0; RUN], [0.0; RUN], [0.0; RUN]);
+    for (((pixels, luma), blue), red) in picture
+        .chunks_mut(3 * RUN)
+        .zip(luma.chunks(RUN))
+        .zip(blue.chunks(RUN))
+        .zip(red.chunks(RUN))
+    {
+        let run = luma.len();
+        for ((((r, g), b), (&y, &cb)), &cr) in r[..run]
+            .iter_mut()
+            .zip(&mut g[..run])
+            .zip(&mut b[..run])
+            .zip(luma.iter().zip(blue))
+            .zip(red)
+        {
+            [*r, *g, *b] = rgb_of(y, cb, cr);
+        }
+        for (pixel, ((&r, &g), &b)) in pixels.as_chunks_mut::<3>().0.iter_mut().zip(r.iter().zip(&g).zip(&b)) {
+            *pixel = [r, g, b];
+        }
     }
     Ok(picture)
 }

@@ -10,6 +10,8 @@
 [functions]
 "jpeg_unround::frames::" = "the natural layout: the definitions that the layout of the solvers is tested against, one sample at a time; the objective that the subgradient method records; the projection of a dual field given to start from"
 "jpeg_unround::laplace::" = "the logarithms and exponentials of the system's library, one frequency at a time, once for each file"
+"jpeg_unround::model::Problem::conjugate" = "G* in the natural layout, block by block, which the values of frames take: the definition that the records are tested against, where each coefficient's weight and cost choose between the formulas"
+"jpeg_unround::sweep::Primal::new" = "the constants of each component, once for each solve"
 
 # Functions whose loops may be scalar where they only add: sums in a fixed order.
 [sums]

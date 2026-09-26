@@ -24,7 +24,9 @@ no loop within it holds. A loop whose own instructions compute in doubles is
              last values, or the copy that runs where a check at run time keeps the
              vector loop from running,
   outer      if it holds other loops, its own arithmetic done once for each time
-             around them, and
+             around them, or if the source lines of its arithmetic are among those
+             of such a loop's own (a copy of the outer loop for a case in which its
+             inner loops do not run), and
   scalar     otherwise.
 
 kernels: rust/unround/examples/vectorization.rs puts each kernel of the solvers in a
@@ -580,6 +582,12 @@ def loops(function: Function, width: int, *, neon: bool) -> list[Loop]:
             loop.kind = "remainder"
         else:
             loop.kind = "outer" if loop.holds_loops else "scalar"
+    # A copy of an outer loop, for a case in which its inner loops do not run, does no
+    # more than the outer loop's own work.
+    outers = [loop for loop in found if loop.kind == "outer"]
+    for loop in found:
+        if loop.kind == "scalar" and loop.places and any(loop.places <= outer.places for outer in outers):
+            loop.kind = "outer"
     return found
 
 
@@ -660,7 +668,9 @@ def check_library(listing: list[Function], width: int, allowed: dict[str, dict[s
 
 # Small listings for the self-test: a function of a kernel whose loop is vector code
 # of 256 bits and whose remainder is scalar, one with a scalar loop that adds and
-# multiplies, and one with a scalar loop that only adds, in the forms of each system.
+# multiplies, one with a scalar loop that only adds, and one whose loop over rows has
+# a vector loop within it and a copy for rows where it does not run, in the forms of
+# each system.
 X86_COFF = """
 \t.cv_file\t1 "C:\\\\src\\\\kernels.rs"
 _RNvCslXYZ_4test14inspect_kernel:
@@ -701,6 +711,30 @@ _RNvCslXYZ_4test4sums:
 \tincq\t%rax
 \tcmpq\t%r10, %rax
 \tjne\t.LBB2_1
+\tretq
+_RNvCslXYZ_4test4rows:
+\ttestq\t%r9, %r9
+\tje\t.LBB3_4
+.LBB3_1:
+\t.cv_loc\t0 1 41 9
+\tvsubsd\t(%rcx), %xmm0, %xmm1
+\txorl\t%eax, %eax
+.LBB3_2:
+\t.cv_loc\t0 1 40 9
+\tvmovupd\t(%rcx,%rax,8), %ymm1
+\tvsubpd\t8(%rcx,%rax,8), %ymm1, %ymm1
+\tvmovupd\t%ymm1, (%r8,%rax,8)
+\taddq\t$4, %rax
+\tcmpq\t%r9, %rax
+\tjb\t.LBB3_2
+\tdecq\t%rdx
+\tjne\t.LBB3_1
+\tretq
+.LBB3_4:
+\t.cv_loc\t0 1 41 9
+\tvsubsd\t(%rcx), %xmm0, %xmm1
+\tdecq\t%r10
+\tjne\t.LBB3_4
 \tretq
 """
 X86_ELF = X86_COFF.replace('\t.cv_file\t1 "C:\\\\src\\\\kernels.rs"', '\t.file\t1 "/src" "kernels.rs"').replace(
@@ -782,6 +816,8 @@ def self_test() -> int:
         expect(f"{label}: sums allowed", quietly(read[2:], sums), 0)
         expect(f"{label}: a product not allowed", quietly(read[1:2], sums), 1)
         expect(f"{label}: a function allowed", quietly(read[1:2], {"functions": {"test::scalar": "scalar"}}), 0)
+        rows = sorted(loop.kind for loop in loops(read[3], width, neon=neon))
+        expect(f"{label}: the loops over rows", rows, ["outer", "outer", "vector"])
     for failure in failures:
         print(f"FAIL  {failure}")
     print(f"self-test: {'ok' if not failures else f'{len(failures)} failed'}")

@@ -59,11 +59,18 @@ pub fn forward_y(f: &[f64], shape: Shape, out: &mut [f64]) {
 pub fn backward_x(f: &[f64], shape: Shape, out: &mut [f64]) {
     let width = shape.width;
     for (source, target) in f.chunks_exact(width).zip(out.chunks_exact_mut(width)) {
-        for (j, entry) in target.iter_mut().enumerate() {
-            let own = if j + 1 < width { source[j] } else { 0.0 };
-            let before = if j > 0 { source[j - 1] } else { 0.0 };
-            *entry = own - before;
+        if width == 1 {
+            // Neither the sample itself nor one before it: 0 - 0.
+            target[0] = 0.0;
+            continue;
         }
+        // The first sample less none, the last none less the one before it, and
+        // between them each sample less the one before it.
+        target[0] = source[0] - 0.0;
+        for (entry, pair) in target[1..width - 1].iter_mut().zip(source.windows(2)) {
+            *entry = pair[1] - pair[0];
+        }
+        target[width - 1] = 0.0 - source[width - 2];
     }
 }
 
