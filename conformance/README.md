@@ -21,7 +21,9 @@ operation for operation, to keep the norms of the magnitudes of their rounding. 
 removed, with the program that wrote the cases (`generate.py`), once the implementation
 in Rust reproduced them; both are in the repository's history. The files are fixed: a
 new case needs a program that traces a run of the reference implementation as that one
-did. An implementation reproduces the case when
+did. Their options give every value of the model and of the steps that their runs took,
+the ratio of the steps and the relaxation where those were the defaults of the time,
+since the defaults change. An implementation reproduces the case when
 
 - the intervals (`lower`, `upper`), the weights of the data term (`weights`) and the
   steps (`steps`) are the same to the last bit;

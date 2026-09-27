@@ -594,10 +594,11 @@ $$ \kappa^\ast = \frac{\|z^\ast - z^0\|^2}{\|y^\ast - y^0\|^2}: $$
 the ratio is that of squared distances, of the primal start from the solution
 (in grey levels, and grey levels per sample for $w$) over the dual one's (in
 units of $\alpha$). Neither is known before solving, and the bound is far from
-tight: on the tuning images, $\kappa^\ast$ taken from the last points of long
-runs is 2 to 540 for TV and 150 to 2900 for TGV, while the ratios that bring the
-gap down fastest are 10 to 30 for TV and 3 to 10 for TGV. The default ratio
-(6.5) is the one measured to stop soonest.
+tight: on the tuning images, under the former data term (6.5), $\kappa^\ast$ taken
+from the last points of long runs was 2 to 540 for TV and 150 to 2900 for TGV,
+while the ratios that brought the gap down fastest were 10 to 30 for TV and 3 to
+10 for TGV; under that of 4.1 they are 3 to 10 for both, the smaller for the
+smaller gaps. The default ratio (6.5) is the one measured to stop soonest.
 
 **Start.** By default $x$ is the decoder of the data term's centres (2.3; the
 plain decoder with the middles; with several components,
@@ -742,9 +743,9 @@ picture.
 
 A gap bounds how far the objective is above its least value, not how far the
 iterate is from the point where it is least. $P$ is strongly convex only in the
-AC coefficients (and in DC where $\omega_{\mathrm{DC}} > 0$, which the bound below
-leaves out), with the modulus $\mu \omega_k = \mu / Q_k^2$ (4.1): with $c^\ast$ the
-least point, $0 \in \partial P(c^\ast)$ gives
+AC coefficients (and in DC where $\omega_{\mathrm{DC}} > 0$, as by default, which the
+bound below leaves out), with the modulus $\mu \omega_k = \mu / Q_k^2$ (4.1): with
+$c^\ast$ the least point, $0 \in \partial P(c^\ast)$ gives
 $P(c) - P^\ast \ge \frac{\mu}{2} \sum_{k\ \mathrm{AC}} \omega_k (c_k - c^\ast_k)^2$,
 and so a gap of $\varepsilon$ per sample bounds
 
@@ -761,23 +762,26 @@ $\mu$ by the rule of 4.1, about 80 at the quality 90 and 1000 at 10 (libjpeg's
 luminance tables), the bound is 300 to 1000 times smaller.
 
 For the same reason what stopping at a gap leaves depends on the path the
-iterates took, and not on the gap alone. Stopped at a gap per sample of
-$2 \cdot 10^{-4}$, a few tuning files still differ from a much longer run by
-0.010 to 0.014 dB of PSNR, whatever the ratio of the steps and the relaxation, and
-smaller tolerances bring that largest difference down only slowly: a bound on
-every file, at that precision, is not what a gap can give. The criterion is
-therefore on the distribution of the differences over the files, in its median
-and its 90th percentile, and the largest difference is reported.
+iterates took, and not on the gap alone. Under the former data term, stopped at a
+gap per sample of $2 \cdot 10^{-4}$, a few tuning files still differed from a much
+longer run by 0.010 to 0.014 dB of PSNR, whatever the ratio of the steps and the
+relaxation, and smaller tolerances brought that largest difference down only
+slowly; under that of 4.1, a few synthetic colour files differ by some hundredths
+of a dB at the tolerances of 6.5. A bound on every file, at that precision, is not
+what a gap can give. The criterion is therefore on the distribution of the
+differences over the files, in its median and its 90th percentile, and the
+largest difference is reported.
 
 ### 6.5 The defaults
 
 *In `pdhg` (`TV_RATIO`, `TV_RELAXATION`, `TV_TOLERANCE`,
-`TV_ITERATIONS`, and those of TGV), chosen on the tuning images
-(`experiments/results/phase2-solver.md`).*
+`TV_ITERATIONS`, and those of TGV), chosen on the tuning images with the data
+term of 4.1 (`experiments/results/phase2-stops.md`).*
 
 Stopping where the gap per sample first falls within a tolerance changes the
-result, against the last point of a much longer run (TV: $\tau / \sigma = 30$,
-$\rho = 1.5$, 8000 iterations; TGV: 3, 1.9, 12000). A tolerance is accepted when,
+result, against the last point of a longer run on another path
+($\tau / \sigma = 3$, $\rho = 1.5$, until a gap per sample of $2 \cdot 10^{-6}$ for
+TV and $10^{-4}$ for TGV, or for 8000 iterations). A tolerance is accepted when,
 over the tuning files, the change of the PSNR of the binary64 result is at most
 0.001 dB in the median and 0.005 dB in the 90th percentile, and that of the SSIM
 of its 8-bit samples at most $10^{-5}$ and $5 \cdot 10^{-5}$; when every file
@@ -788,49 +792,38 @@ the pair is the one that then stops the files in the fewest iterations in all;
 and the most iterations allowed is twice the most a tuning file took, rounded
 up to 1, 2 or 5 times a power of ten.
 
+The files are, of each of four sets (the synthetic greyscale images, the
+photographs in grey, and the synthetic and the photographed colour images in
+4:2:0 and 4:4:4), four images at the qualities 10, 50 and 90: 48 files, and for
+TGV two of the images of each set, 24 files. The gap per sample of colour files
+is the partial gap of 6.6 where samples are free. The ratios tried are those
+that reached the tolerances soonest on two other files of each set, among 3 to
+100 for TV and 1 to 30 for TGV with $\rho = 1.9$: 3 and 10 for both.
+
 | | $\tau / \sigma$ | $\rho$ | gap per sample | most iterations |
 |---|---|---|---|---|
-| TV | 30 | 1.9 | $2 \cdot 10^{-4}$ | 20000 |
-| TGV | 10 | 1.9 | $10^{-2}$ | 10000 |
+| TV | 10 | 1.9 | $5 \cdot 10^{-4}$ | 2000 |
+| TGV | 3 | 1.9 | $5 \cdot 10^{-3}$ | 5000 |
 
-TV at these defaults stopped the tuning files after 1050 to 5070 iterations
-(median 1800). Its PSNR changed by 0.0002 dB in the median, 0.0019 dB in the
-90th percentile and 0.0100 dB at most, and its SSIM by $2.1 \cdot 10^{-6}$,
-$3.7 \cdot 10^{-5}$ and $1.1 \cdot 10^{-4}$. For TGV no tolerance that the longer
-runs tell (from $6.7 \cdot 10^{-3}$) was accepted; the default is the least of
-them that every file reached, with the pair that got there soonest: 1170 to
-4570 iterations (median 2735), and a change of the PSNR of 0.0087 dB in the
-median, 0.093 dB in the 90th percentile and 0.105 dB at most. That is TGV's
-default until its convergence is improved.
+TV at these defaults stopped the files after 20 to 980 iterations (median 275;
+by set, from 90 for the photographs in grey to 480 for those in colour). Its PSNR
+changed by 0.0002 dB in the median, 0.0047 dB in the 90th percentile and 0.026
+dB at most, and its SSIM by $2.3 \cdot 10^{-6}$, $2.3 \cdot 10^{-5}$ and
+$1.7 \cdot 10^{-4}$. TGV stopped them after 190 to 1900 iterations (median 1000),
+with changes of 0.0001, 0.0028 and 0.034 dB, and $5.3 \cdot 10^{-6}$,
+$1.8 \cdot 10^{-5}$ and $8.9 \cdot 10^{-5}$. The longer runs told the tolerances
+from $2 \cdot 10^{-5}$ for TV and $2.4 \cdot 10^{-3}$ for TGV. The synthetic colour
+images are where stopping changes most: their own 90th percentile is 0.012 dB
+for TV and 0.023 dB for TGV, where that of the other sets is 0.0044 dB or less.
 
-Phase 1 chose a tolerance of $5 \cdot 10^{-4}$ for TV, unrelaxed, by the
-largest change over the files, and found it within 0.0083 dB. That was measured
-against long runs that went on from the stops along the same paths; against
-the longer runs above, the same stops differ by 0.0008 dB in the median, 0.0062
-dB in the 90th percentile and 0.014 dB at most.
-
-**Colour.** The defaults were chosen on greyscale files, and do not meet the
-criterion on colour ones (`experiments/results/phase2-colour.md`). On the colour
-tuning files in 4:2:0 and 4:4:4 at the qualities 20 and 50 (48 files), TV,
-coupled, stopped at the gap per sample of $2 \cdot 10^{-4}$ (the partial gap of
-6.6 where samples are free) after a median of 2245 iterations, and its RGB's
-PSNR changed against longer runs on another path by 0.0024 dB in the median,
-0.025 dB in the 90th percentile and 0.071 dB at most; at $10^{-4}$, the least
-tolerance those runs tell, by 0.0014, 0.016 and 0.057 dB. There are two causes.
-Y settles within about 2000 iterations, to 0.001 dB, but Cb and Cr keep moving
-for thousands more, and move the RGB by some hundredths of a dB while the gap,
-which they add little to, is already small; two paths come within 0.002 dB of
-each other by 8000 iterations, and within 0.0004 dB by 16000. And on smooth gradients TV keeps changing the picture at
-a gap of $10^{-6}$ per sample, its PSNR falling as it nears its least point:
-that is the staircasing of TV, not an error of the stop. The defaults stand for
-colour files as well, until they are chosen again with the weights of the
-channels.
-
-**The data term.** These defaults were chosen with the former data term
-($\mu = 10^{-3}$, the MMSE centres, DC unweighted), and stand for that of 4.1
-until they are chosen again. With it, the medians by quality on the tuning files
-(`experiments/results/phase2-weights.md`) were 40 to 1900 iterations for TV and
-300 to 1150 for TGV.
+The defaults before, chosen with the former data term ($\mu = 10^{-3}$, the MMSE
+centres, DC unweighted) on the synthetic greyscale images
+(`experiments/results/phase2-solver.md`), were $\tau / \sigma = 30$, $\rho = 1.9$,
+$2 \cdot 10^{-4}$ and 20000 iterations for TV, and 10, 1.9, $10^{-2}$ and 10000 for
+TGV, which met no tolerance that its longer runs told. With the data term of 4.1,
+TV takes about half the iterations it took at those (on the files of the ratios,
+3620 in all against 7650), and TGV about one and a half times as many: at
+$10^{-2}$ its 90th percentile was 0.014 dB.
 
 These are for $\alpha = 1$ (for TGV $\alpha_1 = 1$, with $\alpha_0 = 2 \alpha_1$).
 The dual variables are in units of $\alpha$ and the objective scales with it,

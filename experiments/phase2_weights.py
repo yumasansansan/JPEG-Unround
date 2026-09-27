@@ -10,7 +10,8 @@ The reconstructions are the reference implementation's, through the package's bi
 (experiments/common.py). The files are the tuning images of scripts/test_images.py, as
 libjpeg-turbo encoded them unless a stage says otherwise. The model is TV with
 alpha = 1 unless a stage says otherwise: only mu / alpha shapes the least point
-(docs/math.md, 4.1 and 4.2). Each run stops at the package's defaults. The stages:
+(docs/math.md, 4.1 and 4.2). Each run stops as the package's defaults did when these runs
+were made (STOPS; docs/math.md, 6.5, has chosen them again since). The stages:
 
   grid     The synthetic greyscale images (48 files), with the data term's centres the
            MMSE ones or the middles of the intervals, the weights mu / Q^2, and mu of
@@ -85,6 +86,9 @@ PHOTO_CHROMA_FACTORS: Final = (0.1, 0.3, 1.0)
 PROPOSED_CHROMA: Final = 0.3
 SLACKS: Final = (0.5, 1.0, 2.0)
 SLACK_COSTS: Final = (0.0, 0.3, 3.0, 30.0)
+# How the runs stop, for each model: the ratio of the steps, the relaxation, the gap per
+# sample and the most iterations, the package's defaults when the runs were made.
+STOPS: Final = {"tv": (30.0, 1.9, 2e-4, 20000), "tgv": (10.0, 1.9, 1e-2, 10000)}
 STAGES: Final = [
     "grid",
     "photos",
@@ -160,12 +164,14 @@ def standard(path: Path) -> npt.NDArray[np.uint8]:
 def solve(run: Run) -> dict[str, Any]:
     """Solves a file with the run's model and weights, and measures the result against the original."""
     from unround import jpegio, native  # noqa: PLC0415
-    from unround.settings import Settings  # noqa: PLC0415
+    from unround.settings import PdhgOptions, Settings  # noqa: PLC0415
 
     case = run.case
     data = case.jpeg.read_bytes()
     image = jpegio.read(data)
-    settings = Settings(method=run.model, data=data_terms(run))  # type: ignore[arg-type]
+    ratio, relaxation, tolerance, most = STOPS[run.model]
+    stop = PdhgOptions(iterations=most, tolerance=tolerance, step_ratio=ratio, relaxation=relaxation)
+    settings = Settings(method=run.model, data=data_terms(run), pdhg=stop)  # type: ignore[arg-type]
     decoded = native.decode(data, settings)
     if decoded.result is None:
         message = f"{case.name}: the solver recorded nothing"
@@ -660,8 +666,9 @@ def report(cache: Path, out: Path) -> None:
         "greyscale images (48 files), the photographs in grey (24 of BSDS500's train split, 144 files), the "
         "synthetic colour images in 4:2:0 and 4:4:4 (144 files), and the photographs in 4:2:0 and 4:4:4 (288 files).",
         "- TV with $\\alpha = 1$ unless a section says otherwise, the weights $\\mu / Q^2$ and no weight on DC, "
-        "stopped at the package's defaults; the data term's centres the MMSE ones or the middles of the intervals "
-        "(docs/math.md, 2.2 and 4.1).",
+        "stopped as the package's defaults did then (TV: $\\tau/\\sigma = 30$, $\\rho = 1.9$, a gap per sample of "
+        "$2 \\cdot 10^{-4}$, at most 20000 iterations; TGV: 10, 1.9, $10^{-2}$, 10000); the data term's centres "
+        "the MMSE ones or the middles of the intervals (docs/math.md, 2.2 and 4.1).",
         "- The measures are those of the 8-bit result, rounded and clamped as the standard decoder's (libjpeg-turbo, "
         "through Pillow), against the original; of colour files, of RGB, the SSIM the mean over R, G and B.",
         f"- The reference implementation, {native.version()}; NumPy {np.__version__}, scikit-image "

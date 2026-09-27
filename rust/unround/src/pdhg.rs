@@ -38,17 +38,17 @@ pub fn tgv_norm_squared() -> f64 {
 pub const STEP_PRODUCT: f64 = 0.99;
 
 /// `tau / sigma` for TV, over `alpha` squared (docs/math.md, 6.5).
-pub const TV_RATIO: f64 = 30.0;
+pub const TV_RATIO: f64 = 10.0;
 /// `tau / sigma` for TGV, over `alpha1` squared.
-pub const TGV_RATIO: f64 = 10.0;
+pub const TGV_RATIO: f64 = 3.0;
 /// The gap per sample at which TV stops, times `alpha`.
-pub const TV_TOLERANCE: f64 = 2e-4;
+pub const TV_TOLERANCE: f64 = 5e-4;
 /// The gap per sample at which TGV stops, times `alpha1`.
-pub const TGV_TOLERANCE: f64 = 1e-2;
+pub const TGV_TOLERANCE: f64 = 5e-3;
 /// The most iterations of TV.
-pub const TV_ITERATIONS: u64 = 20_000;
+pub const TV_ITERATIONS: u64 = 2_000;
 /// The most iterations of TGV.
-pub const TGV_ITERATIONS: u64 = 10_000;
+pub const TGV_ITERATIONS: u64 = 5_000;
 /// The relaxation of TV's iterations.
 pub const TV_RELAXATION: f64 = 1.9;
 /// The relaxation of TGV's iterations.

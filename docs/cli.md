@@ -120,12 +120,12 @@ one value for each (4.1, 4.4).
 
 | Option | Values | Default | |
 |---|---|---|---|
-| `--iterations` | ≥ 0 | TV 20000, TGV 10000 | The most iterations |
-| `--tolerance` | ≥ 0 | TV `2e-4` times `alpha`, TGV `1e-2` times `alpha1` | Stops where the duality gap per sample is at most this; 0 turns it off (6.4) |
+| `--iterations` | ≥ 0 | TV 2000, TGV 5000 | The most iterations |
+| `--tolerance` | ≥ 0 | TV `5e-4` times `alpha`, TGV `5e-3` times `alpha1` | Stops where the duality gap per sample is at most this; 0 turns it off (6.4) |
 | `--relative-tolerance` | ≥ 0 | 0 | Stops where the gap is at most this times the primal value; 0 turns it off |
 | `--partial-tolerance` | ≥ 0 | 0 | TGV: stops where the partial gap per sample is at most this; needs `--partial-radius` |
 | `--partial-radius` | ≥ 0 | none | TGV: the radius of the partial gap (6.3), which is then recorded |
-| `--step-ratio` | > 0 | TV 30 over `alpha` squared, TGV 10 over `alpha1` squared | `tau / sigma` (5) |
+| `--step-ratio` | > 0 | TV 10 over `alpha` squared, TGV 3 over `alpha1` squared | `tau / sigma` (5) |
 | `--relaxation` | in (0, 2) | 1.9 | `rho` |
 | `--step-product` | in (0, 1) | 0.99 | `sigma tau L^2` |
 | `--norm-squared` | > 0 | TV 8, TGV `(17 + sqrt 33) / 2`, times the largest channel weight squared | `L^2`, a bound of the operator's norm squared |

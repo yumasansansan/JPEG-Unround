@@ -3,7 +3,7 @@
 # Phase 2: the weights of the model
 
 - Files: the tuning images, as libjpeg-turbo encoded them unless a section says otherwise: the synthetic greyscale images (48 files), the photographs in grey (24 of BSDS500's train split, 144 files), the synthetic colour images in 4:2:0 and 4:4:4 (144 files), and the photographs in 4:2:0 and 4:4:4 (288 files).
-- TV with $\alpha = 1$ unless a section says otherwise, the weights $\mu / Q^2$ and no weight on DC, stopped at the package's defaults; the data term's centres the MMSE ones or the middles of the intervals (docs/math.md, 2.2 and 4.1).
+- TV with $\alpha = 1$ unless a section says otherwise, the weights $\mu / Q^2$ and no weight on DC, stopped as the package's defaults did then (TV: $\tau/\sigma = 30$, $\rho = 1.9$, a gap per sample of $2 \cdot 10^{-4}$, at most 20000 iterations; TGV: 10, 1.9, $10^{-2}$, 10000); the data term's centres the MMSE ones or the middles of the intervals (docs/math.md, 2.2 and 4.1).
 - The measures are those of the 8-bit result, rounded and clamped as the standard decoder's (libjpeg-turbo, through Pillow), against the original; of colour files, of RGB, the SSIM the mean over R, G and B.
 - The reference implementation, unround 0.1.0 (Rust, C interface); NumPy 2.5.3, scikit-image 0.26.0.
 
