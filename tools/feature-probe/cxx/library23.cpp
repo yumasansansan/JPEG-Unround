@@ -26,6 +26,52 @@ int main(void) {
   return buf[5] == 5.0f && fixed[1, 2] == 5.0f && m.extent(1uz) == 3uz && &cm[1, 2] == &buf[1 + 2 * 2] ? 0 : 1;
 }
 
+//=== probe: mdspan_views
+//--- title: std::mdspan as a library of arrays uses it: extents of size_t, static and dynamic mixed, views of const from views, views of a layout_right mapping made first, rows a stride apart, strided views of eight values, and the queries of a view
+//--- paper: P0009R18
+//--- macro: __cpp_lib_mdspan
+#include <array>
+#include <cstddef>
+#include <mdspan>
+#include <span>
+#include <vector>
+using Blocks = std::extents<std::size_t, std::dynamic_extent, std::dynamic_extent, 8, 8>;
+using Plane = std::dextents<std::size_t, 2>;
+using Eight = std::extents<std::size_t, 8>;
+// A function that takes a view of const, handed a view of non-const.
+static double corner(std::mdspan<const double, Blocks> blocks) {
+  return blocks[blocks.extent(0) - 1uz, blocks.extent(1) - 1uz, 7uz, 5uz];
+}
+int main(void) {
+  // Blocks of 8 x 8 in rows and columns of blocks, each block's 64 in natural order,
+  // through a mapping made from the extents first, as an owner of the entries keeps it.
+  const std::layout_right::mapping<Blocks> mapping(Blocks{2uz, 3uz});
+  std::vector<double> storage(mapping.required_span_size());
+  std::mdspan<double, Blocks> blocks(storage.data(), mapping);
+  blocks[1uz, 2uz, 7uz, 5uz] = 4.0;
+  const std::mdspan<const double, Blocks> read = blocks;
+  const bool same_mapping = read.mapping() == mapping && mapping != std::layout_right::mapping<Blocks>(Blocks{3uz, 2uz});
+  // A plane whose rows lie 16 apart, 10 samples of them used.
+  std::vector<unsigned char> bytes(4uz * 16uz);
+  const std::layout_stride::mapping<Plane> rows(Plane{4uz, 10uz}, std::array<std::size_t, 2>{16uz, 1uz});
+  const std::mdspan<unsigned char, Plane, std::layout_stride> plane(bytes.data(), rows);
+  plane[3uz, 9uz] = 7;
+  // Eight values 8 apart: column 5 of the last block.
+  const std::layout_stride::mapping<Eight> down(Eight{}, std::array<std::size_t, 1>{8uz});
+  const std::mdspan<const double, Eight, std::layout_stride> column(&read[1uz, 2uz, 0uz, 5uz], down);
+  // Channels of a canvas.
+  std::vector<double> canvas(3uz * 4uz * 5uz);
+  const std::mdspan<double, std::dextents<std::size_t, 3>> channels(canvas.data(), 3uz, 4uz, 5uz);
+  channels[2uz, 3uz, 4uz] = 1.0;
+  const std::span<const double> flat(read.data_handle(), read.size());
+  const bool ok = corner(blocks) == 4.0 && column[7uz] == 4.0 && flat[381uz] == 4.0 && bytes[3uz * 16uz + 9uz] == 7 &&
+                  plane.extent(1) == 10uz && plane.stride(0) == 16uz && plane.mapping().required_span_size() == 58uz &&
+                  read.size() == 384uz && read.rank() == 4uz && read.rank_dynamic() == 2uz && !read.empty() &&
+                  read.data_handle() == storage.data() && read.mapping().is_exhaustive() && canvas.back() == 1.0 &&
+                  channels.extent(0) == 3uz && read.static_extent(3) == 8uz && storage.size() == 384uz && same_mapping;
+  return ok ? 0 : 1;
+}
+
 //=== probe: expected
 //--- title: std::expected with monadic operations
 //--- paper: P0323R12, P2505R5
@@ -324,6 +370,29 @@ int main(void) {
   std::vector<int> head{1, 2};
   std::vector<int> tail{4, 5};
   return std::ranges::starts_with(v, head) && std::ranges::ends_with(v, tail) ? 0 : 1;
+}
+
+//=== probe: ranges_starts_ends_with_text
+//--- title: ranges::starts_with, ends_with on text and on bytes: a string_view against a string_view, a span of bytes against an array
+//--- paper: P1659R3
+//--- macro: __cpp_lib_ranges_starts_ends_with
+#include <algorithm>
+#include <array>
+#include <cstdint>
+#include <span>
+#include <string_view>
+#include <vector>
+int main(void) {
+  using namespace std::string_view_literals;
+  const std::string_view line = "--tolerance=5e-4\r"sv;
+  const std::vector<std::uint8_t> file{0x49, 0x49, 0x2A, 0x00, 0x08, 0x00};
+  const std::array<std::uint8_t, 4> tiff{0x49, 0x49, 0x2A, 0x00};
+  const std::span<const std::uint8_t> bytes{file};
+  return std::ranges::starts_with(line, "--"sv) && std::ranges::ends_with(line, "\r"sv) &&
+                 !std::ranges::starts_with(line, "-t"sv) && std::ranges::starts_with(bytes, tiff) &&
+                 !std::ranges::ends_with(bytes, tiff)
+             ? 0
+             : 1;
 }
 
 //=== probe: ranges_find_last

@@ -7,9 +7,11 @@
 #ifndef UNROUND_LAPLACE_HPP
 #define UNROUND_LAPLACE_HPP
 
+#include "unround/arrays.hpp"
 #include "unround/exact.hpp"
 
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -21,9 +23,9 @@ namespace unround::laplace {
 // over those (2.1). 0 where every coefficient is 0.
 [[nodiscard]] double scale(std::uint64_t zeros, std::uint64_t others, std::uint64_t sum, double step) noexcept;
 
-// The scale of every AC frequency of a component: `levels` are blocks of 64 in
-// natural order. DC follows no Laplace model, and its entry is 0.
-[[nodiscard]] std::array<double, 64> scales(std::span<const std::int16_t> levels,
+// The scale of every AC frequency of a component from the levels of its blocks,
+// in natural order. DC follows no Laplace model, and its entry is 0.
+[[nodiscard]] std::array<double, 64> scales(Blocks<const std::int16_t> levels,
                                             const std::array<std::uint16_t, 64>& table) noexcept;
 
 // delta / Q of the mean of a bin, as a function of rho = Q / beta (2.2), in
@@ -46,8 +48,16 @@ namespace unround::laplace {
                                                 const std::array<double, 64>& scale) noexcept;
 
 // The MMSE centre of an AC coefficient of level q and step Q, given delta / Q:
-// sign(q) (|q| - delta / Q) Q, and 0 for q = 0.
-[[nodiscard]] double centre(std::int16_t level, double step, double shrink) noexcept;
+// sign(q) (|q| - delta / Q) Q, and 0 for q = 0. |q| - delta / Q rounds to within
+// [|q| - 1/2, |q|], whose ends are exact, and its product with Q to within the
+// interval (2.2). Inline and without branches, so that the loops over a
+// component's coefficients are vector code.
+[[nodiscard]] inline double centre(std::int16_t level, double step, double shrink) noexcept {
+  const double q = static_cast<double>(level);
+  const double size = (std::abs(q) - shrink) * step;
+  const double signed_size = q < 0.0 ? -size : size;
+  return q == 0.0 ? 0.0 : signed_size;
+}
 
 }  // namespace unround::laplace
 

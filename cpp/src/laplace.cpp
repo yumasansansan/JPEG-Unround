@@ -5,6 +5,7 @@
 
 #include "unround/laplace.hpp"
 
+#include "unround/arrays.hpp"
 #include "unround/exact.hpp"
 
 #include <array>
@@ -107,20 +108,23 @@ double scale(std::uint64_t zeros, std::uint64_t others, std::uint64_t sum, doubl
   return step / (2.0 * log_inverse);
 }
 
-std::array<double, 64> scales(std::span<const std::int16_t> levels,
-                              const std::array<std::uint16_t, 64>& table) noexcept {
+std::array<double, 64> scales(Blocks<const std::int16_t> levels, const std::array<std::uint16_t, 64>& table) noexcept {
+  // The counts of every frequency in natural order, block by block (DC's too, which
+  // no scale reads).
   std::array<std::uint64_t, 64> zeros{};
   std::array<std::uint64_t, 64> others{};
   std::array<std::uint64_t, 64> sums{};
-  const std::size_t blocks = levels.size() / 64u;
-  for (std::size_t block = 0; block < blocks; ++block) {
-    for (std::size_t k = 1; k < 64u; ++k) {
-      const std::int32_t level = levels[block * 64u + k];
-      if (level == 0) {
-        ++zeros[k];
-      } else {
-        ++others[k];
-        sums[k] += static_cast<std::uint64_t>(2 * std::abs(level) - 1);
+  for (std::size_t by = 0; by < levels.extent(0); ++by) {
+    for (std::size_t bx = 0; bx < levels.extent(1); ++bx) {
+      const std::span<const std::int16_t, 64> block = block_entries(levels, by, bx);
+      for (std::size_t k = 0; k < 64u; ++k) {
+        const std::int64_t level = block[k];
+        const std::uint64_t zero = level == 0 ? 1u : 0u;
+        const std::int64_t magnitude = level < 0 ? -level : level;
+        zeros[k] += zero;
+        others[k] += 1u - zero;
+        // 2 |q| - 1 for a level other than 0, and 0 for 0.
+        sums[k] += zero != 0u ? 0u : static_cast<std::uint64_t>(2 * magnitude - 1);
       }
     }
   }
@@ -155,14 +159,6 @@ std::array<double, 64> shrinkages(const std::array<std::uint16_t, 64>& table,
     result[k] = shrinkage(rho);
   }
   return result;
-}
-
-double centre(std::int16_t level, double step, double shrink) noexcept {
-  if (level == 0) return 0.0;
-  // |q| - delta / Q rounds to within [|q| - 1/2, |q|], whose ends are exact, and its
-  // product with Q to within the interval (2.2).
-  const double size = (static_cast<double>(std::abs(static_cast<int>(level))) - shrink) * step;
-  return level < 0 ? -size : size;
 }
 
 }  // namespace unround::laplace

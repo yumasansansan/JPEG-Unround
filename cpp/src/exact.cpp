@@ -7,12 +7,15 @@
 
 #include "unround/exact.hpp"
 
+#include "unround/arrays.hpp"
+
 #include <algorithm>
 #include <array>
 #include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <mdspan>
 #include <span>
 #include <utility>
 #include <vector>
@@ -241,13 +244,16 @@ double nearest(const Rational& value) noexcept {
 }
 
 double row_sum(std::span<const double> terms) noexcept {
+  // The terms eight to a row: lane l adds column l, row after row, eight lanes side
+  // by side (a vector of the processor's width, or two).
   std::array<double, 8> lanes{};
-  const std::size_t count = terms.size();
-  const std::size_t whole = count - count % 8u;
-  for (std::size_t start = 0; start < whole; start += 8u) {
-    for (std::size_t lane = 0; lane < 8u; ++lane) lanes[lane] += terms[start + lane];
+  const std::size_t whole = terms.size() / 8u;
+  const std::mdspan<const double, std::extents<std::size_t, std::dynamic_extent, 8>> eights(terms.data(), whole);
+  for (std::size_t row = 0; row < whole; ++row) {
+    for (std::size_t lane = 0; lane < 8u; ++lane) lanes[lane] += eights[row, lane];
   }
-  for (std::size_t lane = 0; whole + lane < count; ++lane) lanes[lane] += terms[whole + lane];
+  const std::span<const double> rest = terms.subspan(8u * whole);
+  for (std::size_t lane = 0; lane < rest.size(); ++lane) lanes[lane] += rest[lane];
   double total = lanes[0];
   for (std::size_t lane = 1; lane < 8u; ++lane) total += lanes[lane];
   return total;
@@ -277,13 +283,11 @@ double Sum::total(void) const {
   return level.front();
 }
 
-double sum_rows(std::span<const double> terms, std::size_t width) {
-  Sum sum;
+double sum_rows(Grid<const double> terms) {
+  const std::size_t width = terms.extent(1);
   if (width == 0u) return 0.0;
-  for (std::size_t start = 0; start < terms.size(); start += width) {
-    const std::size_t length = std::min(width, terms.size() - start);
-    sum.add(row_sum(terms.subspan(start, length)));
-  }
+  Sum sum;
+  for (std::size_t i = 0; i < terms.extent(0); ++i) sum.add(row_sum(std::span<const double>(&terms[i, 0], width)));
   return sum.total();
 }
 

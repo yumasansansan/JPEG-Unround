@@ -119,8 +119,8 @@ struct Exact {
   }
   std::string line;
   while (std::getline(file, line)) {
-    if (!line.empty() && line.back() == '\r') line.pop_back();
-    if (line.empty() || line.front() == '#') continue;
+    if (line.ends_with('\r')) line.pop_back();
+    if (line.empty() || line.starts_with('#')) continue;
     std::vector<std::string> fields;
     std::size_t start = 0;
     while (start < line.size()) {

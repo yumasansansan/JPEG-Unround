@@ -18,6 +18,8 @@
 #ifndef UNROUND_EXACT_HPP
 #define UNROUND_EXACT_HPP
 
+#include "unround/arrays.hpp"
+
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -92,8 +94,9 @@ class Sum {
   std::size_t count_ = 0;
 };
 
-// The rows' sums of terms given row by row: rows of `width` terms each.
-[[nodiscard]] double sum_rows(std::span<const double> terms, std::size_t width);
+// The sum of a grid of terms: the sum of each row as row_sum takes it, and those
+// of the rows from the top as Sum adds them.
+[[nodiscard]] double sum_rows(Grid<const double> terms);
 
 }  // namespace unround::exact
 

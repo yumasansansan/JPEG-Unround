@@ -1,6 +1,6 @@
 # Feature probes: windows-x86_64
 
-- Date: 2026-09-27T08:05:48+00:00
+- Date: 2026-09-27T09:35:11+00:00
 - System: Windows-11-10.0.28120-SP0 (x86_64)
 - Compiler: clang version 23.1.2 (https://github.com/llvm/llvm-project 85ac560262434c9ccfc0c183ec22d4138ed647fb) (target x86_64-pc-windows-msvc)
 - C++ library: MSVC STL 145 (202604)
@@ -54,6 +54,7 @@
 | `expansion_statements` | expansion statements (template for) | P1306R5 | — | ✅ |  |
 | `trivial_unions` | unions of non-trivial members are trivially constructible | P3074R7 | — | ❌ compile | c++26: trivial_unions.cxx26.cpp:13:8: error: call to implicitly-deleted default constructor of 'Slot' |
 | `mdspan` | std::mdspan, extents, layout_right / layout_stride | P0009R18 | ✅ | ✅ |  |
+| `mdspan_views` | std::mdspan as a library of arrays uses it: extents of size_t, static and dynamic mixed, views of const from views, views of a layout_right mapping made first, rows a stride apart, strided views of eight values, and the queries of a view | P0009R18 | ✅ | ✅ |  |
 | `expected` | std::expected with monadic operations | P0323R12, P2505R5 | ✅ | ✅ |  |
 | `print` | std::print / std::println | P2093R14 | ✅ | ✅ | c++23: probe 1 2.500; c++26: probe 1 2.500 |
 | `format_ranges` | formatting ranges with std::format | P2286R8 | ✅ | ✅ |  |
@@ -77,6 +78,7 @@
 | `ranges_fold_right` | ranges::fold_right | P2322R6 | ✅ | ✅ |  |
 | `ranges_contains` | ranges::contains, contains_subrange | P2302R4 | ✅ | ✅ |  |
 | `ranges_starts_ends_with` | ranges::starts_with, ends_with | P1659R3 | ✅ | ✅ |  |
+| `ranges_starts_ends_with_text` | ranges::starts_with, ends_with on text and on bytes: a string_view against a string_view, a span of bytes against an array | P1659R3 | ✅ | ✅ |  |
 | `ranges_find_last` | ranges::find_last | P1223R5 | ✅ | ✅ |  |
 | `ranges_iota` | ranges::iota | P2440R1 | ✅ | ✅ |  |
 | `optional_monadic` | std::optional and_then / transform / or_else | P0798R8 | ✅ | ✅ |  |
@@ -99,7 +101,7 @@
 | `to_chars_double` | std::to_chars for double | P0067R5 | ✅ | ✅ |  |
 | `to_chars_float` | std::to_chars for float | P0067R5 | ✅ | ✅ |  |
 | `filesystem_utf8` | std::filesystem with UTF-8 (u8) file names | P0218R1, P0482R6 | ✅ | ✅ |  |
-| `parallel_algorithms` | parallel algorithms (execution::par / par_unseq); prints the threads used | P0024R2 | ✅ | ✅ | c++23: threads=4; needs api-ms-win-crt-heap-l1-1-0.dll, api-ms-win-crt-locale-l1-1-0.dll, api-ms-win-crt-math-l1-1-0.dll, api-ms-win-crt-runtime-l1-1-0.dll, api-ms-win-crt-stdio-l1-1-0.dll, KERNEL32.dll, MSVCP140.dll, MSVCP140_ATOMIC_WAIT.dll, VCRUNTIME140.dll, VCRUNTIME140_1.dll; c++26: threads=5 |
+| `parallel_algorithms` | parallel algorithms (execution::par / par_unseq); prints the threads used | P0024R2 | ✅ | ✅ | c++23: threads=2; needs api-ms-win-crt-heap-l1-1-0.dll, api-ms-win-crt-locale-l1-1-0.dll, api-ms-win-crt-math-l1-1-0.dll, api-ms-win-crt-runtime-l1-1-0.dll, api-ms-win-crt-stdio-l1-1-0.dll, KERNEL32.dll, MSVCP140.dll, MSVCP140_ATOMIC_WAIT.dll, VCRUNTIME140.dll, VCRUNTIME140_1.dll; c++26: threads=4 |
 | `hardware_interference_size` | std::hardware_destructive_interference_size | P0154R1 | ✅ | ✅ |  |
 | `assume_aligned` | std::assume_aligned | P1007R3 | ✅ | ✅ |  |
 | `source_location` | std::source_location | P1208R6 | ✅ | ✅ |  |

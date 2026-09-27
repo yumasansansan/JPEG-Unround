@@ -1,9 +1,10 @@
 # SPDX-FileCopyrightText: 2026 Yuma Kakei <yumasansansan@gmail.com>
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Checks that the Rust code computes in vectors of the processor's full width.
+"""Checks that the Rust and the C++ code compute in vectors of the processor's full width.
 
     python ci/vectorization.py kernels LISTING --width {128,256,512} [--neon]
     python ci/vectorization.py library LISTING --width {128,256,512} [--neon] --allowed FILE
+    python ci/vectorization.py cxx BUILD --width {128,256,512} [--neon] --allowed FILE [--flags FLAGS]
     python ci/vectorization.py self-test
 
 LISTING is assembly that rustc wrote (--emit asm, with -C debuginfo=1 for the source
@@ -22,7 +23,10 @@ no loop within it holds. A loop whose own instructions compute in doubles is
   remainder  if the source lines of its arithmetic (line 0, of no line, aside) are
              among those of one vector loop of the function: the loop after it for the
              last values, or the copy that runs where a check at run time keeps the
-             vector loop from running,
+             vector loop from running (in C++, which cannot say that arrays do not
+             overlap and so has such a copy of most loops, where at least three quarters
+             of its lines are the vector loop's: the two forms may place an instruction
+             on a line of their own),
   outer      if it holds other loops, its own arithmetic done once for each time
              around them, or if the source lines of its arithmetic are among those
              of such a loop's own (a copy of the outer loop for a case in which its
@@ -40,14 +44,28 @@ functions whose loops may be scalar where they only add, as sums in a fixed orde
 Arithmetic on narrower vectors outside loops is a few values computed side by side,
 which no wider vector would hold, and is not counted.
 
+cxx: the same for the C++ library. BUILD is a CMake build of it (its
+compile_commands.json); each source of cpp/src is compiled as that build compiles it,
+but for the target that FLAGS give (in place of its -march) and with the source lines
+and the remainders as above, and every loop of the functions of the namespace
+`unround` must be vector code, or allowed by FILE as in library. The names of C++ are
+read with llvm-cxxfilt (Itanium's scheme, next to the compiler) and undname (Microsoft's,
+of Visual Studio) where they are found, and more roughly where they are not.
+
 self-test: checks the reading of small listings of each kind, and the demangling.
 """
 
 import argparse
 import contextlib
 import io
+import json
+import os
 import re
+import shlex
+import shutil
+import subprocess
 import sys
+import tempfile
 import tomllib
 from collections import Counter
 from collections.abc import Callable
@@ -77,7 +95,13 @@ UNCONDITIONAL = {"jmp", "jmpq", "b"}
 # The operations of sums.
 ADDITIONS = {"add", "sub", "fadd", "fsub"}
 LABEL = re.compile(r"^([A-Za-z_$.][\w$.@]*):")
-SYMBOL = re.compile(r"^_{1,2}(R|ZN)")
+# A label of COFF that holds a name of Microsoft's scheme, which is quoted.
+QUOTED_LABEL = re.compile(r'^"([^"]+)":')
+# The symbols of functions: Rust's (v0 and legacy), C++'s of Itanium's scheme, and of
+# Microsoft's.
+SYMBOL = re.compile(r"^(_{1,2}(R|Z)|\?)")
+# A Rust symbol of the legacy scheme: a nested name that ends with a hash.
+RUST_LEGACY = re.compile(r"^_{1,2}ZN.*17h[0-9a-f]{16}E$")
 CV_FILE = re.compile(r'^\.cv_file\s+(\d+)\s+"([^"]+)"')
 DWARF_FILE = re.compile(r'^\.file\s+(\d+)\s+"([^"]+)"(?:\s+"([^"]+)")?')
 CV_LOC = re.compile(r"^\.cv_loc\s+\d+\s+(\d+)\s+(\d+)")
@@ -303,9 +327,120 @@ class Demangler:
         return "dyn " + " + ".join(traits)
 
 
+# The paths of C++ symbols, which demangle_cxx() fills in for a listing.
+CXX_NAMES: dict[str, str] = {}
+
+
+def qualified(signature: str) -> str:
+    """The qualified name of a function from its demangled signature, `a::b::c`: without
+    its return type, its template arguments and its parameters. A function local to
+    another (a lambda) is named after the one it is in."""
+    text = signature.replace("(anonymous namespace)", "{anonymous}").replace("`anonymous namespace'", "{anonymous}")
+    for word in ("public: ", "protected: ", "private: ", "static ", "virtual ", "__cdecl ", "__ptr64", "__stdcall "):
+        text = text.replace(word, "")
+    text = text.strip()
+    # A local entity of Microsoft's scheme: `the enclosing function'::...
+    if text.startswith("`") and "'" in text:
+        return qualified(text[1 : text.rindex("'")])
+    depth = 0
+    start = 0
+    for index, character in enumerate(text):
+        if character in "<[":
+            depth += 1
+        elif character in ">]":
+            depth -= 1
+        elif character == "(" and depth == 0:
+            if text[start:index].strip().endswith("operator"):
+                continue
+            text = text[:index]
+            break
+        elif character == " " and depth == 0:
+            start = index + 1
+    name = text[start:].strip()
+    # Template arguments, from the innermost out.
+    while (stripped := re.sub(r"<[^<>]*>", "", name)) != name:
+        name = stripped
+    # A local entity of Itanium's scheme: the enclosing function's name comes first.
+    return name.split("::'lambda", maxsplit=1)[0]
+
+
+def rough_itanium(name: str) -> str:
+    """A nested name of Itanium's scheme read without a demangler: the length-prefixed
+    names after _ZN (and its qualifiers) up to what is not one."""
+    rest = re.sub(r"^_{1,2}Z[ZL]?N?[rVKRO]*", "", name)
+    parts = []
+    while (match := re.match(r"\d+", rest)) is not None:
+        length, digits = int(match.group()), len(match.group())
+        parts.append(rest[digits : digits + length])
+        rest = rest[digits + length :]
+    return "::".join(part if part != "_GLOBAL__N_1" else "{anonymous}" for part in parts) or name
+
+
+def rough_microsoft(name: str) -> str:
+    """A name of Microsoft's scheme read without undname: ?name@scope@...@@ read back to
+    front, for a name that is not a template's."""
+    if name.startswith("??$") or "@@" not in name:
+        return name
+    parts = name.lstrip("?").split("@@", maxsplit=1)[0].split("@")
+    return "::".join("{anonymous}" if part.startswith("?A0x") else part for part in reversed(parts))
+
+
+def find_tool(names: list[str], near: str | None = None) -> str | None:
+    """A program by any of its names, next to `near` or on the PATH."""
+    for name in names:
+        if near:
+            for candidate in (Path(near).parent / name, Path(near).parent / f"{name}.exe"):
+                if candidate.is_file():
+                    return str(candidate)
+        if found := shutil.which(name):
+            return found
+    return None
+
+
+def find_undname() -> str | None:
+    """Visual Studio's undname: on the PATH, or in the newest MSVC of an installation."""
+    if on_path := shutil.which("undname"):
+        return on_path
+    for root in (os.environ.get("PROGRAMFILES", ""), os.environ.get("PROGRAMFILES(X86)", "")):
+        if not root:
+            continue
+        found = sorted(Path(root).glob("Microsoft Visual Studio/*/*/VC/Tools/MSVC/*/bin/Hostx64/x64/undname.exe"))
+        if found:
+            return str(found[-1])
+    return None
+
+
+def demangle_cxx(symbols: list[str], compiler: str | None = None) -> None:
+    """Fills CXX_NAMES with the qualified names of C++ symbols."""
+    itanium = [symbol for symbol in symbols if re.match(r"^_{1,2}Z", symbol) and not RUST_LEGACY.match(symbol)]
+    microsoft = [symbol for symbol in symbols if symbol.startswith("?")]
+    cxxfilt = find_tool(["llvm-cxxfilt", "llvm-cxxfilt-23"], compiler)
+    if itanium and cxxfilt:
+        names = [symbol[1:] if symbol.startswith("__Z") else symbol for symbol in itanium]
+        result = subprocess.run([cxxfilt], input="\n".join(names), capture_output=True, text=True, check=False)
+        lines = result.stdout.splitlines()
+        if result.returncode == 0 and len(lines) == len(itanium):
+            for symbol, line in zip(itanium, lines, strict=True):
+                CXX_NAMES[symbol] = qualified(line) if line != symbol else rough_itanium(symbol)
+    for symbol in itanium:
+        CXX_NAMES.setdefault(symbol, rough_itanium(symbol))
+    undname = find_undname() if microsoft else None
+    if undname:
+        for first in range(0, len(microsoft), 16):
+            chunk = microsoft[first : first + 16]
+            result = subprocess.run([undname, *chunk], capture_output=True, text=True, check=False)
+            found = re.findall(r'Undecoration of :- "([^"]*)"\s*is :- "([^"]*)"', result.stdout)
+            for symbol, line in found:
+                CXX_NAMES[symbol] = qualified(line)
+    for symbol in microsoft:
+        CXX_NAMES.setdefault(symbol, rough_microsoft(symbol))
+
+
 def demangled(symbol: str) -> str:
-    """The path of a symbol of the v0 scheme, or of the legacy one; the symbol itself
-    where it is neither."""
+    """The path of a symbol of the v0 scheme, or of the legacy one, or of C++ as
+    demangle_cxx() read it; the symbol itself where it is none of these."""
+    if symbol in CXX_NAMES:
+        return CXX_NAMES[symbol]
     name = symbol.split(".llvm.", maxsplit=1)[0]
     name = name[1:] if name.startswith("__") else name
     if name.startswith("_R"):
@@ -384,7 +519,7 @@ def functions(text: str) -> list[Function]:
         line = raw.strip()
         if source_file(line, files):
             continue
-        if match := LABEL.match(line):
+        if match := QUOTED_LABEL.match(line) or LABEL.match(line):
             if SYMBOL.match(match.group(1)):
                 current = Function(match.group(1))
                 result.append(current)
@@ -561,8 +696,9 @@ def count_arithmetic(loop: Loop, own: list[Item], *, neon: bool) -> None:
             loop.scalar += 1
 
 
-def loops(function: Function, width: int, *, neon: bool) -> list[Loop]:
-    """The loops of a function whose own instructions compute in doubles, classified."""
+def loops(function: Function, width: int, *, neon: bool, share: float = 1.0) -> list[Loop]:
+    """The loops of a function whose own instructions compute in doubles, classified; a
+    loop is a remainder where at least `share` of its lines are a vector loop's."""
     found_blocks, successors = blocks(function, neon=neon)
     found = [Loop(body) for body in natural_loops(successors)]
     for loop in found:
@@ -578,7 +714,7 @@ def loops(function: Function, width: int, *, neon: bool) -> list[Loop]:
     for loop in found:
         if loop.kind:
             continue
-        if loop.places and any(loop.places <= vector.places for vector in vectors):
+        if loop.places and any(len(loop.places & vector.places) >= share * len(loop.places) for vector in vectors):
             loop.kind = "remainder"
         else:
             loop.kind = "outer" if loop.holds_loops else "scalar"
@@ -630,14 +766,16 @@ def check_kernels(listing: list[Function], width: int, *, neon: bool) -> int:
     return 0
 
 
-def check_library(listing: list[Function], width: int, allowed: dict[str, dict[str, str]], *, neon: bool) -> int:
+def check_library(
+    listing: list[Function], width: int, allowed: dict[str, dict[str, str]], *, neon: bool, share: float = 1.0
+) -> int:
     functions_allowed, sums_allowed = allowed.get("functions", {}), allowed.get("sums", {})
     used: set[str] = set()
     totals: Counter[str] = Counter()
     failures = 0
     for function in listing:
         name = demangled(function.symbol)
-        found = loops(function, width, neon=neon)
+        found = loops(function, width, neon=neon, share=share)
         totals.update(loop.kind for loop in found)
         scalar = [loop for loop in found if loop.kind == "scalar"]
         if not scalar:
@@ -665,6 +803,85 @@ def check_library(listing: list[Function], width: int, allowed: dict[str, dict[s
         return 1
     return 0
 
+
+def cxx_listings(build: Path, flags: list[str], sources: str, out: Path) -> list[tuple[str, Path, str]]:
+    """Compiles the sources of a CMake build that match `sources` to assembly, as the
+    build compiles them but with `flags` for the target, the source lines, and no
+    vector code of a narrower width for the remainders of loops. Returns each
+    source's name, listing and compiler."""
+    entries = json.loads((build / "compile_commands.json").read_text(encoding="utf-8"))
+    made = []
+    for entry in entries:
+        if not re.search(sources, entry["file"].replace("\\", "/")):
+            continue
+        if "arguments" in entry:
+            arguments = list(entry["arguments"])
+        else:
+            arguments = [a.strip('"') for a in shlex.split(entry["command"], posix=os.name != "nt")]
+        kept: list[str] = []
+        skip = False
+        for argument in arguments[1:]:
+            if skip:
+                skip = False
+            elif argument in ("-o", "-MF", "-MT", "-MQ"):
+                skip = True
+            elif not (
+                argument in ("-c", "-MD", "-MMD")
+                or argument.startswith(("-march=", "-mprefer-vector-width="))
+                or argument.replace("\\", "/") == entry["file"].replace("\\", "/")
+            ):
+                kept.append(argument)
+        name = Path(entry["file"]).stem
+        listing = out / f"{name}.s"
+        command = [
+            arguments[0],
+            *kept,
+            *flags,
+            "-gline-tables-only",
+            "-mllvm",
+            "-enable-epilogue-vectorization=false",
+            "-S",
+            "-o",
+            str(listing),
+            entry["file"],
+        ]
+        subprocess.run(command, cwd=entry["directory"], check=True)
+        made.append((name, listing, arguments[0]))
+    return made
+
+
+@dataclass
+class CxxCheck:
+    """What the cxx mode checks: the sources of a CMake build that match a pattern,
+    compiled for a target, and the functions of a namespace."""
+
+    build: Path
+    width: int
+    flags: list[str]
+    neon: bool
+    namespace: str
+    sources: str
+
+
+def check_cxx(check: CxxCheck, allowed: dict[str, dict[str, str]]) -> int:
+    build, width, neon, namespace = check.build, check.width, check.neon, check.namespace
+    with tempfile.TemporaryDirectory() as out:
+        made = cxx_listings(build, check.flags, check.sources, Path(out))
+        if not made:
+            print(f"error: no source of {build} matches {check.sources}", file=sys.stderr)
+            return 1
+        listing: list[Function] = []
+        for name, path, compiler in made:
+            read = functions(path.read_text(encoding="utf-8", errors="replace"))
+            demangle_cxx([function.symbol for function in read], compiler)
+            ours = [function for function in read if demangled(function.symbol).startswith(namespace)]
+            print(f"{name}: {len(ours)} functions of {namespace.rstrip(':')}")
+            listing.extend(ours)
+    return check_library(listing, width, allowed, neon=neon, share=CXX_SHARE)
+
+
+# The share of a scalar loop's lines that makes it a copy of a vector loop, in C++.
+CXX_SHARE = 0.75
 
 # Small listings for the self-test: a function of a kernel whose loop is vector code
 # of 256 bits and whose remainder is scalar, one with a scalar loop that adds and
@@ -778,6 +995,71 @@ DEMANGLED = {
     "__RNvCslXYZ_4test6kernel": "test::kernel",
     "_ZN12jpeg_unround5exact3sum17h0123456789abcdefE": "jpeg_unround::exact::sum",
 }
+# C++ names read without a demangler, and signatures as the demanglers write them.
+ROUGH = {
+    "_ZN7unround3dct7forwardERKSt5arrayIdLm64EE": "unround::dct::forward",
+    "_ZNK7unround7Problem4proxESt6mdspanIKdSt7extentsImJLm18446744073709551615EEE": "unround::Problem::prox",
+    "__ZN7unround9operators12_GLOBAL__N_13rowIdEENSt3__14spanIT_Lm18446744073709551615EEE": (
+        "unround::operators::{anonymous}::row"
+    ),
+    "?forward@dct@unround@@YA?AV?$array@N$0EA@@std@@AEBV34@@Z": "unround::dct::forward",
+    "?forward_band@?A0x9C377F6F@dct@unround@@YAXXZ": "unround::dct::{anonymous}::forward_band",
+}
+SIGNATURES = {
+    "void unround::operators::(anonymous namespace)::forward_across<(unround::operators::Into)0>(std::span<double "
+    "const, 18446744073709551615ul>, std::span<double, 18446744073709551615ul>)": (
+        "unround::operators::{anonymous}::forward_across"
+    ),
+    "unround::Problem::prox(std::mdspan<double const, std::extents<unsigned long, 18446744073709551615ul>>, double, "
+    "std::mdspan<double, std::extents<unsigned long, 18446744073709551615ul>>) const": "unround::Problem::prox",
+    "unround::Problem::conjugate(std::mdspan<double const>) const::$_0::operator()(unsigned long) const": (
+        "unround::Problem::conjugate"
+    ),
+    "double __cdecl unround::Problem::conjugate(class std::mdspan<double const ,class std::extents<unsigned __int64,"
+    "-1,-1,8,8>,struct std::layout_right,class std::default_accessor<double const > >)const __ptr64": (
+        "unround::Problem::conjugate"
+    ),
+    "void __cdecl unround::operators::`anonymous namespace'::project_rows<2,class std::vector<int> >(double)": (
+        "unround::operators::{anonymous}::project_rows"
+    ),
+    "public: void __cdecl `public: double __cdecl unround::Problem::value(class std::mdspan<double const >)const "
+    "__ptr64'::`2'::<lambda_1>::operator()(unsigned __int64)const __ptr64": "unround::Problem::value",
+}
+X86_COFF_CXX = """
+\t.cv_file\t1 "C:\\\\src\\\\kernels.cpp"
+"?forward@dct@unround@@YA?AV?$array@N$0EA@@std@@AEBV34@@Z":
+\txorl\t%eax, %eax
+.LBB0_1:
+\t.cv_loc\t0 1 11 9
+\tvmovupd\t(%rcx,%rax,8), %ymm0
+\tvaddpd\t(%rdx,%rax,8), %ymm0, %ymm0
+\tvmovupd\t%ymm0, (%r8,%rax,8)
+\taddq\t$4, %rax
+\tcmpq\t%r9, %rax
+\tjb\t.LBB0_1
+.LBB0_2:
+\t.cv_loc\t0 1 11 9
+\tvmovsd\t(%rcx,%rax,8), %xmm0
+\tvaddsd\t(%rdx,%rax,8), %xmm0, %xmm0
+\t.cv_loc\t0 1 12 9
+\tvaddsd\t%xmm0, %xmm0, %xmm0
+\t.cv_loc\t0 1 11 9
+\tvmulsd\t%xmm0, %xmm0, %xmm0
+\t.cv_loc\t0 1 11 9
+\tvsubsd\t%xmm0, %xmm1, %xmm1
+\tincq\t%rax
+\tcmpq\t%r9, %rax
+\tjb\t.LBB0_2
+\tretq
+"?sum@exact@unround@@YANXZ": # @"?sum@exact@unround@@YANXZ"
+.LBB1_1:
+\t.cv_loc\t0 1 20 9
+\tvaddsd\t(%rcx,%rax,8), %xmm2, %xmm2
+\tincq\t%rax
+\tcmpq\t%r10, %rax
+\tjne\t.LBB1_1
+\tretq
+"""
 
 
 def self_test() -> int:
@@ -794,6 +1076,21 @@ def self_test() -> int:
 
     for symbol, name in DEMANGLED.items():
         expect(f"the name of {symbol}", demangled(symbol), name)
+    for symbol, name in ROUGH.items():
+        rough = rough_microsoft(symbol) if symbol.startswith("?") else rough_itanium(symbol)
+        expect(f"the rough name of {symbol}", rough, name)
+    for signature, name in SIGNATURES.items():
+        expect(f"the name in {signature[:60]}", qualified(signature), name)
+    coff = functions(X86_COFF_CXX)
+    names = [rough_microsoft(function.symbol) for function in coff]
+    expect("the functions of a listing of C++ on Windows", names, ["unround::dct::forward", "unround::exact::sum"])
+    if len(coff) == 2:
+        # The scalar copy has line 12 of its own besides line 11, the vector loop's.
+        kinds = sorted(loop.kind for loop in loops(coff[0], 256, neon=False, share=0.5))
+        expect("the vector loop of C++ and its copy", kinds, ["remainder", "vector"])
+        kinds = sorted(loop.kind for loop in loops(coff[0], 256, neon=False))
+        expect("the copy of C++ with the rule of Rust", kinds, ["scalar", "vector"])
+        expect("the scalar loop of C++", [loop.kind for loop in loops(coff[1], 256, neon=False)], ["scalar"])
     for label, listing, width, neon in [
         ("x86-64, COFF", X86_COFF, 256, False),
         ("x86-64, ELF", X86_ELF, 256, False),
@@ -826,16 +1123,33 @@ def self_test() -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("mode", choices=("kernels", "library", "demangle", "self-test"))
-    parser.add_argument("listing", type=Path, nargs="?")
+    parser.add_argument("mode", choices=("kernels", "library", "cxx", "demangle", "self-test"))
+    parser.add_argument("listing", type=Path, nargs="?", help="the listing, or for cxx the CMake build")
     parser.add_argument("--width", type=int, choices=(128, 256, 512))
     parser.add_argument("--neon", action="store_true", help="the listing is of AArch64")
-    parser.add_argument("--allowed", type=Path, help="the allowed scalar loops (library)")
+    parser.add_argument("--allowed", type=Path, help="the allowed scalar loops (library, cxx)")
+    parser.add_argument("--flags", default="", help="the compiler's flags of the target (cxx)")
+    parser.add_argument("--namespace", default="unround::", help="the functions checked (cxx)")
+    parser.add_argument("--sources", default=r"cpp/src/[^/]+\.cpp$", help="the sources compiled (cxx)")
     arguments = parser.parse_args()
     if arguments.mode == "self-test":
         return self_test()
     if arguments.listing is None:
         parser.error("a listing is needed")
+    if arguments.mode == "cxx":
+        if arguments.width is None or arguments.allowed is None:
+            parser.error("cxx needs --width and --allowed")
+        with arguments.allowed.open("rb") as file:
+            allowed_cxx = tomllib.load(file)
+        check = CxxCheck(
+            build=arguments.listing,
+            width=arguments.width,
+            flags=shlex.split(arguments.flags),
+            neon=arguments.neon,
+            namespace=arguments.namespace,
+            sources=arguments.sources,
+        )
+        return check_cxx(check, allowed_cxx)
     text = arguments.listing.read_text(encoding="utf-8", errors="replace")
     if arguments.mode == "demangle":
         for line in text.split():

@@ -1,6 +1,6 @@
 {
  "label": "macos-arm64-sdk26.5-min26.0",
- "date": "2026-09-23T12:10:56+00:00",
+ "date": "2026-09-27T08:20:26+00:00",
  "system": "macos",
  "arch": "arm64",
  "os": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
@@ -44,13 +44,13 @@
     "paper": "Clang extension"
    },
    "results": {
-    "c++26": {
+    "c++23": {
      "status": "pass",
      "variant": "",
      "exit": 0,
      "stdout": ""
     },
-    "c++23": {
+    "c++26": {
      "status": "pass",
      "variant": "",
      "exit": 0,
@@ -209,14 +209,14 @@
      "variant": "-fopenmp",
      "exit": -6,
      "stdout": "",
-     "diag": "exit status -6: dyld[4580]: Library not loaded: @rpath/libomp.dylib"
+     "diag": "exit status -6: dyld[1492]: Library not loaded: @rpath/libomp.dylib"
     },
     "c++26": {
      "status": "run",
      "variant": "-fopenmp",
      "exit": -6,
      "stdout": "",
-     "diag": "exit status -6: dyld[4581]: Library not loaded: @rpath/libomp.dylib"
+     "diag": "exit status -6: dyld[1491]: Library not loaded: @rpath/libomp.dylib"
     }
    }
   },
@@ -231,16 +231,6 @@
     "inspect": "imports"
    },
    "results": {
-    "c++26": {
-     "status": "pass",
-     "variant": "-fopenmp-simd",
-     "exit": 0,
-     "stdout": "",
-     "imports": [
-      "/usr/lib/libc++.1.dylib",
-      "/usr/lib/libSystem.B.dylib"
-     ]
-    },
     "c++23": {
      "status": "pass",
      "variant": "-fopenmp-simd",
@@ -250,6 +240,109 @@
       "/usr/lib/libc++.1.dylib",
       "/usr/lib/libSystem.B.dylib"
      ]
+    },
+    "c++26": {
+     "status": "pass",
+     "variant": "-fopenmp-simd",
+     "exit": 0,
+     "stdout": "",
+     "imports": [
+      "/usr/lib/libc++.1.dylib",
+      "/usr/lib/libSystem.B.dylib"
+     ]
+    }
+   }
+  },
+  {
+   "id": "int128_arithmetic",
+   "lang": "c++",
+   "bundle": "extensions.cpp",
+   "meta": {
+    "title": "__int128 and unsigned __int128: sums, products, shifts and comparisons",
+    "paper": "Clang extension"
+   },
+   "results": {
+    "c++23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    },
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "int128_division_conversion",
+   "lang": "c++",
+   "bundle": "extensions.cpp",
+   "meta": {
+    "title": "__int128 division and remainder, and conversion from and to double (calls into the compiler's runtime on some targets)",
+    "paper": "Clang extension",
+    "libs": "| -lclang_rt.builtins-x86_64"
+   },
+   "results": {
+    "c++23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    },
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "int128_in_library_templates",
+   "lang": "c++",
+   "bundle": "extensions.cpp",
+   "meta": {
+    "title": "__int128 in std::optional, std::array and std::pair keeps its alignment of 16",
+    "paper": "Clang extension"
+   },
+   "results": {
+    "c++23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    },
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "int128_numeric_limits",
+   "lang": "c++",
+   "bundle": "extensions.cpp",
+   "meta": {
+    "title": "std::numeric_limits specialized for __int128 (its min() the least value, not 0)",
+    "paper": "Clang extension"
+   },
+   "results": {
+    "c++23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    },
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
     }
    }
   },
@@ -486,13 +579,13 @@
     "paper": "P2334R1"
    },
    "results": {
-    "c++26": {
+    "c++23": {
      "status": "pass",
      "variant": "",
      "exit": 0,
      "stdout": ""
     },
-    "c++23": {
+    "c++26": {
      "status": "pass",
      "variant": "",
      "exit": 0,
@@ -911,13 +1004,13 @@
     "macro": "__cpp_lib_print"
    },
    "results": {
-    "c++26": {
+    "c++23": {
      "status": "pass",
      "variant": "",
      "exit": 0,
      "stdout": "probe 1 2.500"
     },
-    "c++23": {
+    "c++26": {
      "status": "pass",
      "variant": "",
      "exit": 0,
@@ -1183,13 +1276,13 @@
     "macro": "__cpp_lib_ranges_chunk_by"
    },
    "results": {
-    "c++26": {
+    "c++23": {
      "status": "pass",
      "variant": "",
      "exit": 0,
      "stdout": ""
     },
-    "c++23": {
+    "c++26": {
      "status": "pass",
      "variant": "",
      "exit": 0,
@@ -2042,13 +2135,13 @@
     "expect": "abnormal"
    },
    "results": {
-    "c++26": {
+    "c++23": {
      "status": "pass",
      "variant": "-D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST -D_GLIBCXX_ASSERTIONS -D_MSVC_STL_HARDENING=1",
      "exit": -5,
      "stdout": ""
     },
-    "c++23": {
+    "c++26": {
      "status": "pass",
      "variant": "-D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST -D_GLIBCXX_ASSERTIONS -D_MSVC_STL_HARDENING=1",
      "exit": -5,

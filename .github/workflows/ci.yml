@@ -10,7 +10,10 @@
 # (.github/workflows/fuzz.yml). A build also fails when one of its programs asks
 # the system for a library other than the C++ library and the C runtime. The
 # debug builds also read every parameter list of the project's C and C++ on each
-# system, where each one's own #if branches are compiled (ci/void-params.py).
+# system, where each one's own #if branches are compiled (ci/void-params.py), and
+# the release builds check that the C++ library is vector code of the full width
+# of each target it is built for (ci/vectorization-cpp.sh: AVX2 and AVX-512 on
+# x86-64, NEON on AArch64).
 #
 # The rust job checks and tests the Rust implementation on each system
 # (ci/rust.sh), with the toolchain that rust/rust-toolchain.toml pins; checks
@@ -90,6 +93,10 @@ jobs:
 
       - name: Test
         run: bash ci/test.sh "${{ matrix.preset }}"
+
+      - name: Check the vector code
+        if: ${{ matrix.preset == 'release' }}
+        run: bash ci/vectorization-cpp.sh build/release
 
       - name: Read the parameter lists
         if: ${{ matrix.preset == 'debug' }}

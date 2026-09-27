@@ -1,6 +1,6 @@
 # Feature probes: macos-arm64-sdk26.5-min26.0
 
-- Date: 2026-09-23T12:10:56+00:00
+- Date: 2026-09-27T08:20:26+00:00
 - System: macOS-26.6.2-arm64-arm-64bit-Mach-O (arm64)
 - Compiler: clang version 23.1.2 (https://github.com/llvm/llvm-project 85ac560262434c9ccfc0c183ec22d4138ed647fb) (target arm64-apple-darwin25.6.0)
 - C++ library: libc++ 210106
@@ -19,8 +19,12 @@
 | `aarch64_fmv` | function multiversioning with target_version (AArch64) | Clang extension (ACLE FMV) | ✅ | ✅ |  |
 | `float16_extension` | _Float16 arithmetic (Clang) | Clang extension (ISO/IEC TS 18661-3 type) | ✅ | ✅ |  |
 | `bfloat16_extension` | __bf16 arithmetic (Clang) | Clang extension | ✅ | ✅ |  |
-| `openmp` | OpenMP parallel regions (-fopenmp); prints the threads it ran | OpenMP 5.x | ❌ run | ❌ run | c++23: exit status -6: dyld[4580]: Library not loaded: @rpath/libomp.dylib; c++26: exit status -6: dyld[4581]: Library not loaded: @rpath/libomp.dylib |
+| `openmp` | OpenMP parallel regions (-fopenmp); prints the threads it ran | OpenMP 5.x | ❌ run | ❌ run | c++23: exit status -6: dyld[1492]: Library not loaded: @rpath/libomp.dylib; c++26: exit status -6: dyld[1491]: Library not loaded: @rpath/libomp.dylib |
 | `openmp_simd` | #pragma omp simd without the OpenMP runtime (-fopenmp-simd) | OpenMP 5.x | ✅ (`-fopenmp-simd`) | ✅ (`-fopenmp-simd`) | needs /usr/lib/libc++.1.dylib, /usr/lib/libSystem.B.dylib |
+| `int128_arithmetic` | __int128 and unsigned __int128: sums, products, shifts and comparisons | Clang extension | ✅ | ✅ |  |
+| `int128_division_conversion` | __int128 division and remainder, and conversion from and to double (calls into the compiler's runtime on some targets) | Clang extension | ✅ | ✅ |  |
+| `int128_in_library_templates` | __int128 in std::optional, std::array and std::pair keeps its alignment of 16 | Clang extension | ✅ | ✅ |  |
+| `int128_numeric_limits` | std::numeric_limits specialized for __int128 (its min() the least value, not 0) | Clang extension | ✅ | ✅ |  |
 | `cxx_runtime_linkage` | the C++ library a program links (should be the system's, as a shared library) | - | ✅ | ✅ | c++23: x 1; needs /usr/lib/libc++.1.dylib, /usr/lib/libSystem.B.dylib; c++26: x 1 |
 | `deducing_this` | explicit object parameter (deducing this) | P0847R7 | ✅ | ✅ |  |
 | `multidimensional_subscript` | multidimensional subscript operator a[i, j] | P2128R6 | ✅ | ✅ |  |

@@ -10,6 +10,8 @@
 
 #include "unround/jpegio.hpp"
 
+#include "unround/arrays.hpp"
+
 #include "test_jpeg.h"
 #include "test_png.h"
 
@@ -104,7 +106,9 @@ File make_file(std::uint32_t width, std::uint32_t height, std::int32_t color_spa
 bool same_coefficients(const jpegio::Image& image, const File& file) {
   if (image.components().size() != file.coefficients.size()) return false;
   for (std::size_t ci = 0; ci < file.coefficients.size(); ++ci) {
-    if (!std::ranges::equal(jpegio::coefficients(image.components()[ci]), file.coefficients[ci])) return false;
+    if (!std::ranges::equal(unround::entries(jpegio::coefficients(image.components()[ci])), file.coefficients[ci])) {
+      return false;
+    }
   }
   return true;
 }
@@ -124,9 +128,15 @@ void test_read(void) {
   const unround_jpegio_component& luma = image->components()[0];
   CHECK(luma.h_samp_factor == 2 && luma.v_samp_factor == 2);
   CHECK(luma.width_in_blocks == 5 && luma.height_in_blocks == 3);
-  CHECK(jpegio::coefficients(luma).size() == std::size_t{5} * 3 * 64);
-  CHECK(std::ranges::equal(jpegio::block(luma, 4, 2),
-                           std::span{file.coefficients[0]}.subspan(std::size_t{2 * 5 + 4} * 64, 64)));
+  const unround::Blocks<const std::int16_t> read = jpegio::coefficients(luma);
+  CHECK(read.extent(0) == 3 && read.extent(1) == 5 && read.size() == std::size_t{5} * 3 * 64);
+  // The encoder was given the blocks row after row, each in natural order.
+  const unround::Blocks<const std::int16_t> given(file.coefficients[0].data(), unround::block_extents(3, 5));
+  bool same_block = true;
+  for (std::size_t v = 0; v < 8; ++v) {
+    for (std::size_t u = 0; u < 8; ++u) same_block = same_block && read[2, 4, v, u] == given[2, 4, v, u];
+  }
+  CHECK(same_block);
   CHECK(jpegio::quant_table(luma)[0] == static_cast<std::uint16_t>(1 + 1 % 50));
   CHECK(image->components()[1].quant_table_slot == 1);
 }
@@ -181,7 +191,11 @@ void test_planes(void) {
   CHECK(planes->planes().size() == 3);
   const unround_jpegio_plane& luma = planes->planes()[0];
   CHECK(luma.width == 40 && luma.height == 24);
-  CHECK(jpegio::samples(luma).size() == std::size_t{luma.stride} * luma.height);
+  const jpegio::PlaneSamples samples = jpegio::samples(luma);
+  CHECK(samples.extent(0) == luma.height && samples.extent(1) == luma.width && samples.stride(0) == luma.stride &&
+        samples.stride(1) == 1);
+  CHECK(samples.mapping().required_span_size() == std::size_t{luma.stride} * (luma.height - 1) + luma.width);
+  CHECK(&samples[23, 39] == luma.samples + std::size_t{luma.stride} * 23 + 39);
   const unround_jpegio_plane& chroma = planes->planes()[1];
   CHECK(chroma.width == 24 && chroma.height == 16);
   const jpegio::Planes moved = std::move(*planes);
@@ -284,16 +298,16 @@ void test_png_files(void) {
     sixteen[i] = static_cast<std::uint16_t>(i * 4099U);
   }
   for (const std::int32_t channels : {1, 3}) {
-    const std::size_t count = pixels * static_cast<std::size_t>(channels);
-    const auto small = std::span<const std::uint8_t>{eight}.first(count);
-    const auto large = std::span<const std::uint16_t>{sixteen}.first(count);
-    const auto file8 = jpegio::write_png(7, 5, channels, small);
+    const auto count = static_cast<std::size_t>(channels);
+    const unround::Picture<const std::uint8_t> small(eight.data(), 5, 7, count);
+    const unround::Picture<const std::uint16_t> large(sixteen.data(), 5, 7, count);
+    const auto file8 = jpegio::write_png(small);
     if (CHECK(file8.has_value())) {
       CHECK(file8->warning.empty());
-      CHECK(read_back(*file8, 7, 5, channels, small).empty());
+      CHECK(read_back(*file8, 7, 5, channels, unround::entries(small)).empty());
     }
-    const auto file16 = jpegio::write_png(7, 5, channels, large, {.compression = 9, .icc_profile = {}});
-    if (CHECK(file16.has_value())) CHECK(read_back(*file16, 7, 5, channels, large).empty());
+    const auto file16 = jpegio::write_png(large, {.compression = 9, .icc_profile = {}});
+    if (CHECK(file16.has_value())) CHECK(read_back(*file16, 7, 5, channels, unround::entries(large)).empty());
   }
 
   // The profile goes with the picture of its color space, and is left out of
@@ -302,28 +316,26 @@ void test_png_files(void) {
   CHECK(jpegio::check_icc(rgb, 3).has_value());
   const auto refused = jpegio::check_icc(rgb, 1);
   CHECK(!refused.has_value() && !refused.error().empty());
-  const auto small = std::span<const std::uint8_t>{eight};
-  const auto with = jpegio::write_png(7, 5, 3, small, {.compression = -1, .icc_profile = rgb});
+  const unround::Picture<const std::uint8_t> small(eight.data(), 5, 7, 3);
+  const auto with = jpegio::write_png(small, {.compression = -1, .icc_profile = rgb});
   if (CHECK(with.has_value())) {
     CHECK(with->warning.empty());
-    CHECK(read_back(*with, 7, 5, 3, small) == rgb);
+    CHECK(read_back(*with, 7, 5, 3, unround::entries(small)) == rgb);
   }
-  const auto gray = small.first(pixels);
-  const auto without = jpegio::write_png(7, 5, 1, gray, {.compression = -1, .icc_profile = rgb});
+  const unround::Picture<const std::uint8_t> gray(eight.data(), 5, 7, 1);
+  const auto without = jpegio::write_png(gray, {.compression = -1, .icc_profile = rgb});
   if (CHECK(without.has_value())) {
     CHECK(without->warning == "the ICC profile is not written: " + refused.error());
-    CHECK(read_back(*without, 7, 5, 1, gray).empty());
+    CHECK(read_back(*without, 7, 5, 1, unround::entries(gray)).empty());
   }
 
-  // Wrong pictures.
-  const auto short_samples = jpegio::write_png(7, 5, 3, small.first(100));
-  CHECK(!short_samples.has_value() && short_samples.error().code == jpegio::Errc::argument);
-  const auto two = jpegio::write_png(5, 7, 2, small.first(70));
+  // Wrong pictures: two channels, none at all, and a level of compression beyond 9.
+  const auto two = jpegio::write_png(unround::Picture<const std::uint8_t>(eight.data(), 7, 5, 2));
   CHECK(!two.has_value() && two.error().code == jpegio::Errc::argument && !two.error().message.empty());
-  const auto level = jpegio::write_png(7, 5, 3, small, {.compression = 10, .icc_profile = {}});
+  const auto empty = jpegio::write_png(unround::Picture<const std::uint8_t>(eight.data(), 0, 7, 3));
+  CHECK(!empty.has_value() && empty.error().code == jpegio::Errc::argument);
+  const auto level = jpegio::write_png(small, {.compression = 10, .icc_profile = {}});
   CHECK(!level.has_value() && level.error().code == jpegio::Errc::argument);
-  const auto huge = jpegio::write_png(0xFFFFFFFFU, 0xFFFFFFFFU, 3, small);
-  CHECK(!huge.has_value() && huge.error().code == jpegio::Errc::argument);
   CHECK(jpegio::libpng_version().starts_with("libpng 1.6."));
 }
 

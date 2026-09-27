@@ -9,6 +9,8 @@
 
 #include "unround/dct.hpp"
 
+#include "unround/arrays.hpp"
+
 #include "support/check.hpp"
 
 #include <array>
@@ -22,10 +24,12 @@
 #include <filesystem>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
 
+using unround::Block8x8;
 using unround::dct::Block;
 using unround::test::Exact;
 using unround::test::gamma;
@@ -42,31 +46,35 @@ const double epsilon = gamma(6) * (2.0 + gamma(6));
 const double bound_rounding = 1.0 + gamma(200);
 
 // |C| |X| |C|^T, entry (v, u), and |C|^T |Y| |C|, entry (m, n).
-Block forward_magnitudes(const Block& x) {
+Block forward_magnitudes(const Block& samples) {
   const unround::dct::Basis& c = unround::dct::basis();
+  const Block8x8<const double> x(samples.data());
   Block result{};
+  const Block8x8<double> out(result.data());
   for (std::size_t v = 0; v < 8u; ++v) {
     for (std::size_t w = 0; w < 8u; ++w) {
       double sum = 0.0;
       for (std::size_t m = 0; m < 8u; ++m) {
-        for (std::size_t n = 0; n < 8u; ++n) sum += std::abs(c[v][m]) * std::abs(c[w][n]) * std::abs(x[m * 8u + n]);
+        for (std::size_t n = 0; n < 8u; ++n) sum += std::abs(c[v][m]) * std::abs(c[w][n]) * std::abs(x[m, n]);
       }
-      result[v * 8u + w] = sum;
+      out[v, w] = sum;
     }
   }
   return result;
 }
 
-Block inverse_magnitudes(const Block& y) {
+Block inverse_magnitudes(const Block& coefficients) {
   const unround::dct::Basis& c = unround::dct::basis();
+  const Block8x8<const double> y(coefficients.data());
   Block result{};
+  const Block8x8<double> out(result.data());
   for (std::size_t m = 0; m < 8u; ++m) {
     for (std::size_t n = 0; n < 8u; ++n) {
       double sum = 0.0;
       for (std::size_t v = 0; v < 8u; ++v) {
-        for (std::size_t w = 0; w < 8u; ++w) sum += std::abs(c[v][m]) * std::abs(c[w][n]) * std::abs(y[v * 8u + w]);
+        for (std::size_t w = 0; w < 8u; ++w) sum += std::abs(c[v][m]) * std::abs(c[w][n]) * std::abs(y[v, w]);
       }
-      result[m * 8u + n] = sum;
+      out[m, n] = sum;
     }
   }
   return result;
@@ -137,32 +145,49 @@ void round_trip(void) {
       CHECK(std::abs(z[k] - x[k]) <= bound * (1.0 - 2.0 * u));
     }
   }
-  // The canvas transforms are the block ones, block by block.
+  // The canvas transforms are the block ones, block by block, to the last bit: the
+  // blocks at the top left of a canvas wider and taller than they are.
   const std::size_t rows = 2;
   const std::size_t columns = 3;
-  const std::size_t width = 8u * columns + 5u;
-  std::vector<double> canvas(8u * rows * width);
-  for (double& sample : canvas) sample = static_cast<double>(numbers.between(0, 255));
-  const std::vector<double> coefficients = unround::dct::forward(canvas, width, rows, columns);
+  unround::GridArray<double> canvas(unround::grid_extents(8u * rows + 3u, 8u * columns + 5u));
+  for (double& sample : canvas.entries()) sample = static_cast<double>(numbers.between(0, 255));
+  unround::BlocksArray<double> coefficients(unround::block_extents(rows, columns));
+  unround::dct::forward(canvas.view(), coefficients.view());
+  unround::GridArray<double> back(canvas.extents(), -1.0);
+  unround::dct::inverse(std::as_const(coefficients).view(), back.view());
   for (std::size_t by = 0; by < rows; ++by) {
     for (std::size_t bx = 0; bx < columns; ++bx) {
       Block samples{};
+      const Block8x8<double> into(samples.data());
       for (std::size_t m = 0; m < 8u; ++m) {
-        for (std::size_t n = 0; n < 8u; ++n) samples[m * 8u + n] = canvas[(by * 8u + m) * width + bx * 8u + n];
+        for (std::size_t n = 0; n < 8u; ++n) into[m, n] = canvas.view()[8u * by + m, 8u * bx + n];
       }
       const Block transformed = unround::dct::forward(samples);
-      for (std::size_t k = 0; k < 64u; ++k) {
-        CHECK(std::bit_cast<std::uint64_t>(coefficients[(by * columns + bx) * 64u + k]) ==
-              std::bit_cast<std::uint64_t>(transformed[k]));
+      const Block8x8<const double> expected(transformed.data());
+      Block given{};
+      const Block8x8<double> given_view(given.data());
+      // (w for the horizontal frequency: u is the unit roundoff here.)
+      for (std::size_t v = 0; v < 8u; ++v) {
+        for (std::size_t w = 0; w < 8u; ++w) {
+          CHECK(std::bit_cast<std::uint64_t>(coefficients.view()[by, bx, v, w]) ==
+                std::bit_cast<std::uint64_t>(expected[v, w]));
+          given_view[v, w] = coefficients.view()[by, bx, v, w];
+        }
+      }
+      const Block restored = unround::dct::inverse(given);
+      const Block8x8<const double> restored_samples(restored.data());
+      for (std::size_t m = 0; m < 8u; ++m) {
+        for (std::size_t n = 0; n < 8u; ++n) {
+          CHECK(std::bit_cast<std::uint64_t>(back.view()[8u * by + m, 8u * bx + n]) ==
+                std::bit_cast<std::uint64_t>(restored_samples[m, n]));
+        }
       }
     }
   }
-  std::vector<double> back(canvas.size(), -1.0);
-  unround::dct::inverse(coefficients, rows, columns, back, width);
-  for (std::size_t i = 0; i < 8u * rows; ++i) {
-    for (std::size_t j = 0; j < width; ++j) {
-      // The columns beyond the blocks are left as they were.
-      if (j >= 8u * columns) CHECK(back[i * width + j] == -1.0);
+  // The samples beyond the blocks are left as they were.
+  for (std::size_t i = 0; i < back.extent(0); ++i) {
+    for (std::size_t j = 0; j < back.extent(1); ++j) {
+      if (i >= 8u * rows || j >= 8u * columns) CHECK(back.view()[i, j] == -1.0);
     }
   }
 }

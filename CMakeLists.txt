@@ -219,19 +219,23 @@ else()
   list(APPEND UNROUND_WARNING_FLAGS -Werror=return-type)
 endif()
 
-# The hardening of each C++ library stops an out-of-range access to a span, a
-# vector or a string rather than let it read or write memory it was not given.
-# The stack protector and _FORTIFY_SOURCE do the same for the C of the C
-# library's buffers, where glibc and Apple's libc check them; _FORTIFY_SOURCE
-# needs an optimized build.
+# The hardening of each C++ library stops an out-of-range access to a span, an
+# mdspan, a vector or a string rather than let it read or write memory it was not
+# given. It checks every index, and a loop in which the compiler cannot prove the
+# checks true is not vector code: the Release build, which is built for speed, goes
+# without it, and every other build keeps it -- Debug and the sanitizers', in which
+# the tests run too. The stack protector and _FORTIFY_SOURCE do the same for the C
+# of the C library's buffers, where glibc and Apple's libc check them;
+# _FORTIFY_SOURCE needs an optimized build.
 set(UNROUND_DEFINITIONS "")
 set(UNROUND_HARDENING_FLAGS "")
+set(unround_hardened "$<AND:$<COMPILE_LANGUAGE:CXX>,$<NOT:$<CONFIG:Release>>>")
 if(UNROUND_CXX_LIBRARY STREQUAL "MSVC STL")
-  list(APPEND UNROUND_DEFINITIONS $<$<COMPILE_LANGUAGE:CXX>:_MSVC_STL_HARDENING=1>)
+  list(APPEND UNROUND_DEFINITIONS "$<${unround_hardened}:_MSVC_STL_HARDENING=1>")
 elseif(UNROUND_CXX_LIBRARY STREQUAL "libstdc++")
-  list(APPEND UNROUND_DEFINITIONS $<$<COMPILE_LANGUAGE:CXX>:_GLIBCXX_ASSERTIONS>)
+  list(APPEND UNROUND_DEFINITIONS "$<${unround_hardened}:_GLIBCXX_ASSERTIONS>")
 elseif(UNROUND_CXX_LIBRARY STREQUAL "libc++")
-  list(APPEND UNROUND_DEFINITIONS $<$<COMPILE_LANGUAGE:CXX>:_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST>)
+  list(APPEND UNROUND_DEFINITIONS "$<${unround_hardened}:_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST>")
 endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
   # fopen and its kin are used as the C standard has them; the Microsoft C
@@ -258,13 +262,22 @@ endif()
 # and Python take both from Windows in UTF-16 and need nothing of the kind.
 set(UNROUND_UTF8_MANIFEST "${CMAKE_CURRENT_SOURCE_DIR}/cmake/utf8.manifest")
 
-# Gives a target of this project its language standards, warnings and
-# hardening, and a program its manifest on Windows.
+# The mathematical functions of the C and C++ libraries report a domain or a
+# range error in their values (NaN, infinities) and, where math_errhandling says
+# so, in errno as well. Nothing in this project reads errno after them, and with
+# -fno-math-errno the compiler stops treating a call of sqrt and its kin as a
+# write to it: sqrt becomes the processor's instruction, in vector code too, and
+# every value is what it was. (Clang on macOS does this by default.)
+set(UNROUND_CODE_FLAGS -fno-math-errno)
+
+# Gives a target of this project its language standards, warnings, hardening
+# and code generation, and a program its manifest on Windows.
 function(unround_target_defaults target)
   set_target_properties("${target}" PROPERTIES
     C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF
     CXX_STANDARD 26 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
-  target_compile_options("${target}" PRIVATE ${UNROUND_WARNING_FLAGS} ${UNROUND_HARDENING_FLAGS})
+  target_compile_options("${target}" PRIVATE ${UNROUND_WARNING_FLAGS} ${UNROUND_HARDENING_FLAGS}
+    ${UNROUND_CODE_FLAGS})
   target_compile_definitions("${target}" PRIVATE ${UNROUND_DEFINITIONS})
   get_target_property(type "${target}" TYPE)
   if(CMAKE_SYSTEM_NAME STREQUAL "Windows" AND type STREQUAL "EXECUTABLE")

@@ -11,6 +11,8 @@
 #include "unround/exact.hpp"
 #include "unround/laplace.hpp"
 
+#include "unround/arrays.hpp"
+
 #include "support/check.hpp"
 
 #include <array>
@@ -24,6 +26,7 @@
 #include <filesystem>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -51,14 +54,15 @@ void scales(const std::filesystem::path& path) {
     ++count;
   }
   CHECK(count == 10);
-  // The counts of a component: every AC frequency its own.
-  std::vector<std::int16_t> levels(std::size_t{64} * 3u, 0);
-  levels[1] = 3;
-  levels[64 + 1] = -2;
-  levels[2] = 1;
+  // The counts of a component: every AC frequency its own. Frequency 1 is (v, u) =
+  // (0, 1), and 2 is (0, 2).
+  unround::BlocksArray<std::int16_t> levels(unround::block_extents(1, 3));
+  levels.view()[0, 0, 0, 1] = 3;
+  levels.view()[0, 1, 0, 1] = -2;
+  levels.view()[0, 0, 0, 2] = 1;
   std::array<std::uint16_t, 64> table{};
   table.fill(10);
-  const std::array<double, 64> found = unround::laplace::scales(levels, table);
+  const std::array<double, 64> found = unround::laplace::scales(std::as_const(levels).view(), table);
   CHECK(found[0] == 0.0);
   // Frequency 1: one zero, two others, S = 5 + 3.
   CHECK(std::bit_cast<std::uint64_t>(found[1]) ==

@@ -9,6 +9,8 @@
 
 #include "unround/exact.hpp"
 
+#include "unround/arrays.hpp"
+
 #include "support/check.hpp"
 
 #include <array>
@@ -224,6 +226,23 @@ void sums(void) {
   const double expected = (blocks[0] + blocks[1]) + blocks[2];
   CHECK(std::bit_cast<std::uint64_t>(sum.total()) == std::bit_cast<std::uint64_t>(expected));
   CHECK(unround::exact::Sum{}.total() == 0.0);
+
+  // A grid's sum: each row's sum as the document takes it, and those of the rows, from
+  // the top, in blocks of 128 and a tree.
+  const std::size_t height = 150;
+  const std::size_t width = 21;
+  std::vector<double> grid(height * width);
+  for (double& term : grid) term = std::ldexp(numbers.uniform(-1.0, 1.0), static_cast<int>(numbers.between(-40, 60)));
+  std::array<double, 2> halves{};
+  for (std::size_t i = 0; i < height; ++i) {
+    const std::vector<double> row(grid.begin() + static_cast<std::ptrdiff_t>(i * width),
+                                  grid.begin() + static_cast<std::ptrdiff_t>((i + 1u) * width));
+    halves[i / 128u] = halves[i / 128u] + row_by_the_document(row);
+  }
+  const double of_grid = unround::exact::sum_rows(unround::Grid<const double>(grid.data(), height, width));
+  CHECK(std::bit_cast<std::uint64_t>(of_grid) == std::bit_cast<std::uint64_t>(halves[0] + halves[1]));
+  CHECK(unround::exact::sum_rows(unround::Grid<const double>(grid.data(), height, 0)) == 0.0);
+  CHECK(unround::exact::sum_rows(unround::Grid<const double>(grid.data(), 0, width)) == 0.0);
 }
 
 }  // namespace

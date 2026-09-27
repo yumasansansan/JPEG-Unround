@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: 2026 Yuma Kakei <yumasansansan@gmail.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# The loops of the C++ library that may compute in scalar floating point, and why
+# (ci/vectorization.py cxx). A key is the beginning of the names, demangled, of the
+# functions it allows. Everything else is vector code of the full width.
+
+# Functions whose loops may be scalar.
+[functions]
+"unround::laplace::" = "the logarithms and exponentials of the system's library, one frequency at a time, once for each component"
+
+# Functions whose loops may be scalar where they only add: sums in a fixed order.
+[sums]
+"unround::exact::" = "the last terms of a row in its lanes, and the rows' sums added in a Sum and its tree, each added after the one before, in the order of docs/math.md, Arithmetic"

@@ -11,6 +11,7 @@
 #ifndef UNROUND_MODEL_HPP
 #define UNROUND_MODEL_HPP
 
+#include "unround/arrays.hpp"
 #include "unround/error.hpp"
 
 #include <array>
@@ -18,8 +19,6 @@
 #include <cstdint>
 #include <expected>
 #include <optional>
-#include <span>
-#include <vector>
 
 namespace unround {
 
@@ -63,16 +62,15 @@ struct DataTerm {
 
 // What leaving the file's own interval costs where the slack has a price: the
 // file's own ends, and the price per unit of a coefficient of each frequency,
-// beta / Q.
+// beta / Q, in natural order ([v, u] through Block8x8).
 struct Cost {
-  std::vector<double> inner_lower;
-  std::vector<double> inner_upper;
+  BlocksArray<double> inner_lower;
+  BlocksArray<double> inner_upper;
   std::array<double, 64> costs{};
 };
 
-// A component to reconstruct: rows x columns blocks of 64 coefficients in natural
-// order, each with its interval, its centre, and the weight and the step of its
-// frequency.
+// A component to reconstruct: rows x columns blocks of 8 x 8 coefficients, each
+// with its interval and its centre, and the weight and the step of its frequency.
 class Problem {
  public:
   // The problem of a component's levels and quantization table (natural order), with
@@ -80,59 +78,57 @@ class Problem {
   // centres, which laplace::scales estimates where it is not given. The ends of the
   // intervals are ((q - 1/2) - slack) Q and ((q + 1/2) + slack) Q, with 1024 added
   // on DC last; without slack every one of them is exact, and so is every middle.
-  // Options out of their ranges, levels that are not rows x columns blocks, and
-  // steps below 1 are refused.
-  [[nodiscard]] static std::expected<Problem, Error> make(std::span<const std::int16_t> levels, std::size_t rows,
-                                                          std::size_t columns,
+  // Options out of their ranges and steps below 1 are refused.
+  [[nodiscard]] static std::expected<Problem, Error> make(Blocks<const std::int16_t> levels,
                                                           const std::array<std::uint16_t, 64>& table,
                                                           const DataTerm& data,
                                                           const std::array<double, 64>* scale = nullptr);
 
-  [[nodiscard]] std::size_t rows(void) const noexcept { return rows_; }
-  [[nodiscard]] std::size_t columns(void) const noexcept { return columns_; }
-  [[nodiscard]] std::size_t size(void) const noexcept { return levels_.size(); }
-  [[nodiscard]] std::span<const std::int16_t> levels(void) const noexcept { return levels_; }
-  [[nodiscard]] std::span<const double> lower(void) const noexcept { return lower_; }
-  [[nodiscard]] std::span<const double> upper(void) const noexcept { return upper_; }
-  [[nodiscard]] std::span<const double> centres(void) const noexcept { return centres_; }
-  // The steps and the weights mu omega of the 64 frequencies.
-  [[nodiscard]] const std::array<double, 64>& steps(void) const noexcept { return steps_; }
-  [[nodiscard]] const std::array<double, 64>& weights(void) const noexcept { return weights_; }
+  [[nodiscard]] const BlockExtents& extents(void) const noexcept { return levels_.extents(); }
+  [[nodiscard]] std::size_t rows(void) const noexcept { return levels_.extent(0); }
+  [[nodiscard]] std::size_t columns(void) const noexcept { return levels_.extent(1); }
+  [[nodiscard]] Blocks<const std::int16_t> levels(void) const noexcept { return levels_.view(); }
+  [[nodiscard]] Blocks<const double> lower(void) const noexcept { return lower_.view(); }
+  [[nodiscard]] Blocks<const double> upper(void) const noexcept { return upper_.view(); }
+  [[nodiscard]] Blocks<const double> centres(void) const noexcept { return centres_.view(); }
+  // The steps and the weights mu omega of the 64 frequencies, [v, u].
+  [[nodiscard]] Block8x8<const double> steps(void) const noexcept { return Block8x8<const double>(steps_.data()); }
+  [[nodiscard]] Block8x8<const double> weights(void) const noexcept { return Block8x8<const double>(weights_.data()); }
   [[nodiscard]] double slack(void) const noexcept { return slack_; }
   [[nodiscard]] const std::optional<Cost>& cost(void) const noexcept { return cost_; }
 
   // The proximal map of `step` G in the coefficients (4.1): each output the minimizer
-  // of (c - e)^2 / (2 step) + g_k(c).
-  void prox(std::span<const double> e, double step, std::span<double> out) const noexcept;
-  // The proximal map of one coefficient k (of frequency k % 64).
-  [[nodiscard]] double prox_one(std::size_t k, double e, double step) const noexcept;
+  // of (c - e)^2 / (2 step) + g(c) of its coefficient.
+  void prox(Blocks<const double> e, double step, Blocks<double> out) const noexcept;
+  // That of coefficient (v, u) of block (by, bx).
+  [[nodiscard]] double prox_at(std::size_t by, std::size_t bx, std::size_t v, std::size_t u, double e,
+                               double step) const noexcept;
 
-  // The conjugate of G at the coefficients s, the sum over them of g_k*(s_k), in the
-  // order of docs/math.md, Arithmetic: block rows of `columns` blocks of 64 terms.
-  [[nodiscard]] double conjugate(std::span<const double> s) const;
-  [[nodiscard]] double conjugate_one(std::size_t k, double s) const noexcept;
+  // The conjugate of G at the coefficients s, the sum over them of g*(s), in the order
+  // of docs/math.md, Arithmetic: block rows of `columns` blocks of 64 terms.
+  [[nodiscard]] double conjugate(Blocks<const double> s) const;
+  [[nodiscard]] double conjugate_at(std::size_t by, std::size_t bx, std::size_t v, std::size_t u,
+                                    double s) const noexcept;
 
   // G at coefficients within the intervals, without its indicator: the weighted
   // squares and the cost of the slack, summed as the conjugate is.
-  [[nodiscard]] double value(std::span<const double> c) const;
-  [[nodiscard]] double value_one(std::size_t k, double c) const noexcept;
+  [[nodiscard]] double value(Blocks<const double> c) const;
+  [[nodiscard]] double value_at(std::size_t by, std::size_t bx, std::size_t v, std::size_t u, double c) const noexcept;
 
   // The coefficients clipped to their intervals: the projection onto the set, in
   // the coefficients.
-  void clip(std::span<const double> c, std::span<double> out) const noexcept;
+  void clip(Blocks<const double> c, Blocks<double> out) const noexcept;
 
   // How far each coefficient lies beyond its interval, 0 within it.
-  [[nodiscard]] std::vector<double> excess(std::span<const double> c) const;
+  void excess(Blocks<const double> c, Blocks<double> out) const noexcept;
 
  private:
   Problem(void) = default;
 
-  std::size_t rows_ = 0;
-  std::size_t columns_ = 0;
-  std::vector<std::int16_t> levels_;
-  std::vector<double> lower_;
-  std::vector<double> upper_;
-  std::vector<double> centres_;
+  BlocksArray<std::int16_t> levels_;
+  BlocksArray<double> lower_;
+  BlocksArray<double> upper_;
+  BlocksArray<double> centres_;
   std::array<double, 64> steps_{};
   std::array<double, 64> weights_{};
   double slack_ = 0.0;

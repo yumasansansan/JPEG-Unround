@@ -4,11 +4,12 @@
 // The C layer (unround/jpegio.h) as C++ sees it: what a read returns owns its
 // memory and frees it when it goes, a PNG file comes back as its bytes, and a
 // failure comes back as an Error in a std::expected rather than as a status and
-// a buffer. The structures stay the C layer's own; spans give their arrays a
-// length.
+// a buffer. The structures stay the C layer's own; std::mdspans give their arrays
+// their shapes (arrays.hpp), and spans a length.
 #ifndef UNROUND_JPEGIO_HPP
 #define UNROUND_JPEGIO_HPP
 
+#include "unround/arrays.hpp"
 #include "unround/jpegio.h"
 
 #include <array>
@@ -16,6 +17,7 @@
 #include <cstdint>
 #include <expected>
 #include <limits>
+#include <mdspan>
 #include <span>
 #include <string>
 #include <string_view>
@@ -66,20 +68,14 @@ using Message = std::array<char, message_capacity>;
 
 }  // namespace detail
 
-// The coefficients of a component: height_in_blocks * width_in_blocks blocks of
-// 64, natural order.
-[[nodiscard]] inline std::span<const std::int16_t> coefficients(const unround_jpegio_component& component) noexcept {
-  const std::size_t blocks =
-      static_cast<std::size_t>(component.width_in_blocks) * static_cast<std::size_t>(component.height_in_blocks);
-  if (component.coefficients == nullptr) return {};
-  return {component.coefficients, blocks * UNROUND_JPEGIO_BLOCK_SIZE};
-}
-
-// The 64 coefficients of one block of a component.
-[[nodiscard]] inline std::span<const std::int16_t, UNROUND_JPEGIO_BLOCK_SIZE> block(
-    const unround_jpegio_component& component, std::uint32_t block_x, std::uint32_t block_y) noexcept {
-  const std::size_t index = static_cast<std::size_t>(block_y) * component.width_in_blocks + block_x;
-  return coefficients(component).subspan(index * UNROUND_JPEGIO_BLOCK_SIZE).first<UNROUND_JPEGIO_BLOCK_SIZE>();
+// The coefficients of a component, height_in_blocks x width_in_blocks blocks:
+// coefficient (v, u) of block (by, bx) at [by, bx, v, u], each block's 64 in
+// natural order.
+[[nodiscard]] inline Blocks<const std::int16_t> coefficients(const unround_jpegio_component& component) noexcept {
+  if (component.coefficients == nullptr) return Blocks<const std::int16_t>(nullptr, block_extents(0, 0));
+  return Blocks<const std::int16_t>(component.coefficients,
+                                    block_extents(static_cast<std::size_t>(component.height_in_blocks),
+                                                  static_cast<std::size_t>(component.width_in_blocks)));
 }
 
 [[nodiscard]] inline std::span<const std::uint16_t, UNROUND_JPEGIO_BLOCK_SIZE> quant_table(
@@ -87,10 +83,19 @@ using Message = std::array<char, message_capacity>;
   return std::span<const std::uint16_t, UNROUND_JPEGIO_BLOCK_SIZE>{component.quant_table};
 }
 
-// The samples of a plane, stride * height of them.
-[[nodiscard]] inline std::span<const std::uint8_t> samples(const unround_jpegio_plane& plane) noexcept {
-  if (plane.samples == nullptr) return {};
-  return {plane.samples, static_cast<std::size_t>(plane.stride) * static_cast<std::size_t>(plane.height)};
+// A plane's samples, height x width: the sample of row i and column j at [i, j],
+// its rows `stride` apart.
+using PlaneSamples = std::mdspan<const std::uint8_t, GridExtents, std::layout_stride>;
+
+[[nodiscard]] inline PlaneSamples samples(const unround_jpegio_plane& plane) noexcept {
+  using Mapping = std::layout_stride::mapping<GridExtents>;
+  if (plane.samples == nullptr) {
+    return PlaneSamples(nullptr, Mapping(grid_extents(0, 0), std::array<std::size_t, 2>{1, 1}));
+  }
+  const GridExtents extents =
+      grid_extents(static_cast<std::size_t>(plane.height), static_cast<std::size_t>(plane.width));
+  return PlaneSamples(plane.samples,
+                      Mapping(extents, std::array<std::size_t, 2>{static_cast<std::size_t>(plane.stride), 1}));
 }
 
 // What unround_jpegio_read() returns.
@@ -225,15 +230,6 @@ struct PngOptions {
 
 namespace detail {
 
-// Whether a * b * c is the count, without overflowing.
-[[nodiscard]] inline bool product_is(std::uint64_t a, std::uint64_t b, std::uint64_t c, std::size_t count) noexcept {
-  constexpr std::uint64_t most = std::numeric_limits<std::uint64_t>::max();
-  if (a != 0 && b > most / a) return false;
-  const std::uint64_t ab = a * b;
-  if (ab != 0 && c > most / ab) return false;
-  return ab * c == static_cast<std::uint64_t>(count);
-}
-
 // The bytes a writing allocated, freed when this goes.
 class WrittenBytes {
  public:
@@ -254,22 +250,24 @@ class WrittenBytes {
   unround_jpegio_bytes bytes_{};
 };
 
-[[nodiscard]] inline std::expected<PngFile, Error> write_png(std::uint32_t width, std::uint32_t height,
-                                                             std::int32_t channels, std::int32_t bits,
-                                                             const void* samples, std::size_t count,
-                                                             const PngOptions& options) {
-  if (channels < 0 || !product_is(width, height, static_cast<std::uint64_t>(channels), count)) {
-    return std::unexpected{
-        Error{.code = Errc::argument, .message = "the samples are not height * width * channels of them"}};
+// A picture of rows x columns pixels of `channels` samples, which the C layer
+// takes as they lie, row after row.
+template <typename Sample>
+[[nodiscard]] std::expected<PngFile, Error> write_png(Picture<const Sample> picture, std::int32_t bits,
+                                                      const PngOptions& options) {
+  constexpr std::size_t most = std::numeric_limits<std::uint32_t>::max();
+  if (picture.extent(0) > most || picture.extent(1) > most ||
+      picture.extent(2) > static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max())) {
+    return std::unexpected{Error{.code = Errc::argument, .message = "the picture is larger than PNG allows"}};
   }
   const unround_jpegio_png png{
-      .width = width,
-      .height = height,
-      .channels = channels,
+      .width = static_cast<std::uint32_t>(picture.extent(1)),
+      .height = static_cast<std::uint32_t>(picture.extent(0)),
+      .channels = static_cast<std::int32_t>(picture.extent(2)),
       .bits = bits,
       .compression = options.compression,
       .reserved = 0,
-      .samples = samples,
+      .samples = picture.data_handle(),
       .icc_profile = options.icc_profile.empty() ? nullptr : options.icc_profile.data(),
       .icc_profile_size = options.icc_profile.size(),
   };
@@ -285,21 +283,17 @@ class WrittenBytes {
 
 }  // namespace detail
 
-// Writes a picture as a PNG file: height * width pixels of 1 (gray) or 3 (RGB)
-// samples of 8 bits, rows from the top, the samples of a pixel together.
-[[nodiscard]] inline std::expected<PngFile, Error> write_png(std::uint32_t width, std::uint32_t height,
-                                                             std::int32_t channels,
-                                                             std::span<const std::uint8_t> samples,
+// Writes a picture as a PNG file: rows x columns pixels of 1 (gray) or 3 (RGB)
+// samples of 8 bits, [i, j, c], rows from the top.
+[[nodiscard]] inline std::expected<PngFile, Error> write_png(Picture<const std::uint8_t> picture,
                                                              const PngOptions& options = {}) {
-  return detail::write_png(width, height, channels, 8, samples.data(), samples.size(), options);
+  return detail::write_png(picture, 8, options);
 }
 
 // The same with samples of 16 bits.
-[[nodiscard]] inline std::expected<PngFile, Error> write_png(std::uint32_t width, std::uint32_t height,
-                                                             std::int32_t channels,
-                                                             std::span<const std::uint16_t> samples,
+[[nodiscard]] inline std::expected<PngFile, Error> write_png(Picture<const std::uint16_t> picture,
                                                              const PngOptions& options = {}) {
-  return detail::write_png(width, height, channels, 16, samples.data(), samples.size(), options);
+  return detail::write_png(picture, 16, options);
 }
 
 }  // namespace unround::jpegio
