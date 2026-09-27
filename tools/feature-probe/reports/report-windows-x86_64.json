@@ -1,6 +1,6 @@
 {
  "label": "windows-x86_64",
- "date": "2026-09-23T10:47:47+00:00",
+ "date": "2026-09-27T08:05:48+00:00",
  "system": "windows",
  "arch": "x86_64",
  "os": "Windows-11-10.0.28120-SP0",
@@ -65,13 +65,13 @@
     "paper": "Clang extension"
    },
    "results": {
-    "c++26": {
+    "c++23": {
      "status": "pass",
      "variant": "",
      "exit": 0,
      "stdout": ""
     },
-    "c++23": {
+    "c++26": {
      "status": "pass",
      "variant": "",
      "exit": 0,
@@ -90,13 +90,13 @@
     "libs": "| -lclang_rt.builtins-x86_64"
    },
    "results": {
-    "c++26": {
+    "c++23": {
      "status": "pass",
      "variant": "-lclang_rt.builtins-x86_64",
      "exit": 0,
      "stdout": ""
     },
-    "c++23": {
+    "c++26": {
      "status": "pass",
      "variant": "-lclang_rt.builtins-x86_64",
      "exit": 0,
@@ -139,11 +139,11 @@
     "only": "arm64"
    },
    "results": {
-    "c++26": {
+    "c++23": {
      "status": "skip",
      "note": "only arm64"
     },
-    "c++23": {
+    "c++26": {
      "status": "skip",
      "note": "only arm64"
     }
@@ -181,13 +181,13 @@
     "paper": "Clang extension"
    },
    "results": {
-    "c++26": {
+    "c++23": {
      "status": "pass",
      "variant": "",
      "exit": 0,
      "stdout": ""
     },
-    "c++23": {
+    "c++26": {
      "status": "pass",
      "variant": "",
      "exit": 0,
@@ -206,7 +206,7 @@
     "inspect": "imports"
    },
    "results": {
-    "c++26": {
+    "c++23": {
      "status": "pass",
      "variant": "-fopenmp",
      "exit": 0,
@@ -222,7 +222,7 @@
       "VCRUNTIME140.dll"
      ]
     },
-    "c++23": {
+    "c++26": {
      "status": "pass",
      "variant": "-fopenmp",
      "exit": 0,
@@ -284,6 +284,93 @@
    }
   },
   {
+   "id": "int128_arithmetic",
+   "lang": "c++",
+   "bundle": "extensions.cpp",
+   "meta": {
+    "title": "__int128 and unsigned __int128: sums, products, shifts and comparisons",
+    "paper": "Clang extension"
+   },
+   "results": {
+    "c++23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    },
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "int128_division_conversion",
+   "lang": "c++",
+   "bundle": "extensions.cpp",
+   "meta": {
+    "title": "__int128 division and remainder, and conversion from and to double (calls into the compiler's runtime on some targets)",
+    "paper": "Clang extension",
+    "libs": "| -lclang_rt.builtins-x86_64"
+   },
+   "results": {
+    "c++23": {
+     "status": "link",
+     "variant": "",
+     "diag": "lld-link: error: undefined symbol: __udivti3"
+    },
+    "c++26": {
+     "status": "link",
+     "variant": "",
+     "diag": "lld-link: error: undefined symbol: __udivti3"
+    }
+   }
+  },
+  {
+   "id": "int128_in_library_templates",
+   "lang": "c++",
+   "bundle": "extensions.cpp",
+   "meta": {
+    "title": "__int128 in std::optional, std::array and std::pair keeps its alignment of 16",
+    "paper": "Clang extension"
+   },
+   "results": {
+    "c++23": {
+     "status": "compile",
+     "variant": "",
+     "diag": "int128_in_library_templates.cxx23.cpp:10:15: error: static assertion failed due to requirement 'alignof(std::optional<unsigned __int128>) >= alignof(unsigned __int128)'"
+    },
+    "c++26": {
+     "status": "compile",
+     "variant": "",
+     "diag": "int128_in_library_templates.cxx26.cpp:10:15: error: static assertion failed due to requirement 'alignof(std::optional<unsigned __int128>) >= alignof(unsigned __int128)'"
+    }
+   }
+  },
+  {
+   "id": "int128_numeric_limits",
+   "lang": "c++",
+   "bundle": "extensions.cpp",
+   "meta": {
+    "title": "std::numeric_limits specialized for __int128 (its min() the least value, not 0)",
+    "paper": "Clang extension"
+   },
+   "results": {
+    "c++23": {
+     "status": "compile",
+     "variant": "",
+     "diag": "int128_numeric_limits.cxx23.cpp:6:15: error: static assertion failed due to requirement 'std::numeric_limits<__int128>::is_specialized'"
+    },
+    "c++26": {
+     "status": "compile",
+     "variant": "",
+     "diag": "int128_numeric_limits.cxx26.cpp:6:15: error: static assertion failed due to requirement 'std::numeric_limits<__int128>::is_specialized'"
+    }
+   }
+  },
+  {
    "id": "cxx_runtime_linkage",
    "lang": "c++",
    "bundle": "extensions.cpp",
@@ -339,13 +426,13 @@
     "macro": "__cpp_explicit_this_parameter"
    },
    "results": {
-    "c++26": {
+    "c++23": {
      "status": "pass",
      "variant": "",
      "exit": 0,
      "stdout": ""
     },
-    "c++23": {
+    "c++26": {
      "status": "pass",
      "variant": "",
      "exit": 0,
@@ -411,13 +498,13 @@
     "macro": "__cpp_static_call_operator"
    },
    "results": {
-    "c++26": {
+    "c++23": {
      "status": "pass",
      "variant": "",
      "exit": 0,
      "stdout": ""
     },
-    "c++23": {
+    "c++26": {
      "status": "pass",
      "variant": "",
      "exit": 0,
@@ -530,13 +617,13 @@
     "paper": "P2334R1"
    },
    "results": {
-    "c++26": {
+    "c++23": {
      "status": "pass",
      "variant": "",
      "exit": 0,
      "stdout": ""
     },
-    "c++23": {
+    "c++26": {
      "status": "pass",
      "variant": "",
      "exit": 0,
@@ -955,13 +1042,13 @@
     "macro": "__cpp_lib_print"
    },
    "results": {
-    "c++26": {
+    "c++23": {
      "status": "pass",
      "variant": "",
      "exit": 0,
      "stdout": "probe 1 2.500"
     },
-    "c++23": {
+    "c++26": {
      "status": "pass",
      "variant": "",
      "exit": 0,
@@ -1003,13 +1090,13 @@
     "macro": "__cpp_lib_ranges_to_container, __cpp_lib_containers_ranges"
    },
    "results": {
-    "c++26": {
+    "c++23": {
      "status": "pass",
      "variant": "",
      "exit": 0,
      "stdout": ""
     },
-    "c++23": {
+    "c++26": {
      "status": "pass",
      "variant": "",
      "exit": 0,
@@ -1051,13 +1138,13 @@
     "macro": "__cpp_lib_ranges_zip"
    },
    "results": {
-    "c++26": {
+    "c++23": {
      "status": "pass",
      "variant": "",
      "exit": 0,
      "stdout": ""
     },
-    "c++23": {
+    "c++26": {
      "status": "pass",
      "variant": "",
      "exit": 0,
@@ -1075,13 +1162,13 @@
     "macro": "__cpp_lib_ranges_zip"
    },
    "results": {
-    "c++26": {
+    "c++23": {
      "status": "pass",
      "variant": "",
      "exit": 0,
      "stdout": ""
     },
-    "c++23": {
+    "c++26": {
      "status": "pass",
      "variant": "",
      "exit": 0,
@@ -1267,13 +1354,13 @@
     "macro": "__cpp_lib_ranges_join_with"
    },
    "results": {
-    "c++26": {
+    "c++23": {
      "status": "pass",
      "variant": "",
      "exit": 0,
      "stdout": ""
     },
-    "c++23": {
+    "c++26": {
      "status": "pass",
      "variant": "",
      "exit": 0,
@@ -1363,13 +1450,13 @@
     "macro": "__cpp_lib_ranges_fold"
    },
    "results": {
-    "c++26": {
+    "c++23": {
      "status": "pass",
      "variant": "",
      "exit": 0,
      "stdout": ""
     },
-    "c++23": {
+    "c++26": {
      "status": "pass",
      "variant": "",
      "exit": 0,
@@ -1411,13 +1498,13 @@
     "macro": "__cpp_lib_ranges_fold"
    },
    "results": {
-    "c++26": {
+    "c++23": {
      "status": "pass",
      "variant": "",
      "exit": 0,
      "stdout": ""
     },
-    "c++23": {
+    "c++26": {
      "status": "pass",
      "variant": "",
      "exit": 0,
@@ -1435,13 +1522,13 @@
     "macro": "__cpp_lib_ranges_contains"
    },
    "results": {
-    "c++26": {
+    "c++23": {
      "status": "pass",
      "variant": "",
      "exit": 0,
      "stdout": ""
     },
-    "c++23": {
+    "c++26": {
      "status": "pass",
      "variant": "",
      "exit": 0,
@@ -1531,13 +1618,13 @@
     "macro": "__cpp_lib_optional"
    },
    "results": {
-    "c++26": {
+    "c++23": {
      "status": "pass",
      "variant": "",
      "exit": 0,
      "stdout": ""
     },
-    "c++23": {
+    "c++26": {
      "status": "pass",
      "variant": "",
      "exit": 0,
@@ -1555,13 +1642,13 @@
     "macro": "__cpp_lib_move_only_function"
    },
    "results": {
-    "c++26": {
+    "c++23": {
      "status": "pass",
      "variant": "",
      "exit": 0,
      "stdout": ""
     },
-    "c++23": {
+    "c++26": {
      "status": "pass",
      "variant": "",
      "exit": 0,
@@ -1628,13 +1715,13 @@
     "macro": "__cpp_lib_generator"
    },
    "results": {
-    "c++26": {
+    "c++23": {
      "status": "pass",
      "variant": "",
      "exit": 0,
      "stdout": ""
     },
-    "c++23": {
+    "c++26": {
      "status": "pass",
      "variant": "",
      "exit": 0,
@@ -1652,13 +1739,13 @@
     "macro": "__cpp_lib_flat_map, __cpp_lib_flat_set"
    },
    "results": {
-    "c++26": {
+    "c++23": {
      "status": "pass",
      "variant": "",
      "exit": 0,
      "stdout": ""
     },
-    "c++23": {
+    "c++26": {
      "status": "pass",
      "variant": "",
      "exit": 0,
@@ -1746,13 +1833,13 @@
     "macro": "__cpp_lib_string_contains, __cpp_lib_string_resize_and_overwrite"
    },
    "results": {
-    "c++26": {
+    "c++23": {
      "status": "pass",
      "variant": "",
      "exit": 0,
      "stdout": ""
     },
-    "c++23": {
+    "c++26": {
      "status": "pass",
      "variant": "",
      "exit": 0,
@@ -1866,13 +1953,13 @@
     "macro": "__cpp_lib_format"
    },
    "results": {
-    "c++26": {
+    "c++23": {
      "status": "pass",
      "variant": "",
      "exit": 0,
      "stdout": ""
     },
-    "c++23": {
+    "c++26": {
      "status": "pass",
      "variant": "",
      "exit": 0,
@@ -2040,7 +2127,7 @@
      "status": "pass",
      "variant": "",
      "exit": 0,
-     "stdout": "threads=4",
+     "stdout": "threads=5",
      "imports": [
       "api-ms-win-crt-heap-l1-1-0.dll",
       "api-ms-win-crt-locale-l1-1-0.dll",
@@ -2117,13 +2204,13 @@
     "macro": "__cpp_lib_source_location"
    },
    "results": {
-    "c++26": {
+    "c++23": {
      "status": "pass",
      "variant": "",
      "exit": 0,
      "stdout": ""
     },
-    "c++23": {
+    "c++26": {
      "status": "pass",
      "variant": "",
      "exit": 0,

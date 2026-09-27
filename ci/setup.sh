@@ -78,10 +78,12 @@ setup_linux() {
     sudo tee /etc/apt/sources.list.d/apt.llvm.org.list > /dev/null
   sudo apt-get update -qq
   # clang-tools brings clang-scan-deps, which CMake runs to order the builds of
-  # C++ modules; libclang-rt has the sanitizer and profile runtimes.
+  # C++ modules; libclang-rt has the sanitizer and profile runtimes. The C++
+  # library is libstdc++ 16, whose headers Clang takes over those of GCC 15,
+  # Ubuntu's default compiler (the newest GCC it finds).
   sudo apt-get install -y -qq --no-install-recommends \
     "clang-$llvm_major" "lld-$llvm_major" "llvm-$llvm_major" "clang-tools-$llvm_major" \
-    "clang-tidy-$llvm_major" "libclang-rt-$llvm_major-dev" ninja-build
+    "clang-tidy-$llvm_major" "libclang-rt-$llvm_major-dev" libstdc++-16-dev ninja-build
   llvm_bin=/usr/lib/llvm-$llvm_major/bin
 }
 

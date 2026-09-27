@@ -8,7 +8,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 JPEG-Unround uses a language or library feature only when it works on every
 system the project supports, with the toolchain the project builds with:
 Clang 23 and LLD, and the system's own C++ library (the MSVC STL on Windows,
-libstdc++ on Linux, the SDK's libc++ on macOS). These probes are how that is
+libstdc++ 16 on Linux, the SDK's libc++ on macOS). These probes are how that is
 known rather than guessed. Each probe is a small program that exercises one
 feature; it passes when it compiles, links and exits with status 0.
 
@@ -22,7 +22,7 @@ feature; it passes when it compiles, links and exits with status 0.
 | `c/c23.c` | C23 language and C library |
 | `cmake-modules/` | C++ modules through CMake and Ninja: a named module, `import std`, and headers mixed with `import std` |
 | `rust-link/` | Rust linked by LLD against a C23 static library in which `setjmp`/`longjmp` stays inside C |
-| `reports/` | the results measured on 2026-09-23: Windows 11 with the MSVC STL and Ubuntu 26.04 on WSL with libstdc++ 15 (Clang 23.1.3 of apt.llvm.org) on a desktop, and macOS 26.6.2 with Xcode 26.6 (macOS SDK 26.5) and its libc++ in CI (run 35858749541), with that run's module and Rust results. CI's Windows and Linux gave the same results as the desktop, except OpenMP, which CI's Linux does not install |
+| `reports/` | the results measured on a desktop on 2026-09-27: Windows 11 with the MSVC STL, and Ubuntu 26.04 on WSL with libstdc++ 16 (Clang 23.1.3 of apt.llvm.org; the headers of Ubuntu's `libstdc++-16-dev`, which Clang takes over those of GCC 15, Ubuntu's default compiler). macOS 26.6.2 with Xcode 26.6 (macOS SDK 26.5) and its libc++ was measured in CI on 2026-09-23 (run 35858749541), with that run's module and Rust results; that report has no results yet for the probes of `__int128`, which came on 2026-09-27. On 2026-09-23, CI's Windows and Linux (with libstdc++ 15 then) gave the same results as the desktop, except OpenMP, which CI's Linux does not install |
 
 ## Running
 

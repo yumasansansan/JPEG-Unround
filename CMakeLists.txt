@@ -283,6 +283,16 @@ include(Libjpeg)
 include(Libpng)
 add_subdirectory(c/jpegio)
 if(UNROUND_WITH_CPP)
+  # The C++ implementation uses what passes the probes of tools/feature-probe on
+  # every system, and on Linux they were measured with libstdc++ 16: the headers
+  # of an older one lack some of it (std::mdspan among them).
+  if(UNROUND_CXX_LIBRARY STREQUAL "libstdc++" AND UNROUND_CXX_LIBRARY_VERSION LESS 16)
+    message(FATAL_ERROR
+      "The C++ headers are those of libstdc++ ${UNROUND_CXX_LIBRARY_VERSION}; the C++ "
+      "implementation needs libstdc++ 16 or later. On Ubuntu it comes with libstdc++-16-dev, "
+      "whose headers Clang takes over those of an older GCC. Without the C++ implementation "
+      "(-DUNROUND_WITH_CPP=OFF), the C layer builds with any.")
+  endif()
   add_subdirectory(cpp)
 endif()
 if(UNROUND_BUILD_TESTS)

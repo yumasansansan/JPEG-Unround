@@ -151,6 +151,71 @@ int main(void) {
   return s == 65280.0f ? 0 : 1;
 }
 
+//=== probe: int128_arithmetic
+//--- title: __int128 and unsigned __int128: sums, products, shifts and comparisons
+//--- paper: Clang extension
+int main(void) {
+  // volatile keeps the compiler from folding the arithmetic away.
+  volatile unsigned long long a = 0xFFFFFFFFFFFFFFFFull;
+  volatile unsigned long long b = 0x0123456789ABCDEFull;
+  const unsigned __int128 wide = static_cast<unsigned __int128>(a) * static_cast<unsigned __int128>(b);
+  const unsigned long long high = static_cast<unsigned long long>(wide >> 64);
+  const unsigned long long low = static_cast<unsigned long long>(wide);
+  // (2^64 - 1) b = b 2^64 - b: the high word is b - 1 and the low word 2^64 - b.
+  const bool product = high == b - 1ull && low == 0ull - b;
+  const __int128 negative = -static_cast<__int128>(wide);
+  const __int128 sum = negative + static_cast<__int128>(wide);
+  const unsigned __int128 square = wide * wide;  // modulo 2^128
+  // b lies within [2^56, 2^57), and so the product within (2^119, 2^121).
+  const unsigned __int128 one = 1u;
+  const bool order = negative < 0 && sum == 0 && (square >> 127) <= 1u && (one << 119) < wide && wide < (one << 121);
+  return product && order ? 0 : 1;
+}
+
+//=== probe: int128_division_conversion
+//--- title: __int128 division and remainder, and conversion from and to double (calls into the compiler's runtime on some targets)
+//--- paper: Clang extension
+//--- libs:  | -lclang_rt.builtins-x86_64
+int main(void) {
+  volatile unsigned long long a = 0xFFFFFFFFFFFFFFFFull;
+  volatile unsigned long long b = 0x0123456789ABCDEFull;
+  const unsigned __int128 wide = static_cast<unsigned __int128>(a) * static_cast<unsigned __int128>(b);
+  const unsigned __int128 quotient = wide / static_cast<unsigned __int128>(b);
+  const unsigned __int128 remainder = wide % static_cast<unsigned __int128>(a);
+  const __int128 signed_quotient = -static_cast<__int128>(wide) / static_cast<__int128>(b);
+  volatile double big = 1.0e30;
+  const __int128 truncated = static_cast<__int128>(big);
+  const double back = static_cast<double>(truncated);
+  const double unsigned_back = static_cast<double>(wide);
+  return quotient == a && remainder == 0u && signed_quotient == -static_cast<__int128>(a) && back == 1.0e30 &&
+                 unsigned_back > 1.0e36 && unsigned_back < 2.0e36
+             ? 0
+             : 1;
+}
+
+//=== probe: int128_in_library_templates
+//--- title: __int128 in std::optional, std::array and std::pair keeps its alignment of 16
+//--- paper: Clang extension
+#include <array>
+#include <optional>
+#include <utility>
+// A library that defines its templates under #pragma pack(8) lays out a member of 16
+// bytes' alignment at 8, where aligned loads of it fault.
+static_assert(alignof(std::optional<unsigned __int128>) >= alignof(unsigned __int128));
+static_assert(alignof(std::array<unsigned __int128, 2>) >= alignof(unsigned __int128));
+static_assert(alignof(std::pair<unsigned __int128, int>) >= alignof(unsigned __int128));
+int main(void) {
+  const std::optional<unsigned __int128> value = static_cast<unsigned __int128>(3u);
+  return *value == 3u ? 0 : 1;
+}
+
+//=== probe: int128_numeric_limits
+//--- title: std::numeric_limits specialized for __int128 (its min() the least value, not 0)
+//--- paper: Clang extension
+#include <limits>
+static_assert(std::numeric_limits<__int128>::is_specialized);
+int main(void) { return std::numeric_limits<__int128>::min() < 0 ? 0 : 1; }
+
 //=== probe: cxx_runtime_linkage
 //--- title: the C++ library a program links (should be the system's, as a shared library)
 //--- paper: -

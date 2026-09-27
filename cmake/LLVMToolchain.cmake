@@ -13,7 +13,8 @@
 # system's -- libstdc++ on Linux, the libc++ of the SDK on macOS, the MSVC STL on
 # Windows -- and a program asks the system for it when it is loaded, so it is
 # recorded with its version and checked to be there to link, rather than
-# required to be of a version of ours.
+# required here to be of a version of ours. (The C++ implementation asks for
+# the libstdc++ its features were measured with: the top CMakeLists.txt.)
 #
 # Each tool that passes is written to llvm-toolchain.txt in the build directory,
 # a line of its part, its version and its program, separated by tabs, which
@@ -174,6 +175,7 @@ function(unround_check_cxx_library)
   message(STATUS "  C++ library: ${named}")
   file(APPEND "${UNROUND_LLVM_TOOLCHAIN_FILE}" "C++ library\t${version}\t${record}\n")
   set(UNROUND_CXX_LIBRARY "${library}" PARENT_SCOPE)
+  set(UNROUND_CXX_LIBRARY_VERSION "${version}" PARENT_SCOPE)
 endfunction()
 
 unround_check_cxx_library()

@@ -1,6 +1,6 @@
 {
  "label": "linux-x86_64",
- "date": "2026-09-23T10:49:27+00:00",
+ "date": "2026-09-27T08:05:55+00:00",
  "system": "linux",
  "arch": "x86_64",
  "os": "Linux-6.18.40.1-microsoft-standard-WSL2-x86_64-with-glibc2.43",
@@ -23,7 +23,7 @@
   "c23": "-std=c23"
  },
  "environment": {
-  "stdlib": "libstdc++ 15 (20260321)",
+  "stdlib": "libstdc++ 16 (20260322)",
   "libc": "glibc 2.43",
   "clang": "23.1.3 (++20260922084409+67f4a076a097-1~exp1~20260922084419.77)"
  },
@@ -89,13 +89,13 @@
     "libs": "| -lclang_rt.builtins-x86_64"
    },
    "results": {
-    "c++26": {
+    "c++23": {
      "status": "pass",
      "variant": "",
      "exit": 0,
      "stdout": ""
     },
-    "c++23": {
+    "c++26": {
      "status": "pass",
      "variant": "",
      "exit": 0,
@@ -114,13 +114,13 @@
     "libs": "| -lclang_rt.builtins-x86_64"
    },
    "results": {
-    "c++26": {
+    "c++23": {
      "status": "pass",
      "variant": "",
      "exit": 0,
      "stdout": ""
     },
-    "c++23": {
+    "c++26": {
      "status": "pass",
      "variant": "",
      "exit": 0,
@@ -157,13 +157,13 @@
     "paper": "Clang extension (ISO/IEC TS 18661-3 type)"
    },
    "results": {
-    "c++26": {
+    "c++23": {
      "status": "pass",
      "variant": "",
      "exit": 0,
      "stdout": ""
     },
-    "c++23": {
+    "c++26": {
      "status": "pass",
      "variant": "",
      "exit": 0,
@@ -180,13 +180,13 @@
     "paper": "Clang extension"
    },
    "results": {
-    "c++26": {
+    "c++23": {
      "status": "pass",
      "variant": "",
      "exit": 0,
      "stdout": ""
     },
-    "c++23": {
+    "c++26": {
      "status": "pass",
      "variant": "",
      "exit": 0,
@@ -271,6 +271,99 @@
    }
   },
   {
+   "id": "int128_arithmetic",
+   "lang": "c++",
+   "bundle": "extensions.cpp",
+   "meta": {
+    "title": "__int128 and unsigned __int128: sums, products, shifts and comparisons",
+    "paper": "Clang extension"
+   },
+   "results": {
+    "c++23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    },
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "int128_division_conversion",
+   "lang": "c++",
+   "bundle": "extensions.cpp",
+   "meta": {
+    "title": "__int128 division and remainder, and conversion from and to double (calls into the compiler's runtime on some targets)",
+    "paper": "Clang extension",
+    "libs": "| -lclang_rt.builtins-x86_64"
+   },
+   "results": {
+    "c++23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    },
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "int128_in_library_templates",
+   "lang": "c++",
+   "bundle": "extensions.cpp",
+   "meta": {
+    "title": "__int128 in std::optional, std::array and std::pair keeps its alignment of 16",
+    "paper": "Clang extension"
+   },
+   "results": {
+    "c++23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    },
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "int128_numeric_limits",
+   "lang": "c++",
+   "bundle": "extensions.cpp",
+   "meta": {
+    "title": "std::numeric_limits specialized for __int128 (its min() the least value, not 0)",
+    "paper": "Clang extension"
+   },
+   "results": {
+    "c++23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    },
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
    "id": "cxx_runtime_linkage",
    "lang": "c++",
    "bundle": "extensions.cpp",
@@ -316,13 +409,13 @@
     "macro": "__cpp_explicit_this_parameter"
    },
    "results": {
-    "c++26": {
+    "c++23": {
      "status": "pass",
      "variant": "",
      "exit": 0,
      "stdout": ""
     },
-    "c++23": {
+    "c++26": {
      "status": "pass",
      "variant": "",
      "exit": 0,
@@ -340,13 +433,13 @@
     "macro": "__cpp_multidimensional_subscript"
    },
    "results": {
-    "c++26": {
+    "c++23": {
      "status": "pass",
      "variant": "",
      "exit": 0,
      "stdout": ""
     },
-    "c++23": {
+    "c++26": {
      "status": "pass",
      "variant": "",
      "exit": 0,
@@ -364,13 +457,13 @@
     "macro": "__cpp_if_consteval"
    },
    "results": {
-    "c++26": {
+    "c++23": {
      "status": "pass",
      "variant": "",
      "exit": 0,
      "stdout": ""
     },
-    "c++23": {
+    "c++26": {
      "status": "pass",
      "variant": "",
      "exit": 0,
@@ -388,13 +481,13 @@
     "macro": "__cpp_static_call_operator"
    },
    "results": {
-    "c++26": {
+    "c++23": {
      "status": "pass",
      "variant": "",
      "exit": 0,
      "stdout": ""
     },
-    "c++23": {
+    "c++26": {
      "status": "pass",
      "variant": "",
      "exit": 0,
@@ -436,13 +529,13 @@
     "macro": "__has_cpp_attribute(assume)"
    },
    "results": {
-    "c++26": {
+    "c++23": {
      "status": "pass",
      "variant": "",
      "exit": 0,
      "stdout": ""
     },
-    "c++23": {
+    "c++26": {
      "status": "pass",
      "variant": "",
      "exit": 0,
@@ -460,13 +553,13 @@
     "macro": "__cpp_size_t_suffix"
    },
    "results": {
-    "c++26": {
+    "c++23": {
      "status": "pass",
      "variant": "",
      "exit": 0,
      "stdout": ""
     },
-    "c++23": {
+    "c++26": {
      "status": "pass",
      "variant": "",
      "exit": 0,
@@ -507,13 +600,13 @@
     "paper": "P2334R1"
    },
    "results": {
-    "c++26": {
+    "c++23": {
      "status": "pass",
      "variant": "",
      "exit": 0,
      "stdout": ""
     },
-    "c++23": {
+    "c++26": {
      "status": "pass",
      "variant": "",
      "exit": 0,
@@ -598,13 +691,13 @@
     "paper": "Clang builtin"
    },
    "results": {
-    "c++26": {
+    "c++23": {
      "status": "pass",
      "variant": "",
      "exit": 0,
      "stdout": ""
     },
-    "c++23": {
+    "c++26": {
      "status": "pass",
      "variant": "",
      "exit": 0,
@@ -833,7 +926,7 @@
     "c++26": {
      "status": "compile",
      "variant": "",
-     "diag": "reflection.cxx26.cpp:8:10: fatal error: 'meta' file not found"
+     "diag": "reflection.cxx26.cpp:14:29: error: no member named 'meta' in namespace 'std'"
     }
    }
   },
@@ -884,15 +977,17 @@
     "macro": "__cpp_lib_mdspan"
    },
    "results": {
-    "c++26": {
-     "status": "compile",
-     "variant": "",
-     "diag": "mdspan.cxx26.cpp:7:10: fatal error: 'mdspan' file not found"
-    },
     "c++23": {
-     "status": "compile",
+     "status": "pass",
      "variant": "",
-     "diag": "mdspan.cxx23.cpp:7:10: fatal error: 'mdspan' file not found"
+     "exit": 0,
+     "stdout": ""
+    },
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
     }
    }
   },
@@ -906,13 +1001,13 @@
     "macro": "__cpp_lib_expected"
    },
    "results": {
-    "c++26": {
+    "c++23": {
      "status": "pass",
      "variant": "",
      "exit": 0,
      "stdout": ""
     },
-    "c++23": {
+    "c++26": {
      "status": "pass",
      "variant": "",
      "exit": 0,
@@ -930,13 +1025,13 @@
     "macro": "__cpp_lib_print"
    },
    "results": {
-    "c++26": {
+    "c++23": {
      "status": "pass",
      "variant": "",
      "exit": 0,
      "stdout": "probe 1 2.500"
     },
-    "c++23": {
+    "c++26": {
      "status": "pass",
      "variant": "",
      "exit": 0,
@@ -1026,13 +1121,13 @@
     "macro": "__cpp_lib_ranges_zip"
    },
    "results": {
-    "c++26": {
+    "c++23": {
      "status": "pass",
      "variant": "",
      "exit": 0,
      "stdout": ""
     },
-    "c++23": {
+    "c++26": {
      "status": "pass",
      "variant": "",
      "exit": 0,
@@ -1098,13 +1193,13 @@
     "macro": "__cpp_lib_ranges_enumerate"
    },
    "results": {
-    "c++26": {
+    "c++23": {
      "status": "pass",
      "variant": "",
      "exit": 0,
      "stdout": ""
     },
-    "c++23": {
+    "c++26": {
      "status": "pass",
      "variant": "",
      "exit": 0,
@@ -1435,14 +1530,16 @@
    },
    "results": {
     "c++23": {
-     "status": "compile",
+     "status": "pass",
      "variant": "",
-     "diag": "ranges_starts_ends_with.cxx23.cpp:12:23: error: no member named 'starts_with' in namespace 'std::ranges'"
+     "exit": 0,
+     "stdout": ""
     },
     "c++26": {
-     "status": "compile",
+     "status": "pass",
      "variant": "",
-     "diag": "ranges_starts_ends_with.cxx26.cpp:12:23: error: no member named 'starts_with' in namespace 'std::ranges'"
+     "exit": 0,
+     "stdout": ""
     }
    }
   },
@@ -1601,13 +1698,13 @@
     "macro": "__cpp_lib_generator"
    },
    "results": {
-    "c++26": {
+    "c++23": {
      "status": "pass",
      "variant": "",
      "exit": 0,
      "stdout": ""
     },
-    "c++23": {
+    "c++26": {
      "status": "pass",
      "variant": "",
      "exit": 0,
@@ -1649,13 +1746,13 @@
     "macro": "__cpp_lib_spanstream"
    },
    "results": {
-    "c++26": {
+    "c++23": {
      "status": "pass",
      "variant": "",
      "exit": 0,
      "stdout": ""
     },
-    "c++23": {
+    "c++26": {
      "status": "pass",
      "variant": "",
      "exit": 0,
@@ -1744,14 +1841,16 @@
    },
    "results": {
     "c++23": {
-     "status": "compile",
+     "status": "pass",
      "variant": "",
-     "diag": "start_lifetime_as.cxx23.cpp:16:17: error: no member named 'start_lifetime_as' in namespace 'std'"
+     "exit": 0,
+     "stdout": ""
     },
     "c++26": {
-     "status": "compile",
+     "status": "pass",
      "variant": "",
-     "diag": "start_lifetime_as.cxx26.cpp:16:17: error: no member named 'start_lifetime_as' in namespace 'std'"
+     "exit": 0,
+     "stdout": ""
     }
    }
   },
@@ -1765,13 +1864,13 @@
     "macro": "__cpp_lib_bind_back"
    },
    "results": {
-    "c++26": {
+    "c++23": {
      "status": "pass",
      "variant": "",
      "exit": 0,
      "stdout": ""
     },
-    "c++23": {
+    "c++26": {
      "status": "pass",
      "variant": "",
      "exit": 0,
@@ -2131,7 +2230,7 @@
     "c++26": {
      "status": "compile",
      "variant": "",
-     "diag": "simd_vec.cxx26.cpp:8:10: fatal error: 'simd' file not found"
+     "diag": "simd_vec.cxx26.cpp:10:8: error: no member named 'simd' in namespace 'std'"
     }
    }
   },
@@ -2148,7 +2247,7 @@
     "c++26": {
      "status": "compile",
      "variant": "",
-     "diag": "simd_draft_names.cxx26.cpp:6:10: fatal error: 'simd' file not found"
+     "diag": "simd_draft_names.cxx26.cpp:8:8: error: no member named 'simd' in namespace 'std'"
     }
    }
   },
@@ -2188,9 +2287,10 @@
    },
    "results": {
     "c++26": {
-     "status": "compile",
+     "status": "pass",
      "variant": "",
-     "diag": "submdspan.cxx26.cpp:7:10: fatal error: 'mdspan' file not found"
+     "exit": 0,
+     "stdout": ""
     }
    }
   },
@@ -2205,9 +2305,10 @@
    },
    "results": {
     "c++26": {
-     "status": "compile",
+     "status": "pass",
      "variant": "",
-     "diag": "mdspan_padded.cxx26.cpp:6:10: fatal error: 'mdspan' file not found"
+     "exit": 0,
+     "stdout": ""
     }
    }
   },
@@ -2223,9 +2324,10 @@
    },
    "results": {
     "c++26": {
-     "status": "compile",
+     "status": "pass",
      "variant": "",
-     "diag": "aligned_accessor.cxx26.cpp:8:10: fatal error: 'mdspan' file not found"
+     "exit": 0,
+     "stdout": ""
     }
    }
   },
@@ -2240,9 +2342,10 @@
    },
    "results": {
     "c++26": {
-     "status": "compile",
+     "status": "pass",
      "variant": "",
-     "diag": "dims.cxx26.cpp:7:10: fatal error: 'mdspan' file not found"
+     "exit": 0,
+     "stdout": ""
     }
    }
   },
@@ -2277,9 +2380,10 @@
    },
    "results": {
     "c++26": {
-     "status": "compile",
+     "status": "pass",
      "variant": "",
-     "diag": "inplace_vector.cxx26.cpp:7:10: fatal error: 'inplace_vector' file not found"
+     "exit": 0,
+     "stdout": ""
     }
    }
   },
@@ -2332,9 +2436,10 @@
    },
    "results": {
     "c++26": {
-     "status": "compile",
+     "status": "pass",
      "variant": "",
-     "diag": "views_indices.cxx26.cpp:10:28: error: no member named 'indices' in namespace 'std::ranges::views'"
+     "exit": 0,
+     "stdout": ""
     }
    }
   },
@@ -2350,9 +2455,10 @@
    },
    "results": {
     "c++26": {
-     "status": "compile",
+     "status": "pass",
      "variant": "",
-     "diag": "function_ref.cxx26.cpp:8:23: error: no template named 'function_ref' in namespace 'std'; did you mean 'function'?"
+     "exit": 0,
+     "stdout": ""
     }
    }
   },
@@ -2368,9 +2474,10 @@
    },
    "results": {
     "c++26": {
-     "status": "compile",
+     "status": "pass",
      "variant": "",
-     "diag": "copyable_function.cxx26.cpp:9:8: error: no member named 'copyable_function' in namespace 'std'"
+     "exit": 0,
+     "stdout": ""
     }
    }
   },
@@ -2385,9 +2492,10 @@
    },
    "results": {
     "c++26": {
-     "status": "compile",
+     "status": "pass",
      "variant": "",
-     "diag": "optional:246:8: error: union member '_M_value' has reference type 'int &'"
+     "exit": 0,
+     "stdout": ""
     }
    }
   },
@@ -2403,9 +2511,10 @@
    },
    "results": {
     "c++26": {
-     "status": "compile",
+     "status": "pass",
      "variant": "",
-     "diag": "optional_range.cxx26.cpp:11:14: error: invalid range expression of type 'std::optional<int>'; no viable 'begin' function available"
+     "exit": 0,
+     "stdout": ""
     }
    }
   },
@@ -2495,9 +2604,9 @@
    },
    "results": {
     "c++26": {
-     "status": "compile",
+     "status": "link",
      "variant": "",
-     "diag": "debugging.cxx26.cpp:7:10: fatal error: 'debugging' file not found"
+     "diag": "ld.lld: error: undefined symbol: std::is_debugger_present()"
     }
    }
   },
@@ -2549,9 +2658,10 @@
    },
    "results": {
     "c++26": {
-     "status": "compile",
+     "status": "pass",
      "variant": "",
-     "diag": "philox_engine.cxx26.cpp:9:8: error: no member named 'philox4x32' in namespace 'std'"
+     "exit": 0,
+     "stdout": ""
     }
    }
   },
@@ -2604,9 +2714,10 @@
    },
    "results": {
     "c++26": {
-     "status": "compile",
+     "status": "pass",
      "variant": "",
-     "diag": "atomic_fetch_max.cxx26.cpp:10:5: error: no member named 'fetch_max' in 'std::atomic<int>'"
+     "exit": 0,
+     "stdout": ""
     }
    }
   },
@@ -3101,16 +3212,16 @@
    "c++26": "-"
   },
   "__cpp_lib_mdspan": {
-   "c++23": "-",
-   "c++26": "-"
+   "c++23": "202207",
+   "c++26": "202406"
   },
   "__cpp_lib_expected": {
    "c++23": "202211",
    "c++26": "202211"
   },
   "__cpp_lib_print": {
-   "c++23": "202211",
-   "c++26": "202211"
+   "c++23": "202406",
+   "c++26": "202406"
   },
   "__cpp_lib_format_ranges": {
    "c++23": "202207",
@@ -3177,8 +3288,8 @@
    "c++26": "202207"
   },
   "__cpp_lib_ranges_starts_ends_with": {
-   "c++23": "-",
-   "c++26": "-"
+   "c++23": "202106",
+   "c++26": "202106"
   },
   "__cpp_lib_ranges_find_last": {
    "c++23": "202207",
@@ -3190,7 +3301,7 @@
   },
   "__cpp_lib_optional": {
    "c++23": "202110",
-   "c++26": "202110"
+   "c++26": "202506"
   },
   "__cpp_lib_move_only_function": {
    "c++23": "202110",
@@ -3253,12 +3364,12 @@
    "c++26": "202110"
   },
   "__cpp_lib_start_lifetime_as": {
-   "c++23": "-",
-   "c++26": "-"
+   "c++23": "202207",
+   "c++26": "202207"
   },
   "__cpp_lib_bind_back": {
    "c++23": "202202",
-   "c++26": "202202"
+   "c++26": "202306"
   },
   "__cpp_lib_constexpr_memory": {
    "c++23": "202202",
@@ -3330,11 +3441,11 @@
   },
   "__cpp_lib_submdspan": {
    "c++23": "-",
-   "c++26": "-"
+   "c++26": "202411"
   },
   "__cpp_lib_aligned_accessor": {
    "c++23": "-",
-   "c++26": "-"
+   "c++26": "202411"
   },
   "__cpp_lib_saturation_arithmetic": {
    "c++23": "-",
@@ -3342,7 +3453,7 @@
   },
   "__cpp_lib_inplace_vector": {
    "c++23": "-",
-   "c++26": "-"
+   "c++26": "202406"
   },
   "__cpp_lib_linalg": {
    "c++23": "-",
@@ -3354,19 +3465,19 @@
   },
   "__cpp_lib_ranges_indices": {
    "c++23": "-",
-   "c++26": "-"
+   "c++26": "202506"
   },
   "__cpp_lib_function_ref": {
    "c++23": "-",
-   "c++26": "-"
+   "c++26": "202306"
   },
   "__cpp_lib_copyable_function": {
    "c++23": "-",
-   "c++26": "-"
+   "c++26": "202306"
   },
   "__cpp_lib_optional_range_support": {
    "c++23": "-",
-   "c++26": "-"
+   "c++26": "202406"
   },
   "__cpp_lib_stdckdint": {
    "c++23": "-",
@@ -3378,7 +3489,7 @@
   },
   "__cpp_lib_debugging": {
    "c++23": "-",
-   "c++26": "-"
+   "c++26": "202403"
   },
   "__cpp_lib_senders": {
    "c++23": "-",
@@ -3390,7 +3501,7 @@
   },
   "__cpp_lib_philox_engine": {
    "c++23": "-",
-   "c++26": "-"
+   "c++26": "202406"
   },
   "__cpp_lib_is_within_lifetime": {
    "c++23": "-",
@@ -3402,7 +3513,7 @@
   },
   "__cpp_lib_atomic_min_max": {
    "c++23": "-",
-   "c++26": "-"
+   "c++26": "202403"
   },
   "__cplusplus": {
    "c++23": "202302",
@@ -3436,12 +3547,12 @@
  "import_std": {
   "c++23": {
    "status": "pass",
-   "source": "/usr/include/c++/15/bits/std.cc",
+   "source": "/usr/include/c++/16/bits/std.cc",
    "exit": 0
   },
   "c++26": {
    "status": "pass",
-   "source": "/usr/include/c++/15/bits/std.cc",
+   "source": "/usr/include/c++/16/bits/std.cc",
    "exit": 0
   }
  }

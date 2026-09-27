@@ -1,9 +1,9 @@
 # Feature probes: linux-x86_64
 
-- Date: 2026-09-23T10:49:27+00:00
+- Date: 2026-09-27T08:05:55+00:00
 - System: Linux-6.18.40.1-microsoft-standard-WSL2-x86_64-with-glibc2.43 (x86_64)
 - Compiler: Ubuntu clang version 23.1.3 (++20260922084409+67f4a076a097-1~exp1~20260922084419.77) (target x86_64-pc-linux-gnu)
-- C++ library: libstdc++ 15 (20260321)
+- C++ library: libstdc++ 16 (20260322)
 - C library: glibc 2.43
 - Compile flags: `-O2 -pthread`
 - Link flags: `-fuse-ld=lld -pthread`
@@ -22,6 +22,10 @@
 | `bfloat16_extension` | __bf16 arithmetic (Clang) | Clang extension | ✅ | ✅ |  |
 | `openmp` | OpenMP parallel regions (-fopenmp); prints the threads it ran | OpenMP 5.x | ✅ (`-fopenmp`) | ✅ (`-fopenmp`) | c++23: threads=16 max=16; needs libstdc++.so.6, libm.so.6, libomp.so.5, libgcc_s.so.1, libc.so.6; c++26: threads=16 max=16 |
 | `openmp_simd` | #pragma omp simd without the OpenMP runtime (-fopenmp-simd) | OpenMP 5.x | ✅ (`-fopenmp-simd`) | ✅ (`-fopenmp-simd`) | needs libstdc++.so.6, libm.so.6, libgcc_s.so.1, libc.so.6 |
+| `int128_arithmetic` | __int128 and unsigned __int128: sums, products, shifts and comparisons | Clang extension | ✅ | ✅ |  |
+| `int128_division_conversion` | __int128 division and remainder, and conversion from and to double (calls into the compiler's runtime on some targets) | Clang extension | ✅ | ✅ |  |
+| `int128_in_library_templates` | __int128 in std::optional, std::array and std::pair keeps its alignment of 16 | Clang extension | ✅ | ✅ |  |
+| `int128_numeric_limits` | std::numeric_limits specialized for __int128 (its min() the least value, not 0) | Clang extension | ✅ | ✅ |  |
 | `cxx_runtime_linkage` | the C++ library a program links (should be the system's, as a shared library) | - | ✅ | ✅ | c++23: x 1; needs libstdc++.so.6, libm.so.6, libgcc_s.so.1, libc.so.6; c++26: x 1 |
 | `deducing_this` | explicit object parameter (deducing this) | P0847R7 | ✅ | ✅ |  |
 | `multidimensional_subscript` | multidimensional subscript operator a[i, j] | P2128R6 | ✅ | ✅ |  |
@@ -47,10 +51,10 @@
 | `embed_cxx` | #embed in C++ | P1967R14 | — | ✅ |  |
 | `contracts` | contracts: pre, post, contract_assert | P2900R14 | — | ❌ compile | c++26: contracts.cxx26.cpp:8:24: error: expected function body after function declarator |
 | `reflection_core` | the reflection operator ^^ (compiler side of P2996, without <meta>) | P2996R13 | — | ❌ compile | c++26: reflection_core.cxx26.cpp:8:29: error: type name requires a specifier or qualifier |
-| `reflection` | static reflection with std::meta | P2996R13 | — | ❌ compile | c++26: reflection.cxx26.cpp:8:10: fatal error: 'meta' file not found |
+| `reflection` | static reflection with std::meta | P2996R13 | — | ❌ compile | c++26: reflection.cxx26.cpp:14:29: error: no member named 'meta' in namespace 'std' |
 | `expansion_statements` | expansion statements (template for) | P1306R5 | — | ✅ |  |
 | `trivial_unions` | unions of non-trivial members are trivially constructible | P3074R7 | — | ❌ compile | c++26: trivial_unions.cxx26.cpp:13:8: error: call to implicitly-deleted default constructor of 'Slot' |
-| `mdspan` | std::mdspan, extents, layout_right / layout_stride | P0009R18 | ❌ compile | ❌ compile | c++23: mdspan.cxx23.cpp:7:10: fatal error: 'mdspan' file not found; c++26: mdspan.cxx26.cpp:7:10: fatal error: 'mdspan' file not found |
+| `mdspan` | std::mdspan, extents, layout_right / layout_stride | P0009R18 | ✅ | ✅ |  |
 | `expected` | std::expected with monadic operations | P0323R12, P2505R5 | ✅ | ✅ |  |
 | `print` | std::print / std::println | P2093R14 | ✅ | ✅ | c++23: probe 1 2.500; c++26: probe 1 2.500 |
 | `format_ranges` | formatting ranges with std::format | P2286R8 | ✅ | ✅ |  |
@@ -73,7 +77,7 @@
 | `ranges_fold_left_first` | ranges::fold_left_first | P2322R6 | ✅ | ✅ |  |
 | `ranges_fold_right` | ranges::fold_right | P2322R6 | ✅ | ✅ |  |
 | `ranges_contains` | ranges::contains, contains_subrange | P2302R4 | ✅ | ✅ |  |
-| `ranges_starts_ends_with` | ranges::starts_with, ends_with | P1659R3 | ❌ compile | ❌ compile | c++23: ranges_starts_ends_with.cxx23.cpp:12:23: error: no member named 'starts_with' in namespace 'std::ranges'; c++26: ranges_starts_ends_with.cxx26.cpp:12:23: error: no member named 'starts_with' in namespace 'std::ranges' |
+| `ranges_starts_ends_with` | ranges::starts_with, ends_with | P1659R3 | ✅ | ✅ |  |
 | `ranges_find_last` | ranges::find_last | P1223R5 | ✅ | ✅ |  |
 | `ranges_iota` | ranges::iota | P2440R1 | ✅ | ✅ |  |
 | `optional_monadic` | std::optional and_then / transform / or_else | P0798R8 | ✅ | ✅ |  |
@@ -86,7 +90,7 @@
 | `utility23` | unreachable, to_underlying, byteswap, forward_like, invoke_r | P0627R6, P1682R3, P1272R4, P2445R1, P2136R3 | ✅ | ✅ |  |
 | `constexpr_cmath` | constexpr <cmath> basics (fabs, floor, fmax, copysign, isnan) | P0533R9 | ❌ compile | ❌ compile | c++23: constexpr_cmath.cxx23.cpp:7:15: error: static assertion expression is not an integral constant expression; c++26: constexpr_cmath.cxx26.cpp:7:15: error: static assertion expression is not an integral constant expression |
 | `string23` | string::contains, resize_and_overwrite | P1679R3, P1072R10 | ✅ | ✅ |  |
-| `start_lifetime_as` | std::start_lifetime_as | P2590R2 | ❌ compile | ❌ compile | c++23: start_lifetime_as.cxx23.cpp:16:17: error: no member named 'start_lifetime_as' in namespace 'std'; c++26: start_lifetime_as.cxx26.cpp:16:17: error: no member named 'start_lifetime_as' in namespace 'std' |
+| `start_lifetime_as` | std::start_lifetime_as | P2590R2 | ✅ | ✅ |  |
 | `bind_back` | std::bind_back | P2387R3 | ✅ | ✅ |  |
 | `constexpr_unique_ptr` | constexpr std::unique_ptr | P2273R3 | ✅ | ✅ |  |
 | `threads20` | jthread, stop_token, barrier, latch, counting_semaphore, atomic wait | P0660R10, P1135R6 | ✅ | ✅ |  |
@@ -101,33 +105,33 @@
 | `assume_aligned` | std::assume_aligned | P1007R3 | ✅ | ✅ |  |
 | `source_location` | std::source_location | P1208R6 | ✅ | ✅ |  |
 | `hardening` | library hardening stops vector[] out of range (vendor switches) | P3471R4 (vendor modes) | ✅ (`-D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST -D_GLIBCXX_ASSERTIONS -D_MSVC_STL_HARDENING=1`) | ✅ (`-D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST -D_GLIBCXX_ASSERTIONS -D_MSVC_STL_HARDENING=1`) |  |
-| `simd_vec` | std::simd::vec (<simd>, C++26 names) | P1928R15, P3287R3 | — | ❌ compile | c++26: simd_vec.cxx26.cpp:8:10: fatal error: 'simd' file not found |
-| `simd_draft_names` | std::simd<float> (<simd>, names of P1928 before P3287) | P1928R15 | — | ❌ compile | c++26: simd_draft_names.cxx26.cpp:6:10: fatal error: 'simd' file not found |
+| `simd_vec` | std::simd::vec (<simd>, C++26 names) | P1928R15, P3287R3 | — | ❌ compile | c++26: simd_vec.cxx26.cpp:10:8: error: no member named 'simd' in namespace 'std' |
+| `simd_draft_names` | std::simd<float> (<simd>, names of P1928 before P3287) | P1928R15 | — | ❌ compile | c++26: simd_draft_names.cxx26.cpp:8:8: error: no member named 'simd' in namespace 'std' |
 | `experimental_simd` | std::experimental::simd (Parallelism TS 2) | N4808 | ✅ | ✅ |  |
-| `submdspan` | std::submdspan, full_extent, strided_slice | P2630R4 | — | ❌ compile | c++26: submdspan.cxx26.cpp:7:10: fatal error: 'mdspan' file not found |
-| `mdspan_padded` | std::layout_right_padded / layout_left_padded | P2642R6 | — | ❌ compile | c++26: mdspan_padded.cxx26.cpp:6:10: fatal error: 'mdspan' file not found |
-| `aligned_accessor` | std::aligned_accessor for mdspan | P2897R7 | — | ❌ compile | c++26: aligned_accessor.cxx26.cpp:8:10: fatal error: 'mdspan' file not found |
-| `dims` | std::dims | P2389R2 | — | ❌ compile | c++26: dims.cxx26.cpp:7:10: fatal error: 'mdspan' file not found |
+| `submdspan` | std::submdspan, full_extent, strided_slice | P2630R4 | — | ✅ |  |
+| `mdspan_padded` | std::layout_right_padded / layout_left_padded | P2642R6 | — | ✅ |  |
+| `aligned_accessor` | std::aligned_accessor for mdspan | P2897R7 | — | ✅ |  |
+| `dims` | std::dims | P2389R2 | — | ✅ |  |
 | `saturation_arithmetic` | add_sat, sub_sat, saturate_cast | P0543R3 | — | ✅ |  |
-| `inplace_vector` | std::inplace_vector | P0843R14 | — | ❌ compile | c++26: inplace_vector.cxx26.cpp:7:10: fatal error: 'inplace_vector' file not found |
+| `inplace_vector` | std::inplace_vector | P0843R14 | — | ✅ |  |
 | `linalg` | std::linalg (BLAS-like on mdspan) | P1673R13 | — | ❌ compile | c++26: linalg.cxx26.cpp:7:10: fatal error: 'linalg' file not found |
 | `views_concat` | views::concat | P2542R8 | — | ✅ |  |
-| `views_indices` | views::indices | P3060R3 | — | ❌ compile | c++26: views_indices.cxx26.cpp:10:28: error: no member named 'indices' in namespace 'std::ranges::views' |
-| `function_ref` | std::function_ref | P0792R14 | — | ❌ compile | c++26: function_ref.cxx26.cpp:8:23: error: no template named 'function_ref' in namespace 'std'; did you mean 'function'? |
-| `copyable_function` | std::copyable_function | P2548R6 | — | ❌ compile | c++26: copyable_function.cxx26.cpp:9:8: error: no member named 'copyable_function' in namespace 'std' |
-| `optional_ref` | std::optional<T&> | P2988R12 | — | ❌ compile | c++26: optional:246:8: error: union member '_M_value' has reference type 'int &' |
-| `optional_range` | std::optional as a range | P3168R2 | — | ❌ compile | c++26: optional_range.cxx26.cpp:11:14: error: invalid range expression of type 'std::optional<int>'; no viable 'begin' function available |
+| `views_indices` | views::indices | P3060R3 | — | ✅ |  |
+| `function_ref` | std::function_ref | P0792R14 | — | ✅ |  |
+| `copyable_function` | std::copyable_function | P2548R6 | — | ✅ |  |
+| `optional_ref` | std::optional<T&> | P2988R12 | — | ✅ |  |
+| `optional_range` | std::optional as a range | P3168R2 | — | ✅ |  |
 | `runtime_format` | std::runtime_format | P2918R2 | — | ✅ |  |
 | `println_blank` | std::println() with no arguments | P3142R0 | — | ✅ |  |
 | `cxx_stdckdint` | <stdckdint.h> ckd_add / ckd_mul in C++ | P3370R1 | — | ✅ |  |
 | `text_encoding` | std::text_encoding | P1885R12 | — | ✅ |  |
-| `debugging` | std::is_debugger_present / breakpoint | P2546R5 | — | ❌ compile | c++26: debugging.cxx26.cpp:7:10: fatal error: 'debugging' file not found |
+| `debugging` | std::is_debugger_present / breakpoint | P2546R5 | — | ❌ link | c++26: ld.lld: error: undefined symbol: std::is_debugger_present() |
 | `execution_senders` | std::execution senders and receivers | P2300R10 | — | ❌ compile | c++26: execution_senders.cxx26.cpp:11:19: error: no member named 'just' in namespace 'std::execution' |
 | `hive` | std::hive | P0447R28 | — | ❌ compile | c++26: hive.cxx26.cpp:7:10: fatal error: 'hive' file not found |
-| `philox_engine` | std::philox_engine (counter-based random numbers) | P2075R6 | — | ❌ compile | c++26: philox_engine.cxx26.cpp:9:8: error: no member named 'philox4x32' in namespace 'std' |
+| `philox_engine` | std::philox_engine (counter-based random numbers) | P2075R6 | — | ✅ |  |
 | `is_within_lifetime` | std::is_within_lifetime | P2641R4 | — | ❌ compile | c++26: is_within_lifetime.cxx26.cpp:10:15: error: no member named 'is_within_lifetime' in namespace 'std' |
 | `span_at` | std::span::at | P2821R5 | — | ✅ |  |
-| `atomic_fetch_max` | atomic fetch_max / fetch_min | P0493R5 | — | ❌ compile | c++26: atomic_fetch_max.cxx26.cpp:10:5: error: no member named 'fetch_max' in 'std::atomic<int>' |
+| `atomic_fetch_max` | atomic fetch_max / fetch_min | P0493R5 | — | ✅ |  |
 
 ## C23 probes
 
@@ -163,8 +167,8 @@
 
 | Standard | Result | Detail |
 |---|---|---|
-| c++23 | ✅ | /usr/include/c++/15/bits/std.cc |
-| c++26 | ✅ | /usr/include/c++/15/bits/std.cc |
+| c++23 | ✅ | /usr/include/c++/16/bits/std.cc |
+| c++26 | ✅ | /usr/include/c++/16/bits/std.cc |
 
 ## Feature-test macros
 
@@ -192,9 +196,9 @@
 | `__cpp_lib_reflection` | - | - |
 | `__cpp_expansion_statements` | - | - |
 | `__cpp_trivial_union` | - | - |
-| `__cpp_lib_mdspan` | - | - |
+| `__cpp_lib_mdspan` | 202207 | 202406 |
 | `__cpp_lib_expected` | 202211 | 202211 |
-| `__cpp_lib_print` | 202211 | 202211 |
+| `__cpp_lib_print` | 202406 | 202406 |
 | `__cpp_lib_format_ranges` | 202207 | 202207 |
 | `__cpp_lib_ranges_to_container` | 202202 | 202202 |
 | `__cpp_lib_containers_ranges` | 202202 | 202202 |
@@ -211,10 +215,10 @@
 | `__cpp_lib_ranges_as_const` | 202311 | 202311 |
 | `__cpp_lib_ranges_fold` | 202207 | 202207 |
 | `__cpp_lib_ranges_contains` | 202207 | 202207 |
-| `__cpp_lib_ranges_starts_ends_with` | - | - |
+| `__cpp_lib_ranges_starts_ends_with` | 202106 | 202106 |
 | `__cpp_lib_ranges_find_last` | 202207 | 202207 |
 | `__cpp_lib_ranges_iota` | 202202 | 202202 |
-| `__cpp_lib_optional` | 202110 | 202110 |
+| `__cpp_lib_optional` | 202110 | 202506 |
 | `__cpp_lib_move_only_function` | 202110 | 202110 |
 | `__cpp_lib_out_ptr` | 202311 | 202311 |
 | `__cpp_lib_stacktrace` | 202011 | 202011 |
@@ -230,8 +234,8 @@
 | `__cpp_lib_constexpr_cmath` | - | - |
 | `__cpp_lib_string_contains` | 202011 | 202011 |
 | `__cpp_lib_string_resize_and_overwrite` | 202110 | 202110 |
-| `__cpp_lib_start_lifetime_as` | - | - |
-| `__cpp_lib_bind_back` | 202202 | 202202 |
+| `__cpp_lib_start_lifetime_as` | 202207 | 202207 |
+| `__cpp_lib_bind_back` | 202202 | 202306 |
 | `__cpp_lib_constexpr_memory` | 202202 | 202202 |
 | `__cpp_lib_jthread` | 201911 | 201911 |
 | `__cpp_lib_barrier` | 201907 | 201907 |
@@ -249,25 +253,25 @@
 | `__cpp_lib_source_location` | 201907 | 201907 |
 | `__cpp_lib_simd` | - | - |
 | `__cpp_lib_experimental_parallel_simd` | - | - |
-| `__cpp_lib_submdspan` | - | - |
-| `__cpp_lib_aligned_accessor` | - | - |
+| `__cpp_lib_submdspan` | - | 202411 |
+| `__cpp_lib_aligned_accessor` | - | 202411 |
 | `__cpp_lib_saturation_arithmetic` | - | 202311 |
-| `__cpp_lib_inplace_vector` | - | - |
+| `__cpp_lib_inplace_vector` | - | 202406 |
 | `__cpp_lib_linalg` | - | - |
 | `__cpp_lib_ranges_concat` | - | 202403 |
-| `__cpp_lib_ranges_indices` | - | - |
-| `__cpp_lib_function_ref` | - | - |
-| `__cpp_lib_copyable_function` | - | - |
-| `__cpp_lib_optional_range_support` | - | - |
+| `__cpp_lib_ranges_indices` | - | 202506 |
+| `__cpp_lib_function_ref` | - | 202306 |
+| `__cpp_lib_copyable_function` | - | 202306 |
+| `__cpp_lib_optional_range_support` | - | 202406 |
 | `__cpp_lib_stdckdint` | - | - |
 | `__cpp_lib_text_encoding` | - | 202306 |
-| `__cpp_lib_debugging` | - | - |
+| `__cpp_lib_debugging` | - | 202403 |
 | `__cpp_lib_senders` | - | - |
 | `__cpp_lib_hive` | - | - |
-| `__cpp_lib_philox_engine` | - | - |
+| `__cpp_lib_philox_engine` | - | 202406 |
 | `__cpp_lib_is_within_lifetime` | - | - |
 | `__cpp_lib_span` | 202002 | 202311 |
-| `__cpp_lib_atomic_min_max` | - | - |
+| `__cpp_lib_atomic_min_max` | - | 202403 |
 | `__cplusplus` | 202302 | 202400 |
 | `__cpp_modules` | 1 | 1 |
 | `__cpp_lib_modules` | 202207 | 202207 |

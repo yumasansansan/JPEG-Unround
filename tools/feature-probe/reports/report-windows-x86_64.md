@@ -1,6 +1,6 @@
 # Feature probes: windows-x86_64
 
-- Date: 2026-09-23T10:47:47+00:00
+- Date: 2026-09-27T08:05:48+00:00
 - System: Windows-11-10.0.28120-SP0 (x86_64)
 - Compiler: clang version 23.1.2 (https://github.com/llvm/llvm-project 85ac560262434c9ccfc0c183ec22d4138ed647fb) (target x86_64-pc-windows-msvc)
 - C++ library: MSVC STL 145 (202604)
@@ -21,6 +21,10 @@
 | `bfloat16_extension` | __bf16 arithmetic (Clang) | Clang extension | ✅ | ✅ |  |
 | `openmp` | OpenMP parallel regions (-fopenmp); prints the threads it ran | OpenMP 5.x | ✅ (`-fopenmp`) | ✅ (`-fopenmp`) | c++23: threads=16 max=16; needs api-ms-win-crt-heap-l1-1-0.dll, api-ms-win-crt-locale-l1-1-0.dll, api-ms-win-crt-math-l1-1-0.dll, api-ms-win-crt-runtime-l1-1-0.dll, api-ms-win-crt-stdio-l1-1-0.dll, KERNEL32.dll, libomp140.x86_64.dll, VCRUNTIME140.dll; c++26: threads=16 max=16 |
 | `openmp_simd` | #pragma omp simd without the OpenMP runtime (-fopenmp-simd) | OpenMP 5.x | ✅ (`-fopenmp-simd`) | ✅ (`-fopenmp-simd`) | needs api-ms-win-crt-heap-l1-1-0.dll, api-ms-win-crt-locale-l1-1-0.dll, api-ms-win-crt-math-l1-1-0.dll, api-ms-win-crt-runtime-l1-1-0.dll, api-ms-win-crt-stdio-l1-1-0.dll, KERNEL32.dll, VCRUNTIME140.dll |
+| `int128_arithmetic` | __int128 and unsigned __int128: sums, products, shifts and comparisons | Clang extension | ✅ | ✅ |  |
+| `int128_division_conversion` | __int128 division and remainder, and conversion from and to double (calls into the compiler's runtime on some targets) | Clang extension | ❌ link | ❌ link | c++23: lld-link: error: undefined symbol: __udivti3; c++26: lld-link: error: undefined symbol: __udivti3 |
+| `int128_in_library_templates` | __int128 in std::optional, std::array and std::pair keeps its alignment of 16 | Clang extension | ❌ compile | ❌ compile | c++23: int128_in_library_templates.cxx23.cpp:10:15: error: static assertion failed due to requirement 'alignof(std::optional<unsigned __int128>) >= alignof(unsigned __int128)'; c++26: int128_in_library_templates.cxx26.cpp:10:15: error: static assertion failed due to requirement 'alignof(std::optional<unsigned __int128>) >= alignof(unsigned __int128)' |
+| `int128_numeric_limits` | std::numeric_limits specialized for __int128 (its min() the least value, not 0) | Clang extension | ❌ compile | ❌ compile | c++23: int128_numeric_limits.cxx23.cpp:6:15: error: static assertion failed due to requirement 'std::numeric_limits<__int128>::is_specialized'; c++26: int128_numeric_limits.cxx26.cpp:6:15: error: static assertion failed due to requirement 'std::numeric_limits<__int128>::is_specialized' |
 | `cxx_runtime_linkage` | the C++ library a program links (should be the system's, as a shared library) | - | ✅ | ✅ | c++23: x 1; needs api-ms-win-crt-heap-l1-1-0.dll, api-ms-win-crt-locale-l1-1-0.dll, api-ms-win-crt-math-l1-1-0.dll, api-ms-win-crt-runtime-l1-1-0.dll, api-ms-win-crt-stdio-l1-1-0.dll, api-ms-win-crt-string-l1-1-0.dll, KERNEL32.dll, MSVCP140.dll, VCRUNTIME140.dll; c++26: x 1 |
 | `deducing_this` | explicit object parameter (deducing this) | P0847R7 | ✅ | ✅ |  |
 | `multidimensional_subscript` | multidimensional subscript operator a[i, j] | P2128R6 | ✅ | ✅ |  |
@@ -95,7 +99,7 @@
 | `to_chars_double` | std::to_chars for double | P0067R5 | ✅ | ✅ |  |
 | `to_chars_float` | std::to_chars for float | P0067R5 | ✅ | ✅ |  |
 | `filesystem_utf8` | std::filesystem with UTF-8 (u8) file names | P0218R1, P0482R6 | ✅ | ✅ |  |
-| `parallel_algorithms` | parallel algorithms (execution::par / par_unseq); prints the threads used | P0024R2 | ✅ | ✅ | c++23: threads=4; needs api-ms-win-crt-heap-l1-1-0.dll, api-ms-win-crt-locale-l1-1-0.dll, api-ms-win-crt-math-l1-1-0.dll, api-ms-win-crt-runtime-l1-1-0.dll, api-ms-win-crt-stdio-l1-1-0.dll, KERNEL32.dll, MSVCP140.dll, MSVCP140_ATOMIC_WAIT.dll, VCRUNTIME140.dll, VCRUNTIME140_1.dll; c++26: threads=4 |
+| `parallel_algorithms` | parallel algorithms (execution::par / par_unseq); prints the threads used | P0024R2 | ✅ | ✅ | c++23: threads=4; needs api-ms-win-crt-heap-l1-1-0.dll, api-ms-win-crt-locale-l1-1-0.dll, api-ms-win-crt-math-l1-1-0.dll, api-ms-win-crt-runtime-l1-1-0.dll, api-ms-win-crt-stdio-l1-1-0.dll, KERNEL32.dll, MSVCP140.dll, MSVCP140_ATOMIC_WAIT.dll, VCRUNTIME140.dll, VCRUNTIME140_1.dll; c++26: threads=5 |
 | `hardware_interference_size` | std::hardware_destructive_interference_size | P0154R1 | ✅ | ✅ |  |
 | `assume_aligned` | std::assume_aligned | P1007R3 | ✅ | ✅ |  |
 | `source_location` | std::source_location | P1208R6 | ✅ | ✅ |  |
