@@ -1,4 +1,6 @@
-<!-- Written by experiments/phase1_tuning.py; do not edit by hand. -->
+<!-- Written by experiments/phase1_tuning.py, on the Python implementation; the script and the
+implementation were removed once the implementation in Rust replaced it, and are in the
+repository's history. -->
 
 # Phase 1 tuning: the ratio of the steps and the stopping tolerance
 

@@ -4,11 +4,11 @@
 # The mathematics of JPEG-Unround
 
 This is the one statement of the model and of the algorithms, which the
-implementations follow. Each section says in which module it is implemented: a
-module of the Rust reference implementation (`rust/unround/src/`, the crate
-`jpeg-unround`), and one of the same name of the Python implementation
-(`python/src/unround/`), which the Rust one replaces. Section 9 bounds how far two
-implementations may differ, which the conformance cases (`conformance/`) check.
+implementations follow. Each section says in which module of the reference
+implementation, in Rust, it is implemented (`rust/unround/src/`, the crate
+`jpeg-unround`); the Python package (`python/`) calls that implementation through
+its C interface. Section 9 bounds how far two implementations may differ, which the
+conformance cases (`conformance/`) check.
 
 Every value this document gives as a default, of the model, of the steps of
 the solvers and of when they stop, is an option of the implementations: the
@@ -754,8 +754,8 @@ and its 90th percentile, and the largest difference is reported.
 ### 6.5 The defaults
 
 *In `pdhg` (`TV_RATIO`, `TV_RELAXATION`, `TV_TOLERANCE`,
-`TV_ITERATIONS`, and those of TGV), chosen on the tuning images by
-`experiments/phase2_solver.py` (`experiments/results/phase2-solver.md`).*
+`TV_ITERATIONS`, and those of TGV), chosen on the tuning images
+(`experiments/results/phase2-solver.md`).*
 
 Stopping where the gap per sample first falls within a tolerance changes the
 result, against the last point of a much longer run (TV: $\tau / \sigma = 30$,
@@ -931,15 +931,15 @@ intervals to within rounding (the tests bound both).
 
 ## 9. Agreement between implementations
 
-*Checked by the conformance cases, `conformance/cases/`: `conformance/generate.py`
-writes them from the Python implementation, and `conformance/bounds.py` computes
-their tolerances.*
+*Checked by the conformance cases, `conformance/cases/`, whose tolerances
+`conformance/bounds.py` computes.*
 
 Implementations that compute this document's formulas, with the freedom that
 Arithmetic leaves them, differ only by rounding. A conformance case is a quantized
 picture (one component, or three in 4:2:0, 4:2:2 or 4:4:4, in YCbCr or in RGB) and
-the options of its reconstruction, with what the Python implementation, the
-reference, made of it. An implementation reproduces the case when what is rational
+the options of its reconstruction, with what the reference of the cases made of
+it: the implementation in Python that came first, which was removed once the one in
+Rust reproduced the cases. An implementation reproduces the case when what is rational
 agrees to the last bit and the rest lies within the case's tolerances, which bound
 the rounding of both implementations: of the reference's, from the magnitudes of
 the values it computed, which the case keeps; and of any implementation that

@@ -14,6 +14,7 @@ extend-exclude = ["tools", "extern"]
 [lint.extend-per-file-ignores]
 "scripts/**" = ["T201", "S603", "S607", "PLR2004"]
 "experiments/**" = ["T201", "S603", "S607", "PLR2004"]
+"experiments/test_*.py" = ["S101"]
 "ci/**" = ["T201", "S603", "S607", "PLR2004"]
 # The references are drawn with fixed seeds, for tests and not for secrets.
 "conformance/**" = ["T201", "S311", "PLR2004"]

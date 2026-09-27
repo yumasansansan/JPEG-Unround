@@ -1,10 +1,13 @@
 # SPDX-FileCopyrightText: 2026 Yuma Kakei <yumasansansan@gmail.com>
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""What the experiments of Phase 1 share: the files, the package, the measures, and runs in parallel.
+"""What the experiments share: the files, the package, the measures, and runs in parallel.
 
-The files are the greyscale ones of the synthetic images (scripts/test_images.py),
-as each encoder's manifest lists them. A run's results are kept as JSON, one file
-to a run, so that a report can be written again without solving anything.
+The files are those of the test images (scripts/test_images.py), as each encoder's
+manifest lists them: the synthetic images, and the photographs. The reconstructions are
+the reference implementation's (Rust), through the package's binding (unround.native),
+at the path that use_library() gives; the measures are those of experiments/measures.py.
+A run's results are kept as JSON, one file to a run, so that a report can be written
+again without solving anything.
 """
 
 import dataclasses
@@ -23,26 +26,29 @@ import numpy.typing as npt
 from PIL import Image
 from skimage.metrics import structural_similarity
 
+import measures
+
 if TYPE_CHECKING:
-    # For the annotations alone: the package is imported once use_build() has set its path.
-    from unround.model import Problem
-    from unround.results import Result
+    # For the annotations alone: the package is imported once use_library() has set its path.
+    from unround.native import History, Problem
 
 ROOT: Final = Path(__file__).resolve().parent.parent
-LIBRARY_NAMES: Final = {"win32": "unround_jpegio.dll", "darwin": "libunround_jpegio.dylib"}
+LIBRARY_NAMES: Final = {"win32": "unround_capi.dll", "darwin": "libunround_capi.dylib"}
 QUALITIES: Final = (10, 20, 30, 50, 70, 90)
+SAMPLINGS: Final = ("grey", "420", "422", "444")
 
 type Array = npt.NDArray[np.float64]
 
 
-def use_build(build: Path) -> None:
-    """Points the package at the C layer of a build (-DUNROUND_WITH_PYTHON=ON), and Python at the package.
+def use_library(directory: Path) -> None:
+    """Points the package at the reference implementation's C interface in the directory, and Python at the package.
 
-    BLAS gets one thread in each process: the runs go in parallel, one to a process.
-    Processes started after this inherit all of it.
+    cargo build --release -p unround-capi, in rust/, writes it into rust/target/release;
+    the package reads JPEG files through it too. BLAS gets one thread in each process: the
+    runs go in parallel, one to a process. Processes started after this inherit all of it.
     """
-    library = build.resolve() / "python" / LIBRARY_NAMES.get(sys.platform, "libunround_jpegio.so")
-    os.environ.setdefault("UNROUND_JPEGIO_LIBRARY", str(library))
+    library = directory.resolve() / LIBRARY_NAMES.get(sys.platform, "libunround_capi.so")
+    os.environ.setdefault("UNROUND_LIBRARY", str(library))
     os.environ.setdefault("UNROUND_PYTHON_SOURCE", str(ROOT / "python" / "src"))
     for name in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
         os.environ.setdefault(name, "1")
@@ -50,7 +56,7 @@ def use_build(build: Path) -> None:
 
 
 def add_package() -> None:
-    """Puts the package on the path of this process, as use_build() said where it is."""
+    """Puts the package on the path of this process, as use_library() said where it is."""
     source = os.environ["UNROUND_PYTHON_SOURCE"]
     if source not in sys.path:
         sys.path.insert(0, source)
@@ -58,54 +64,74 @@ def add_package() -> None:
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class Case:
-    """A greyscale JPEG file of a synthetic image, and the image it was encoded from."""
+    """A JPEG file of a test image, and the picture it was encoded from."""
 
     encoder: str
     split: str
     image: str
     quality: int
+    sampling: str
     jpeg: Path
     original: Path
 
     @property
     def name(self) -> str:
-        """The encoder, the image and the quality, as in the names of the results."""
-        return f"{self.encoder}-{self.image}-q{self.quality}"
+        """The encoder, the image, the quality and the sampling, as in the names of the results."""
+        name = f"{self.encoder}-{self.image}-q{self.quality}"
+        return name if self.sampling == "grey" else f"{name}-{self.sampling}"
 
 
-def cases(data: Path, encoder: str, split: str) -> list[Case]:
-    """The greyscale files of an encoder and a split (tuning or test), by image and quality."""
-    manifest = json.loads((data / "jpeg" / encoder / "manifest.json").read_text(encoding="utf-8"))
+def cases(  # noqa: PLR0913 -- where the files are, which of them, and the directories of photographs
+    data: Path,
+    encoder: str,
+    split: str,
+    *,
+    samplings: Sequence[str] = ("grey",),
+    jpeg: str = "jpeg",
+    originals: str = "synthetic",
+) -> list[Case]:
+    """The files of an encoder and a split (tuning or test) in the samplings given, by image, quality and sampling.
+
+    jpeg and originals are the directories under data of the JPEG files and of the
+    pictures they were encoded from: those of the synthetic images, or jpeg-photos and
+    photo-originals for the photographs (scripts/test_images.py).
+    """
+    manifest = json.loads((data / jpeg / encoder / "manifest.json").read_text(encoding="utf-8"))
     found = []
     for entry in manifest["files"]:
-        file, original = str(entry["file"]), str(entry["original"])
-        if entry["sampling"] != "grey" or not file.startswith(f"{split}/"):
+        file, original, sampling = str(entry["file"]), str(entry["original"]), str(entry["sampling"])
+        if sampling not in samplings or not file.startswith(f"{split}/"):
             continue
-        image = Path(original).name.removesuffix(".pgm")
         found.append(
             Case(
                 encoder=encoder,
                 split=split,
-                image=image,
+                image=Path(original).stem,
                 quality=int(entry["quality"]),
-                jpeg=data / "jpeg" / encoder / file,
-                original=data / "synthetic" / original,
+                sampling=sampling,
+                jpeg=data / jpeg / encoder / file,
+                original=data / originals / original,
             )
         )
-    return sorted(found, key=lambda case: (case.image, case.quality))
+    return sorted(found, key=lambda case: (case.image, case.quality, SAMPLINGS.index(case.sampling)))
 
 
 def read_original(path: Path) -> npt.NDArray[np.uint8]:
-    """The samples of a greyscale original (8-bit PGM)."""
+    """The samples of an original: (height, width) of an 8-bit PGM, or (height, width, 3) of an 8-bit PPM."""
     with Image.open(path) as image:
-        if image.mode != "L":
-            message = f"{path} is not an 8-bit greyscale picture: {image.mode}"
+        if image.mode not in {"L", "RGB"}:
+            message = f"{path} is not an 8-bit greyscale or RGB picture: {image.mode}"
             raise ValueError(message)
         return np.asarray(image, dtype=np.uint8)
 
 
 def ssim(reference: npt.NDArray[np.generic], image: npt.NDArray[np.generic]) -> float:
-    """SSIM as Wang et al. define it: Gaussian weights of sigma 1.5, the population covariance, a range of 255."""
+    """SSIM as Wang et al. define it: Gaussian weights of sigma 1.5, the population covariance, a range of 255.
+
+    Of an RGB picture, the mean over R, G and B.
+    """
+    if reference.ndim == 3:
+        return float(np.mean([ssim(reference[:, :, channel], image[:, :, channel]) for channel in range(3)]))
     # scikit-image declares no types.
     return float(
         structural_similarity(  # type: ignore[no-untyped-call]
@@ -120,39 +146,40 @@ def ssim(reference: npt.NDArray[np.generic], image: npt.NDArray[np.generic]) -> 
 
 
 def measure(
-    original: npt.NDArray[np.uint8], picture: Array, problem: Problem, canvas: Array | None = None
+    original: npt.NDArray[np.uint8], picture: Array, problem: Problem | None = None, canvas: Array | None = None
 ) -> dict[str, float]:
     """How good a reconstruction is, as binary64 and as 8-bit samples, and how consistent with the file.
 
-    picture is the reconstruction's samples, cut to the picture, and canvas, where there is
-    one, the whole canvas it was cut from. The canvas's own coefficients are compared with
-    their intervals: that is the constraint the solvers keep. The picture is compared as a
-    file that encoded it would be (unround.metrics.picture_excess), as it is and as the
-    8-bit samples that unround.metrics.quantize() rounds it to, over every block and over
-    the blocks wholly within it. Consistency is the share of the coefficients within their
-    intervals, and the largest excess in steps.
+    picture is the reconstruction's samples, cut to the picture: (height, width), or
+    (height, width, 3) of RGB. Of a greyscale file, problem is its model (as the reference
+    implementation made it), and canvas, where there is one, the whole canvas the picture
+    was cut from: the canvas's own coefficients are compared with their intervals, which is
+    the constraint the solvers keep; and the picture is compared as a file that encoded it
+    would be (measures.picture_excess), as it is and as the 8-bit samples that
+    measures.quantize() rounds it to, over every block and over the blocks wholly within
+    it. Consistency is the share of the coefficients within their intervals, and the
+    largest excess in steps.
     """
-    from unround import dct, metrics  # noqa: PLC0415
-    from unround.model import excess  # noqa: PLC0415
-
-    eight = metrics.quantize(picture)
+    eight = measures.quantize(picture)
     measured = {
-        "psnr": metrics.psnr(original, picture),
-        "psnr_8": metrics.psnr(original, eight),
+        "psnr": measures.psnr(original, picture),
+        "psnr_8": measures.psnr(original, eight),
         "ssim_8": ssim(original, eight),
-        "psnr_b_8": metrics.psnr_b(original, eight),
     }
+    if picture.ndim != 2 or problem is None:
+        return measured
+    measured["psnr_b_8"] = measures.psnr_b(original, eight)
     # The blocks wholly within the picture, whose samples a padding does not touch.
-    whole_rows, whole_columns = picture.shape[0] // dct.BLOCK, picture.shape[1] // dct.BLOCK
+    whole_rows, whole_columns = picture.shape[0] // measures.BLOCK, picture.shape[1] // measures.BLOCK
     for suffix, samples in (("", picture), ("_8", eight.astype(np.float64))):
-        outside = metrics.picture_excess(problem, samples)
+        outside = measures.picture_excess(problem, samples)
         measured[f"picture_inside{suffix}"] = float(np.count_nonzero(outside == 0.0)) / outside.size
         measured[f"picture_outside_largest{suffix}"] = float(outside.max())
         within = outside[:whole_rows, :whole_columns]
         measured[f"whole_inside{suffix}"] = float(np.count_nonzero(within == 0.0)) / max(within.size, 1)
         measured[f"whole_outside_largest{suffix}"] = float(within.max()) if within.size else 0.0
     if canvas is not None:
-        outside = excess(problem, dct.forward(canvas))
+        outside = measures.excess(problem, measures.block_dct(canvas))
         measured["canvas_inside"] = float(np.count_nonzero(outside == 0.0)) / outside.size
         measured["canvas_outside_largest"] = float(outside.max())
     return measured
@@ -201,9 +228,8 @@ def run_all[T](
             print(f"  {done}/{len(pending)} {path.stem} ({time.perf_counter() - started:.0f} s)", flush=True)
 
 
-def history_of(result: Result) -> dict[str, list[float] | list[int]]:
-    """A solver's history (unround.results.History), as lists for JSON."""
-    history = result.history
+def history_of(history: History) -> dict[str, list[float] | list[int]]:
+    """A solver's records (unround.native.History), as lists for JSON."""
     return {
         "iterations": [int(value) for value in history.iterations],
         "seconds": [float(value) for value in history.seconds],

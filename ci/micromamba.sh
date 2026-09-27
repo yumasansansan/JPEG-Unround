@@ -4,7 +4,7 @@
 #
 #   ci/micromamba.sh
 #
-# Sets up a GitHub Actions runner for the Python implementation: micromamba of
+# Sets up a GitHub Actions runner for the Python package: micromamba of
 # one pinned version, from the binaries mamba-org publishes, checked by their
 # SHA-256 (GitHub lists it as the asset's digest, and each binary has a .sha256
 # beside it that says the same), and the environment of environment.yml, created

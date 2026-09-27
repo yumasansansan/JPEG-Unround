@@ -12,8 +12,8 @@ that bound the rounding of the start ("start") and of every iteration of the ref
 module computes how far a conforming implementation may lie from the expected values: its
 canvas after the last iteration, the primal value of every record, and, where the gap is
 certified, how far one implementation's dual value may lie above the other's primal
-value, and how far the two gaps may lie apart. conformance/generate.py appends them to a
-case as "tolerance" lines; --check computes them again and compares.
+value, and how far the two gaps may lie apart. A case holds them as "tolerance" lines at
+its end: --check computes them again and compares, and without it they are written.
 
 The subgradient method has no such bound (docs/math.md, 9.6): its cases hold a tolerance
 measured as a regression check, which is kept as it is.

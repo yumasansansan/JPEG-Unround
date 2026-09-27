@@ -4,8 +4,10 @@ Phase 1 wrote down the mathematics of the reconstruction, built it in Python for
 greyscale files, and compared ways to solve it. The tables behind the numbers
 here are in [phase1-tuning.md](phase1-tuning.md) and
 [phase1-comparison.md](phase1-comparison.md), which
-`experiments/phase1_tuning.py` and `experiments/phase1_comparison.py` write
-(measured 2026-09-25).
+`experiments/phase1_tuning.py` and `experiments/phase1_comparison.py` wrote
+(measured 2026-09-25), on the Python implementation. The scripts and the
+implementation were removed once the implementation in Rust replaced it; they are in
+the repository's history.
 
 ## What there is
 

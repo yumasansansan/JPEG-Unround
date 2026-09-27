@@ -2,14 +2,12 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The reference implementation of JPEG-Unround (Rust), through its C interface.
 
-rust/capi/include/unround.h is the interface, and ctypes calls it. The settings go
-over as the command line's options (docs/cli.md), each number as the shortest
-decimal that reads back as the same double; the results come back as NumPy arrays,
-copied, and the library's memory is freed before a function returns. The settings
-are the dataclasses of the Python implementation (unround.decode.Settings and what
-it holds), so that the two take the same values. A writer that leaves something out
--- an ICC profile that does not go with the picture -- says so with a warning,
-UnroundWarning, and returns the file.
+rust/capi/include/unround.h is the interface, and ctypes calls it. The settings
+(unround.settings) go over as the command line's options (docs/cli.md), each number
+as the shortest decimal that reads back as the same double; the results come back as
+NumPy arrays, copied, and the library's memory is freed before a function returns. A
+writer that leaves something out -- an ICC profile that does not go with the picture
+-- says so with a warning, UnroundWarning, and returns the file.
 
 The library is the one at the path in the environment variable UNROUND_LIBRARY, or
 else the one in unround/_native, where a wheel carries it; cargo build --release -p
@@ -21,22 +19,24 @@ called back with the GIL held.
 import ctypes
 import enum
 import functools
+import os
 import sys
 import warnings
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Final
 
 import numpy as np
 import numpy.typing as npt
 
-from unround import _loading, jpegio, pdhg, results, subgradient
-from unround.decode import Settings
-from unround.model import TGV, TV, DataTerm
+from unround import _loading, jpegio
+from unround.settings import TGV, TV, DataTerm, PdhgOptions, Settings, SubgradientOptions
 
 __all__ = [
     "ABI_VERSION",
     "Decoded",
+    "History",
     "LibraryNotFoundError",
     "Problem",
     "Record",
@@ -61,6 +61,7 @@ __all__ = [
 
 type Array = npt.NDArray[np.float64]
 type Observer = Callable[["Record"], bool | None]
+type Source = bytes | bytearray | memoryview | str | os.PathLike[str] | jpegio.Image
 
 ABI_VERSION: Final = 2
 """UNROUND_ABI_VERSION of the interface this module mirrors."""
@@ -252,7 +253,7 @@ def _data_options(data: DataTerm | tuple[DataTerm, ...]) -> list[str]:
     return result
 
 
-def _pdhg_options(solver: pdhg.Options) -> list[str]:
+def _pdhg_options(solver: PdhgOptions) -> list[str]:
     result = [
         "--relative-tolerance",
         _number(solver.relative_tolerance),
@@ -281,7 +282,7 @@ def _pdhg_options(solver: pdhg.Options) -> list[str]:
     return result
 
 
-def _subgradient_options(method: subgradient.Options) -> list[str]:
+def _subgradient_options(method: SubgradientOptions) -> list[str]:
     result = [
         "--subgradient-iterations",
         str(method.iterations),
@@ -413,12 +414,34 @@ class Problem:
 
 
 @dataclass(frozen=True, slots=True, eq=False)
+class History:
+    """The solver's records, one entry each: the iteration, and the values at the iterate after it.
+
+    seconds is the solver's own time up to the record, not counting the records. dual is
+    the dual value, -inf where the solver has none; scaling is the theta that made TGV's
+    dual feasible (docs/math.md, 6.2), and partial_gap the gap of 6.3, NaN where not taken.
+    """
+
+    iterations: npt.NDArray[np.int64]
+    seconds: Array
+    primal: Array
+    dual: Array
+    scaling: Array
+    partial_gap: Array
+
+    @property
+    def gap(self) -> Array:
+        """The duality gap of each record: an upper bound of the primal value's distance to its least."""
+        return np.asarray(self.primal - self.dual, dtype=np.float64)
+
+
+@dataclass(frozen=True, slots=True, eq=False)
 class Solution:
     """What the solver did: the iterations it took, why it stopped, and its records."""
 
     iterations: int
     stop: Stop
-    history: results.History
+    history: History
 
     @property
     def converged(self) -> bool:
@@ -506,7 +529,7 @@ def _solution(library: ctypes.CDLL, result: ctypes.c_void_p) -> Solution | None:
         for which in range(5)
     ]
     seconds, primal, dual, scaling, partial_gap = values
-    history = results.History(steps, seconds, primal, dual, scaling, partial_gap)
+    history = History(steps, seconds, primal, dual, scaling, partial_gap)
     return Solution(int(iterations.value), Stop(int(stop.value)), history)
 
 
@@ -589,7 +612,7 @@ def _reconstruct(call: _Call, observer: Observer | None) -> Decoded:
 
 
 def decode(  # noqa: PLR0913 -- the file, the settings, the observer, and the limits of jpegio.read
-    data: bytes | bytearray | memoryview,
+    source: Source,
     settings: Settings | None = None,
     *,
     observer: Observer | None = None,
@@ -597,18 +620,24 @@ def decode(  # noqa: PLR0913 -- the file, the settings, the observer, and the li
     max_scans: int = 0,
     warnings_are_errors: bool = False,
 ) -> Decoded:
-    """Reconstructs a JPEG file in memory.
+    """Reconstructs a JPEG file: its bytes, its path, or its components as unround.jpegio.read gives them.
 
     observer, where given, is called with each record after the first, and stops the
     solver where it returns True; an exception it raises stops the solver too, and is
-    raised here. The limits of reading are those of unround.jpegio.read. A file that is
-    not reconstructed raises UnroundError, and options out of their ranges too.
+    raised here. The limits of reading are those of unround.jpegio.read, and an image read
+    already takes none. A file that is not reconstructed raises UnroundError, and options
+    out of their ranges too.
     """
+    if isinstance(source, jpegio.Image):
+        if max_pixels or max_scans or warnings_are_errors:
+            message = "an image read already takes no limits of reading"
+            raise ValueError(message)
+        return solve(source, settings, observer=observer)
     library = _library()
     handle = _Settings(
         options(settings, max_pixels=max_pixels, max_scans=max_scans, warnings_are_errors=warnings_are_errors)
     )
-    buffer = bytes(data)
+    buffer = Path(source).read_bytes() if isinstance(source, (str, os.PathLike)) else bytes(source)
 
     def call(callback: object, result: ctypes._CArgObject, message: ctypes.Array[ctypes.c_char]) -> int:
         size = len(buffer)

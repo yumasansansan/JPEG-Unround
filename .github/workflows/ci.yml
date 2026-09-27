@@ -17,7 +17,7 @@
 # that its code is vector code of the full width of each build that is shipped
 # (ci/vectorization.sh: AVX2 and AVX-512 on x86-64, NEON on AArch64); and on
 # x86-64 builds it for AVX-512 (ci/avx512.sh), and tests that build where the
-# runner has AVX-512. The python job checks the Python implementation
+# runner has AVX-512. The python job checks the Python package
 # (ci/python.sh), in the micromamba environment of environment.yml
 # (ci/micromamba.sh), with the shared C layer built by the release preset. The
 # lint job reads the C and C++ with clang-tidy (ci/tidy.sh) and for their layout

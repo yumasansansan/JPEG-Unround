@@ -1,4 +1,6 @@
-<!-- Written by experiments/phase2_colour.py; do not edit by hand. -->
+<!-- Written by experiments/phase2_colour.py, on the Python implementation; the script and the
+implementation were removed once the implementation in Rust replaced it, and are in the
+repository's history. -->
 
 # Phase 2: colour
 

@@ -1,13 +1,14 @@
 // SPDX-FileCopyrightText: 2026 Yuma Kakei <yumasansansan@gmail.com>
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// The C layer between libjpeg-turbo and libpng and the three implementations of
-// JPEG-Unround (C++, Rust and Python). It reads what the reconstruction needs
-// from a JPEG file held in memory -- the quantized DCT coefficients of every
-// component, the quantization table each was quantized with, the sampling
-// factors, the ICC profile and the EXIF orientation -- and it decodes the
-// component planes the way libjpeg's standard decoder does, before upsampling
-// and color conversion. And it writes PNG files, with libpng and zlib-ng.
+// The C layer between libjpeg-turbo and libpng and the implementations of
+// JPEG-Unround (C++ and Rust) and its Python package. It reads what the
+// reconstruction needs from a JPEG file held in memory -- the quantized DCT
+// coefficients of every component, the quantization table each was quantized
+// with, the sampling factors, the ICC profile and the EXIF orientation -- and it
+// decodes the component planes the way libjpeg's standard decoder does, before
+// upsampling and color conversion. And it writes PNG files, with libpng and
+// zlib-ng.
 //
 // libjpeg and libpng report errors with longjmp, and the jump never leaves this
 // layer: every function returns a status, and the message of a failure is copied

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # The C layer (C23) over libjpeg-turbo and libpng, as a static library for the
-# C++ and Rust implementations and as a shared library for the Python one; its
+# C++ and Rust implementations and as a shared library for the Python package; its
 # tests; and its fuzz target.
 
 add_library(unround_jpegio STATIC src/jpegio.c src/png.c)
@@ -12,7 +12,7 @@ target_link_libraries(unround_jpegio PRIVATE unround::libjpeg unround::png)
 unround_target_defaults(unround_jpegio)
 
 if(UNROUND_WITH_PYTHON)
-  # The shared library that the Python implementation loads with ctypes, with
+  # The shared library that the Python package can load with ctypes, with
   # libjpeg-turbo, libpng and zlib-ng linked in. It exports the functions of
   # unround/jpegio.h and nothing else (tests/check_exports.cmake checks), and it
   # is written into python/ of the build directory, apart from the static

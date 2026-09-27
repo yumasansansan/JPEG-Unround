@@ -1,21 +1,27 @@
 # SPDX-FileCopyrightText: 2026 Yuma Kakei <yumasansansan@gmail.com>
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""The reference implementation through its C interface (unround.native).
+"""The reference implementation through its C interface (unround.native), and the package around it.
 
 The settings are checked to reach the library exactly: it gives back, as options, the
 values it holds, which are compared with the settings' own to the last bit. The
-results are checked where they are exact: the intervals, which are rationals; the
-planes, which are the canvas cut to the picture; the picture, which is JFIF's RGB of
-the planes; the records, which follow the options. The Python implementation, which
-the reference replaces, is compared with it: the model's rationals and weights
-exactly, and the solutions as a regression check against the differences measured,
-since the two round differently at every iteration.
+results are checked where they are exact: the intervals and the weights of the data
+term, which are rationals or one division; the planes, which are the canvas cut to
+the picture; the picture, which is JFIF's RGB of the planes; the records, which follow
+the options; the files, which hold the samples bit for bit. The colour conversions are
+checked against JFIF's exact rationals, within their rounding. What the solvers
+compute is the reference implementation's own, which its tests and the conformance
+cases check (conformance/); here it is taken as it comes, and checked where it is
+exact: within the intervals, and the same however the file comes in.
 """
 
 import ctypes
 import dataclasses
 import io
+import math
+import os
 import struct
+import subprocess
+import sys
 import threading
 from fractions import Fraction
 from pathlib import Path
@@ -23,26 +29,25 @@ from pathlib import Path
 import numpy as np
 import numpy.typing as npt
 import pytest
+import tifffile
 from hypothesis import given
 from hypothesis import strategies as st
 from PIL import Image
 
 import pngfile
-import rounding
 import synthetic
-from unround import colour, decode, jpegio, native, pdhg, subgradient, tiff
-from unround.model import TGV, TV, DataTerm
+import unround
+from unround import jpegio, native
+from unround.settings import TGV, TV, DataTerm, Method, PdhgOptions, Settings, SubgradientOptions
 
-METHODS: list[decode.Method] = ["mmse", "tv", "tgv", "subgradient"]
+METHODS: list[Method] = ["mmse", "tv", "tgv", "subgradient"]
 SUBSAMPLINGS = {"4:4:4": 0, "4:2:0": 2}  # Pillow's names for them
+U = 2.0**-53
 
-# The Python implementation against the reference, after 200 iterations of each solver
-# on the files below, measured on Windows (x86-64): the pictures differed by at most
-# 7.2e-11 of a sample, and the primal values of the records by at most 3.8e-14 of
-# their own. These are regression checks at about ten times as much, for the rounding
-# of other systems (fused multiply-adds on arm64, NumPy's other orders of summation).
-PICTURES_AGREE = 1e-9
-VALUES_AGREE = 5e-13
+
+def gamma(n: int) -> float:
+    """Higham's gamma_n = n U / (1 - n U), the relative bound of n roundings."""
+    return n * U / (1.0 - n * U)
 
 
 def grey_file(height: int = 21, width: int = 30, quality: int = 30) -> bytes:
@@ -74,7 +79,7 @@ def identical(value: float, other: float) -> bool:
 
 
 def held(
-    settings: decode.Settings, *, max_pixels: int = 0, max_scans: int = 0, warnings_are_errors: bool = False
+    settings: Settings, *, max_pixels: int = 0, max_scans: int = 0, warnings_are_errors: bool = False
 ) -> dict[str, str]:
     """The settings as the library holds them, by the options' names; flags have the value ""."""
     values: dict[str, str] = {}
@@ -97,7 +102,7 @@ def test_the_defaults_are_the_library_s() -> None:
     # The defaults of the Python dataclasses, given as options, are what the library
     # holds of no options at all.
     library = native._library()
-    assert native.held_options(decode.Settings()) == native._held(library, native._Settings([]))
+    assert native.held_options(Settings()) == native._held(library, native._Settings([]))
 
 
 positive = st.floats(min_value=0.0, exclude_min=True, allow_infinity=False)
@@ -118,13 +123,13 @@ data_terms = st.builds(
 )
 gammas = st.none() | st.tuples(positive, positive, positive)
 settings_drawn = st.builds(
-    decode.Settings,
+    Settings,
     method=st.sampled_from(METHODS),
     data=data_terms | st.tuples(data_terms, data_terms, data_terms),
     tv=st.builds(TV, alpha=positive, channel_weights=gammas, coupled=st.booleans()),
     tgv=st.builds(TGV, alpha1=positive, alpha0=positive, channel_weights=gammas, coupled=st.booleans()),
     pdhg=st.builds(
-        pdhg.Options,
+        PdhgOptions,
         iterations=st.none() | st.integers(0, 2**40),
         tolerance=st.none() | at_least_zero,
         relative_tolerance=at_least_zero,
@@ -139,7 +144,7 @@ settings_drawn = st.builds(
         free_radius=at_least_zero,
     ),
     subgradient=st.builds(
-        subgradient.Options,
+        SubgradientOptions,
         iterations=st.integers(0, 2**40),
         record_every=st.integers(0, 2**40),
         step=positive,
@@ -156,7 +161,7 @@ settings_drawn = st.builds(
     warnings_are_errors=st.booleans(),
 )
 def test_the_settings_reach_the_library_to_the_last_bit(
-    *, settings: decode.Settings, max_pixels: int, max_scans: int, warnings_are_errors: bool
+    *, settings: Settings, max_pixels: int, max_scans: int, warnings_are_errors: bool
 ) -> None:
     values = held(settings, max_pixels=max_pixels, max_scans=max_scans, warnings_are_errors=warnings_are_errors)
     model: TV | TGV = settings.tgv if settings.method == "tgv" else settings.tv
@@ -225,7 +230,7 @@ def test_the_settings_reach_the_library_to_the_last_bit(
 
 def test_settings_out_of_their_ranges_are_refused() -> None:
     with pytest.raises(native.UnroundError) as refused:
-        native.held_options(decode.Settings(tv=TV(alpha=0.0), pdhg=pdhg.Options(relaxation=2.0)))
+        native.held_options(Settings(tv=TV(alpha=0.0), pdhg=PdhgOptions(relaxation=2.0)))
     assert refused.value.status is native.Status.OPTIONS
     assert "--alpha is positive" in refused.value.message
     assert "--relaxation is in (0, 2)" in refused.value.message
@@ -266,12 +271,12 @@ def check_exact(decoded: native.Decoded, image: jpegio.Image, slack: float = 0.0
 
 
 @pytest.mark.parametrize("method", METHODS)
-def test_a_grey_file_is_reconstructed_within_its_intervals(method: decode.Method) -> None:
+def test_a_grey_file_is_reconstructed_within_its_intervals(method: Method) -> None:
     data = grey_file()
-    settings = decode.Settings(
+    settings = Settings(
         method=method,
-        pdhg=pdhg.Options(iterations=30, tolerance=0.0, record_every=7),
-        subgradient=subgradient.Options(iterations=10, record_every=3),
+        pdhg=PdhgOptions(iterations=30, tolerance=0.0, record_every=7),
+        subgradient=SubgradientOptions(iterations=10, record_every=3),
     )
     decoded = native.decode(data, settings)
     check_exact(decoded, jpegio.read(data))
@@ -289,9 +294,9 @@ def test_a_grey_file_is_reconstructed_within_its_intervals(method: decode.Method
 
 @pytest.mark.parametrize("method", ["mmse", "tv", "tgv"])
 @pytest.mark.parametrize("subsampling", SUBSAMPLINGS)
-def test_a_colour_file_is_reconstructed_within_its_intervals(method: decode.Method, subsampling: str) -> None:
+def test_a_colour_file_is_reconstructed_within_its_intervals(method: Method, subsampling: str) -> None:
     data = colour_file(subsampling)
-    decoded = native.decode(data, decode.Settings(method=method, pdhg=pdhg.Options(iterations=20)))
+    decoded = native.decode(data, Settings(method=method, pdhg=PdhgOptions(iterations=20)))
     check_exact(decoded, jpegio.read(data))
 
 
@@ -300,9 +305,9 @@ def test_the_centres_follow_the_data_term() -> None:
     # of the bins towards 0, DC's and those of 0 at the middles.
     data = colour_file("4:2:0")
     image = jpegio.read(data)
-    middles = native.decode(data, decode.Settings(method="mmse", data=DataTerm(centres="midpoint", slack=0.5)))
+    middles = native.decode(data, Settings(method="mmse", data=DataTerm(centres="midpoint", slack=0.5)))
     check_exact(middles, image, slack=0.5)
-    mmse = native.decode(data, decode.Settings(method="mmse"))
+    mmse = native.decode(data, Settings(method="mmse"))
     for component, one, other in zip(image.components, middles.problems, mmse.problems, strict=True):
         levels = component.coefficients.astype(np.float64)
         steps = component.quant_table.astype(np.float64)
@@ -322,40 +327,19 @@ def test_the_centres_follow_the_data_term() -> None:
 
 
 def test_the_weights_are_those_of_the_data_term() -> None:
-    # mu / Q^2 and mu / Q, one division each, and DC's times its weight: the Python
-    # implementation's operations, to the last bit; the rule's mean is exact.
+    # mu / Q^p, one division by the power of the step, which is exact for p of 1 and 2,
+    # and DC's times its weight (docs/math.md, 4.1). The rule's mu is mu_scale times the
+    # mean of the 64 steps, whose sum is exact and so is its division by 64.
     data = colour_file("4:2:0")
     terms = (DataTerm(mu=0.25, dc_weight=3.0), DataTerm(mu=None, mu_scale=1e-3, power=1.0), DataTerm(power=2.0))
-    settings = decode.Settings(method="mmse", data=terms)
-    decoded = native.decode(data, settings)
-    frame = decode.frame_of(jpegio.read(data), settings)
-    for channel, problem in zip(frame.channels, decoded.problems, strict=True):
-        np.testing.assert_array_equal(bits(problem.weights), bits(channel.problem.weights))
+    decoded = native.decode(data, Settings(method="mmse", data=terms))
+    for term, problem in zip(terms, decoded.problems, strict=True):
+        steps = problem.steps
+        mu = term.mu if term.mu is not None else term.mu_scale * (float(np.sum(steps)) / 64.0)
+        expected = mu / (steps * steps if term.power == 2.0 else steps)
+        expected[0, 0] *= term.dc_weight
+        np.testing.assert_array_equal(bits(problem.weights), bits(expected))
     assert decoded.problems[0].weights[0, 0] == 0.25 / decoded.problems[0].steps[0, 0] ** 2 * 3.0
-
-
-@pytest.mark.parametrize(
-    ("kind", "method"),
-    [("grey", "tv"), ("grey", "tgv"), ("grey", "subgradient"), ("4:2:0", "tv"), ("4:2:0", "tgv"), ("4:4:4", "tgv")],
-)
-def test_the_python_implementation_agrees(kind: str, method: decode.Method) -> None:
-    data = grey_file() if kind == "grey" else colour_file(kind)
-    settings = decode.Settings(
-        method=method,
-        pdhg=pdhg.Options(iterations=200, tolerance=0.0),
-        subgradient=subgradient.Options(iterations=20),
-    )
-    reference, python = native.decode(data, settings), decode.decode(data, settings)
-    assert reference.result is not None
-    assert python.result is not None
-    assert reference.result.iterations == python.result.iterations
-    assert reference.result.history.iterations.tolist() == python.result.history.iterations.tolist()
-    assert np.abs(reference.picture - python.picture).max() <= PICTURES_AGREE
-    primal, other = reference.result.history.primal, python.result.history.primal
-    assert np.all(np.abs(primal - other) <= VALUES_AGREE * np.abs(other))
-    for ours, theirs in zip(reference.problems, (channel.problem for channel in python.frame.channels), strict=True):
-        np.testing.assert_array_equal(ours.lower, theirs.lower)
-        np.testing.assert_array_equal(ours.upper, theirs.upper)
 
 
 def test_an_observer_follows_the_records_and_stops_the_solver() -> None:
@@ -366,7 +350,7 @@ def test_an_observer_follows_the_records_and_stops_the_solver() -> None:
         seen.append(record)
         return record.iteration >= 10
 
-    settings = decode.Settings(method="tgv", pdhg=pdhg.Options(iterations=100, tolerance=0.0, record_every=5))
+    settings = Settings(method="tgv", pdhg=PdhgOptions(iterations=100, tolerance=0.0, record_every=5))
     decoded = native.decode(data, settings, observer=observer)
     assert decoded.result is not None
     assert decoded.result.stop is native.Stop.OBSERVER
@@ -381,7 +365,7 @@ def test_an_observer_follows_the_records_and_stops_the_solver() -> None:
     # The solver stopped at the last record, and its canvas is the result's.
     np.testing.assert_array_equal(bits(seen[-1].canvas), bits(decoded.canvas))
     # The decoder of the centres has no records to show.
-    assert native.decode(data, decode.Settings(method="mmse"), observer=observer).result is None
+    assert native.decode(data, Settings(method="mmse"), observer=observer).result is None
     assert len(seen) == 2
 
 
@@ -394,7 +378,7 @@ def test_an_exception_of_the_observer_stops_the_solver_and_is_raised() -> None:
         message = f"stopped at {record.iteration}"
         raise LookupError(message)
 
-    settings = decode.Settings(method="tv", pdhg=pdhg.Options(iterations=1000, tolerance=0.0, record_every=1))
+    settings = Settings(method="tv", pdhg=PdhgOptions(iterations=1000, tolerance=0.0, record_every=1))
     with pytest.raises(LookupError, match="stopped at 1"):
         native.decode(grey_file(), settings, observer=observer)
     assert calls == 1
@@ -403,7 +387,7 @@ def test_an_exception_of_the_observer_stops_the_solver_and_is_raised() -> None:
 @pytest.mark.parametrize("kind", ["grey", "4:2:0"])
 def test_components_given_as_arrays_solve_as_their_file(kind: str) -> None:
     data = grey_file() if kind == "grey" else colour_file(kind)
-    settings = decode.Settings(method="tgv", pdhg=pdhg.Options(iterations=20))
+    settings = Settings(method="tgv", pdhg=PdhgOptions(iterations=20))
     from_file, from_arrays = native.decode(data, settings), native.solve(jpegio.read(data), settings)
     np.testing.assert_array_equal(bits(from_arrays.picture), bits(from_file.picture))
     for one, other in zip(from_arrays.coefficients, from_file.coefficients, strict=True):
@@ -419,7 +403,7 @@ def test_changed_components_are_what_is_solved() -> None:
     levels = np.zeros_like(component.coefficients)
     levels[:, :, 0, 0] = component.coefficients[:, :, 0, 0]
     changed = dataclasses.replace(image, components=(dataclasses.replace(component, coefficients=levels),))
-    decoded = native.solve(changed, decode.Settings(method="mmse"))
+    decoded = native.solve(changed, Settings(method="mmse"))
     check_exact(decoded, changed)
     # Only DC is left: the centres of the levels of 0 are 0.
     (coefficients,) = decoded.coefficients
@@ -427,7 +411,7 @@ def test_changed_components_are_what_is_solved() -> None:
     assert np.all(coefficients[:, :, 0, 1:] == 0.0)
     wrong = dataclasses.replace(component, coefficients=levels.reshape(levels.shape[0], -1))
     with pytest.raises(ValueError, match="rows, columns, 8, 8"):
-        native.solve(dataclasses.replace(image, components=(wrong,)), decode.Settings(method="mmse"))
+        native.solve(dataclasses.replace(image, components=(wrong,)), Settings(method="mmse"))
 
 
 def test_what_is_not_reconstructed_is_said() -> None:
@@ -438,11 +422,11 @@ def test_what_is_not_reconstructed_is_said() -> None:
         native.decode(grey_file(), max_pixels=100)
     assert limited.value.status is native.Status.READ
     with pytest.raises(native.UnroundError) as colour_subgradient:
-        native.decode(colour_file("4:4:4"), decode.Settings(method="subgradient"))
+        native.decode(colour_file("4:4:4"), Settings(method="subgradient"))
     assert colour_subgradient.value.status is native.Status.OPTIONS
     assert "one component" in colour_subgradient.value.message
     with pytest.raises(native.UnroundError) as partial:
-        native.decode(grey_file(), decode.Settings(method="tv", pdhg=pdhg.Options(partial_radius=20.0)))
+        native.decode(grey_file(), Settings(method="tv", pdhg=PdhgOptions(partial_radius=20.0)))
     assert partial.value.status is native.Status.OPTIONS
 
 
@@ -450,19 +434,17 @@ def test_the_profile_and_the_orientation_are_the_file_s() -> None:
     exif = Image.Exif()
     exif[0x0112] = 6
     profile = bytes(np.random.default_rng(4).integers(0, 256, size=3000, dtype=np.uint8))
-    decoded = native.decode(
-        colour_file("4:2:0", exif=exif.tobytes(), icc_profile=profile), decode.Settings(method="mmse")
-    )
+    decoded = native.decode(colour_file("4:2:0", exif=exif.tobytes(), icc_profile=profile), Settings(method="mmse"))
     assert decoded.exif_orientation == 6
     assert decoded.icc_profile == profile
-    plain = native.decode(grey_file(), decode.Settings(method="mmse"))
+    plain = native.decode(grey_file(), Settings(method="mmse"))
     assert plain.exif_orientation == 0
     assert plain.icc_profile is None
 
 
 def test_threads_reconstruct_at_once() -> None:
     files = [grey_file(), colour_file("4:2:0"), colour_file("4:4:4"), grey_file(quality=60)]
-    settings = decode.Settings(method="tgv", pdhg=pdhg.Options(iterations=40))
+    settings = Settings(method="tgv", pdhg=PdhgOptions(iterations=40))
     alone = [native.decode(data, settings) for data in files]
     together: list[native.Decoded | None] = [None] * len(files)
 
@@ -479,16 +461,53 @@ def test_threads_reconstruct_at_once() -> None:
         np.testing.assert_array_equal(bits(one.picture), bits(other.picture))
 
 
-def test_the_tiff_is_the_python_writer_s(tmp_path: Path) -> None:
-    rng = np.random.default_rng(70)
-    for shape in [(7, 13), (5, 6, 3)]:
-        picture = rng.uniform(-10.0, 265.0, size=shape)
-        path = tmp_path / "picture.tif"
-        tiff.write_float64(path, picture)
-        assert native.tiff_bytes(picture) == path.read_bytes()
-    planes = rng.uniform(0.0, 255.0, size=(5, 6, 3))
-    tiff.write_float64(path, planes, ycbcr=True)
-    assert native.tiff_bytes(planes, ycbcr=True) == path.read_bytes()
+def awkward(shape: tuple[int, ...]) -> npt.NDArray[np.float64]:
+    """Random binary64 samples, with the values that a careless conversion would change."""
+    samples = np.random.default_rng(60).uniform(-10.0, 265.0, size=shape)
+    special = [-0.0, 0.0, 5e-324, -5e-324, 2.2250738585072014e-308, 1.7976931348623157e308, 1.0 / 3.0, 255.0]
+    special.append(math.nextafter(128.0, math.inf))
+    flat = samples.reshape(-1)  # a view: the samples are contiguous
+    count = min(len(special), flat.size)
+    flat[:count] = special[:count]
+    return samples
+
+
+def tiff_page(data: bytes) -> tuple[npt.NDArray[np.float64], tifffile.TiffPage]:
+    """The samples of a TIFF's first page, as tifffile, independent of the writer, reads them, and the page."""
+    with tifffile.TiffFile(io.BytesIO(data)) as file:
+        page = file.pages[0]
+        assert isinstance(page, tifffile.TiffPage)
+        return np.asarray(page.asarray(), dtype=np.float64), page
+
+
+@pytest.mark.parametrize("shape", [(1, 1), (7, 13), (21, 30), (5, 6, 3)])
+def test_the_tiff_holds_the_samples_bit_for_bit(shape: tuple[int, ...]) -> None:
+    picture = awkward(shape)
+    read, page = tiff_page(native.tiff_bytes(picture))
+    assert page.dtype == np.float64
+    assert page.compression == 1
+    assert page.samplesperpixel == (3 if len(shape) == 3 else 1)
+    assert read.shape == shape
+    np.testing.assert_array_equal(bits(read), bits(picture))
+
+
+def test_ycbcr_is_declared_as_it_is() -> None:
+    # The planes of a colour file, as the solver left them, through the file and back, which
+    # says they are JFIF's YCbCr: no subsampling, and JFIF's coefficients.
+    decoded = native.decode(colour_file("4:2:0"), Settings(method="mmse"))
+    planes = np.moveaxis(decoded.planes, 0, -1)
+    read, page = tiff_page(native.tiff_bytes(planes, ycbcr=True))
+    assert page.photometric == tifffile.PHOTOMETRIC.YCBCR
+    assert page.tags["YCbCrSubSampling"].value == (1, 1)
+    assert page.tags["YCbCrCoefficients"].value == (299, 1000, 587, 1000, 114, 1000)
+    assert page.tags["ReferenceBlackWhite"].value == (0, 1, 255, 1, 128, 1, 255, 1, 128, 1, 255, 1)
+    np.testing.assert_array_equal(bits(read.reshape(planes.shape)), bits(planes))
+    with pytest.raises(native.UnroundError):
+        native.tiff_bytes(planes[:, :, 0], ycbcr=True)
+    with pytest.raises(native.UnroundError):
+        native.tiff_bytes(np.zeros((2, 2, 2)))
+    with pytest.raises(ValueError, match="height, width"):
+        native.tiff_bytes(np.zeros(4))
 
 
 def rounded(value: float, scale: int, top: int) -> int:
@@ -637,7 +656,7 @@ def test_the_command_line_writes_the_picture_upright_with_its_profile(tmp_path: 
     data = colour_file("4:2:0", exif=exif.tobytes(), icc_profile=profile)
     source = tmp_path / "in.jpg"
     source.write_bytes(data)
-    decoded = native.decode(data, decode.Settings(method="mmse"))
+    decoded = native.decode(data, Settings(method="mmse"))
     upright = native.oriented(decoded.picture, 8)
     assert upright.shape == (30, 21, 3)
     for name, arguments in [("out.png", ["--bits", "16"]), ("out.tif", [])]:
@@ -655,22 +674,34 @@ def test_the_command_line_writes_the_picture_upright_with_its_profile(tmp_path: 
 
 
 def test_the_conversions_are_jfif_s() -> None:
-    # The Python implementation's, within the rounding of both, which may fuse products
-    # and sums or not. Each output is a dot product of at most three terms, whose
-    # constants are below 2, with a subtraction before a product and a sum after it:
-    # gamma(8) times 128 + 2 (|R| + |G| + |B|) bounds each YCbCr, and gamma(8) times
-    # |Y| + 2 (|Cb - 128| + |Cr - 128|) each RGB.
+    # Against JFIF's exact rationals (docs/math.md, 8), in exact arithmetic, within the
+    # rounding of the library, which may fuse products and sums or not. Each output is a
+    # dot product of at most three terms, whose constants are below 2 and within U of the
+    # rationals, with a subtraction before a product and a sum after it: gamma(8) times
+    # 128 + 2 (|R| + |G| + |B|) bounds each of Y, Cb and Cr, and gamma(8) times
+    # |Y| + 2 (|Cb - 128| + |Cr - 128|) each of R, G and B, of the planes it is given.
     rng = np.random.default_rng(71)
     picture = rng.uniform(-20.0, 280.0, size=(5, 7, 3))
+    picture.flat[:3] = [0.0, 255.0, 128.0]
     planes = native.to_ycbcr(picture)
     assert planes.shape == (3, 5, 7)
-    magnitude = 128.0 + 2.0 * np.abs(picture).sum(axis=2)
-    assert np.all(np.abs(planes - colour.to_ycbcr(picture)) <= 2.0 * rounding.gamma(8) * magnitude)
     rgb = native.to_rgb(planes)
     assert rgb.shape == (5, 7, 3)
-    magnitude = np.abs(planes[0]) + 2.0 * (np.abs(planes[1] - 128.0) + np.abs(planes[2] - 128.0))
-    bound = 2.0 * rounding.gamma(8) * magnitude[:, :, np.newaxis]
-    assert np.all(np.abs(rgb - colour.to_rgb(planes)) <= bound)
+    rounds = Fraction(gamma(8))
+    for i, j in np.ndindex(5, 7):
+        r, g, b = (Fraction(float(value)) for value in picture[i, j])
+        y = Fraction(299, 1000) * r + Fraction(587, 1000) * g + Fraction(114, 1000) * b
+        exact = (y, 128 + Fraction(250, 443) * (b - y), 128 + Fraction(500, 701) * (r - y))
+        bound = rounds * (128 + 2 * (abs(r) + abs(g) + abs(b)))
+        assert all(abs(Fraction(float(planes[k, i, j])) - exact[k]) <= bound for k in range(3))
+        y, cb, cr = (Fraction(float(planes[k, i, j])) for k in range(3))
+        exact = (
+            y + Fraction(701, 500) * (cr - 128),
+            y - Fraction(25251, 73375) * (cb - 128) - Fraction(209599, 293500) * (cr - 128),
+            y + Fraction(443, 250) * (cb - 128),
+        )
+        bound = rounds * (abs(y) + 2 * (abs(cb - 128) + abs(cr - 128)))
+        assert all(abs(Fraction(float(rgb[i, j, k])) - exact[k]) <= bound for k in range(3))
     with pytest.raises(ValueError, match="3, height, width"):
         native.to_rgb(picture)
     with pytest.raises(ValueError, match="height, width, 3"):
@@ -685,7 +716,7 @@ def test_the_command_line_runs_through_the_library(tmp_path: Path, capfd: pytest
     source, target = tmp_path / "in.jpg", tmp_path / "out.tif"
     source.write_bytes(grey_file())
     assert native.main(["--method", "mmse", "--quiet", str(source), str(target)]) == 0
-    decoded = native.decode(grey_file(), decode.Settings(method="mmse"))
+    decoded = native.decode(grey_file(), Settings(method="mmse"))
     assert target.read_bytes() == native.tiff_bytes(decoded.picture)
 
 
@@ -718,3 +749,28 @@ def test_the_c_layer_is_read_through_either_library(monkeypatch: pytest.MonkeyPa
         np.testing.assert_array_equal(one.quant_table, other.quant_table)
     for one_plane, other_plane in zip(planes.planes, own_planes.planes, strict=True):
         np.testing.assert_array_equal(one_plane, other_plane)
+
+
+def test_the_package_decodes_a_path_bytes_or_an_image(tmp_path: Path) -> None:
+    data = colour_file("4:2:0")
+    source = tmp_path / "in.jpg"
+    source.write_bytes(data)
+    settings = Settings(method="tv", pdhg=PdhgOptions(iterations=10))
+    from_bytes = unround.decode(data, settings)
+    for other_source in (source, str(source), bytearray(data), unround.read(data)):
+        other = unround.decode(other_source, settings)
+        np.testing.assert_array_equal(bits(other.picture), bits(from_bytes.picture))
+    with pytest.raises(ValueError, match="no limits"):
+        unround.decode(unround.read(data), settings, max_pixels=10)
+
+
+def test_python_runs_the_command_line(tmp_path: Path) -> None:
+    source, target = tmp_path / "in.jpg", tmp_path / "out.tif"
+    source.write_bytes(grey_file())
+    package = str(Path(unround.__file__).resolve().parent.parent)
+    environment = {**os.environ, "PYTHONPATH": os.pathsep.join([package, os.environ.get("PYTHONPATH", "")])}
+    arguments = [sys.executable, "-m", "unround", "--method", "mmse", "--quiet", str(source), str(target)]
+    completed = subprocess.run(arguments, env=environment, capture_output=True, check=False)  # noqa: S603
+    assert completed.returncode == 0, completed.stderr
+    decoded = unround.decode(source, Settings(method="mmse"))
+    assert target.read_bytes() == native.tiff_bytes(decoded.picture)

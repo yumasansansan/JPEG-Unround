@@ -1,6 +1,7 @@
 # Phase 3: the reference implementation against the Python one
 
-Written by `experiments/phase3_agreement.py`. The reference implementation (Rust), through the package's
+Written by `experiments/phase3_agreement.py`, which ran the Python implementation; the script and the
+implementation were removed after it, and are in the repository's history. The reference implementation (Rust), through the package's
 binding, against the Python implementation, on every JPEG file of the test images as libjpeg-turbo and
 mozjpeg wrote them: the synthetic images, and the photographs. Each entry is the worst over the files of
 the group, and each distance a fraction of its bound (1 is the bound), as docs/math.md, 9, derives the

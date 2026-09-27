@@ -8,15 +8,20 @@ tests compare with.
   and the centres of docs/math.md, 1.1 and 2. Each value is a pair of doubles
   `hi:lo` whose sum is the value to about 2^-106 of it. `python conformance/references.py`
   writes them, and `--check` compares them with their definitions.
-- `cases/`: the conformance cases (docs/math.md, 9), written by `generate.py` from the
-  Python implementation, with their tolerances, which `bounds.py` computes.
+- `cases/`: the conformance cases (docs/math.md, 9), with their tolerances, which
+  `bounds.py` computes.
 
 ## The cases
 
 A case is the quantized coefficients of a picture, one component or three, and the
 options of its reconstruction, as the command line takes them (docs/cli.md). Its file
-holds what the Python implementation made of it, and what bounds the rounding of that
-run. An implementation reproduces the case when
+holds what the reference of the cases made of it, and what bounds the rounding of that
+run: the implementation in Python that came first, which ran its iterations again,
+operation for operation, to keep the norms of the magnitudes of their rounding. It was
+removed, with the program that wrote the cases (`generate.py`), once the implementation
+in Rust reproduced them; both are in the repository's history. The files are fixed: a
+new case needs a program that traces a run of the reference implementation as that one
+did. An implementation reproduces the case when
 
 - the intervals (`lower`, `upper`), the weights of the data term (`weights`) and the
   steps (`steps`) are the same to the last bit;
@@ -67,16 +72,12 @@ indexed by entry, channel and row.
 
 ## Commands
 
-In the environment of `environment.yml`, with the libraries that `ci/python.sh` builds
-(`UNROUND_JPEGIO_LIBRARY` and `UNROUND_LIBRARY`):
+In the environment of `environment.yml`:
 
-- `python conformance/generate.py [case ...]` writes the cases again; `--check`
-  compares them with the files instead, and `--native` also prints how far the Rust
-  implementation, through its C interface, lies from each case. The Python
-  implementation's results may differ in their last bits between systems, so the
-  cases are written, and checked, on one.
 - `python conformance/bounds.py --check` computes the tolerances again from what the
   files hold and compares them; without `--check` it writes them.
+- `python conformance/references.py --check` computes the exact references again and
+  compares them; without `--check` it writes them.
 
 The Rust implementation's tests read the cases (`rust/unround/tests/conformance.rs`);
 `cargo test --release -p jpeg-unround --test conformance -- --ignored --nocapture`

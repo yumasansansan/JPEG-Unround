@@ -4,9 +4,9 @@
 //! The conversion of JFIF (docs/math.md, 8): its round trip, within a running bound
 //! of its rounding.
 //!
-//! The exact conversions are inverses of one another (the Python tests checked the
-//! rationals exactly), so what the computed ones leave of their input is within the
-//! rounding they add up: each operation adds `U / (1 - U)` times its computed result,
+//! The exact conversions are inverses of one another, which the rationals show
+//! exactly, and each constant is the double nearest to its rational; so what the
+//! computed ones leave of their input is within the rounding they add up: each operation adds `U / (1 - U)` times its computed result,
 //! a product carries its factors' bounds, and a constant brings its own distance from
 //! its rational, at most `U / (1 - U)` of it. The operations are the crate's own, fused
 //! where it fuses them, so the tracked values are the computed ones to the last bit.
@@ -16,6 +16,7 @@ mod support;
 use jpeg_unround::colour::{self, BLUE_FROM_CB, CB_FROM_BLUE, CR_FROM_RED, GREEN_FROM_CB, GREEN_FROM_CR, RED_FROM_CR};
 use jpeg_unround::colour::{Y_FROM_BLUE, Y_FROM_GREEN, Y_FROM_RED};
 use jpeg_unround::dct::multiply_add;
+use jpeg_unround::exact::Ratio;
 use support::exact::Dyadic;
 use support::rounding::U;
 use support::synthetic::Numbers;
@@ -145,6 +146,68 @@ fn the_round_trip_is_within_its_rounding() {
         for (channel, tracked) in tracked.iter().enumerate() {
             within(tracked, again[3 * sample + channel], picture[3 * sample + channel]);
         }
+    }
+}
+
+/// The rationals of the constants: `K_R`, `K_G` and `K_B`, and those that JFIF makes of them.
+struct Rationals {
+    y: [Ratio; 3],
+    cb: Ratio,
+    cr: Ratio,
+    red: Ratio,
+    blue: Ratio,
+    green: [Ratio; 2],
+}
+
+fn rationals() -> Rationals {
+    Rationals {
+        y: [Ratio::new(299, 1000), Ratio::new(587, 1000), Ratio::new(114, 1000)],
+        cb: Ratio::new(250, 443),
+        cr: Ratio::new(500, 701),
+        red: Ratio::new(701, 500),
+        blue: Ratio::new(443, 250),
+        green: [Ratio::new(25_251, 73_375), Ratio::new(209_599, 293_500)],
+    }
+}
+
+#[test]
+fn the_exact_conversions_are_inverses_and_the_constants_their_nearest_doubles() {
+    // Both conversions are affine: their compositions are the identity where they are on
+    // four points that span the space, 0 and the three units.
+    let k = rationals();
+    let centre = Ratio::integer(128);
+    let points = [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]].map(|point| point.map(Ratio::integer));
+    for [red, green, blue] in points {
+        let luma = k.y[0] * red + k.y[1] * green + k.y[2] * blue;
+        let (cb, cr) = (centre + k.cb * (blue - luma), centre + k.cr * (red - luma));
+        let back = [
+            luma + k.red * (cr - centre),
+            luma - k.green[0] * (cb - centre) - k.green[1] * (cr - centre),
+            luma + k.blue * (cb - centre),
+        ];
+        assert_eq!(back, [red, green, blue]);
+        let [y, u, v] = [red, green, blue];
+        let (red, blue) = (y + k.red * (v - centre), y + k.blue * (u - centre));
+        let green = y - k.green[0] * (u - centre) - k.green[1] * (v - centre);
+        let luma = k.y[0] * red + k.y[1] * green + k.y[2] * blue;
+        assert_eq!(
+            [luma, centre + k.cb * (blue - luma), centre + k.cr * (red - luma)],
+            [y, u, v]
+        );
+    }
+    let constants = [
+        (Y_FROM_RED, k.y[0]),
+        (Y_FROM_GREEN, k.y[1]),
+        (Y_FROM_BLUE, k.y[2]),
+        (CB_FROM_BLUE, k.cb),
+        (CR_FROM_RED, k.cr),
+        (RED_FROM_CR, k.red),
+        (BLUE_FROM_CB, k.blue),
+        (GREEN_FROM_CB, k.green[0]),
+        (GREEN_FROM_CR, k.green[1]),
+    ];
+    for (constant, rational) in constants {
+        assert_eq!(constant.to_bits(), rational.nearest().to_bits(), "{rational:?}");
     }
 }
 

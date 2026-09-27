@@ -2,54 +2,60 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """JPEG decoding that removes compression artifacts within the quantization intervals.
 
-The Python implementation of JPEG-Unround, the reference of the other two. The
-mathematics is docs/math.md's. unround.jpegio reads JPEG files through the C layer
-that all three implementations share; unround.decode reconstructs a file, greyscale
-or in colour.
+The Python package of JPEG-Unround: the reference implementation (Rust), called
+through its C interface, with NumPy arrays in and out. The mathematics is
+docs/math.md's, and the options are the command line's (docs/cli.md).
 
-  dct          the 8x8 block DCT of JPEG
-  laplace      the Laplace model of AC coefficients and their MMSE centres
-  operators    finite differences, their adjoints, and pointwise norms
-  model        the quantization constraint set, the data term, the objectives and gaps
-  frames       the components of a file on one canvas: chroma subsampling, channels
-  pdhg         the primal-dual method for TV and TGV
-  subgradient  a subgradient method of jpeg2png's kind, to compare with
-  results      what the solvers return
-  metrics      PSNR, PSNR-B, and consistency with the intervals
-  colour       the YCbCr of JFIF, and its inverse
-  decode       a file, reconstructed by one of the methods
-  tiff         the result in binary64, written bit for bit
+  decode    a file, its bytes, or its components as read, reconstructed (unround.native.decode)
+  read      a file's quantized coefficients, tables and sampling factors (unround.jpegio.read)
+  settings  the method, the model and the solvers' options
+  native    the reference implementation: reconstruction, its writers (TIFF in binary64, PNG,
+            PNM), EXIF's orientations, JFIF's colour conversions, and the command line
+  jpegio    the C layer that reads JPEG files
+
+python -m unround runs the command line.
 """
 
-from unround import (
-    colour,
-    dct,
+from unround import jpegio, native, settings
+from unround.jpegio import read
+from unround.native import (
+    Decoded,
+    Record,
+    UnroundError,
+    UnroundWarning,
     decode,
-    frames,
-    jpegio,
-    laplace,
-    metrics,
-    model,
-    operators,
-    pdhg,
-    results,
-    subgradient,
-    tiff,
+    oriented,
+    png_bytes,
+    pnm_bytes,
+    solve,
+    tiff_bytes,
+    to_rgb,
+    to_ycbcr,
 )
+from unround.settings import TGV, TV, DataTerm, PdhgOptions, Settings, SubgradientOptions
 
 __all__ = [
-    "colour",
-    "dct",
+    "TGV",
+    "TV",
+    "DataTerm",
+    "Decoded",
+    "PdhgOptions",
+    "Record",
+    "Settings",
+    "SubgradientOptions",
+    "UnroundError",
+    "UnroundWarning",
     "decode",
-    "frames",
     "jpegio",
-    "laplace",
-    "metrics",
-    "model",
-    "operators",
-    "pdhg",
-    "results",
-    "subgradient",
-    "tiff",
+    "native",
+    "oriented",
+    "png_bytes",
+    "pnm_bytes",
+    "read",
+    "settings",
+    "solve",
+    "tiff_bytes",
+    "to_rgb",
+    "to_ycbcr",
 ]
 __version__ = "0.1.0"

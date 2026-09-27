@@ -4,7 +4,7 @@
 //! The structures and functions of `unround/jpegio.h`, as C declares them.
 //!
 //! The layouts are asserted below with the sizes and offsets the C layer has on
-//! the 64-bit systems JPEG-Unround supports; the Python implementation checks the
+//! the 64-bit systems JPEG-Unround supports; the Python package checks the
 //! same numbers. A status and a color space are plain integers here rather than
 //! Rust enums, since a value C might return outside an enum would make one
 //! undefined.

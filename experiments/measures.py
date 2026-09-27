@@ -1,31 +1,49 @@
 # SPDX-FileCopyrightText: 2026 Yuma Kakei <yumasansansan@gmail.com>
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""How good a reconstruction is: PSNR, PSNR-B, and how much of it lies in the intervals.
+"""How good a reconstruction is: PSNR, PSNR-B, 8-bit samples, and how much of it lies in the intervals.
 
-PSNR-B is Yim and Bovik's PSNR with a blocking effect factor (IEEE Transactions
-on Image Processing 20(1), 2011): the mean squared error is increased by how much
-more the differences across block edges are than those within blocks.
+The measures of the experiments, in NumPy. PSNR-B is Yim and Bovik's PSNR with a
+blocking effect factor (IEEE Transactions on Image Processing 20(1), 2011): the mean
+squared error is increased by how much more the differences across block edges are
+than those within blocks.
 
 Pictures of integers -- 8-bit output, say -- have sums of squared differences that
 are integers, and means that are rationals: those are computed exactly, and enter
 floating point once, rounded to the nearest double, where a logarithm or the factor
 of the BEF needs it. Pictures of floating-point samples are summed in binary64.
+
+The coefficients of a picture are its block DCT by SciPy's orthonormal DCT-II, which
+is the DCT of JPEG (docs/math.md, 1.1); their intervals are those of a component's
+model as the reference implementation made it (unround.native.Problem), the canvas
+not level-shifted, and DC's with 1024 added.
 """
 
 import math
 from fractions import Fraction
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 import numpy as np
 import numpy.typing as npt
+from scipy.fft import dctn
 
-from unround import dct
-from unround.model import Problem, excess
+if TYPE_CHECKING:
+    from unround.native import Problem
 
-__all__ = ["blocking_effect_factor", "consistency", "mse", "picture_excess", "psnr", "psnr_b", "quantize"]
+__all__ = [
+    "block_dct",
+    "blocking_effect_factor",
+    "consistency",
+    "excess",
+    "mse",
+    "picture_excess",
+    "psnr",
+    "psnr_b",
+    "quantize",
+]
 
 type Array = npt.NDArray[np.float64]
 
+BLOCK: Final = 8
 _HALF: Final = 0.5
 _AXES: Final = 2  # a picture's: height and width
 
@@ -70,7 +88,7 @@ def psnr(reference: npt.ArrayLike, image: npt.ArrayLike, peak: float = 255.0) ->
     return _psnr_of(mse(reference, image), peak)
 
 
-def blocking_effect_factor(image: npt.ArrayLike, block: int = dct.BLOCK) -> float:
+def blocking_effect_factor(image: npt.ArrayLike, block: int = BLOCK) -> float:
     """Yim and Bovik's BEF of a greyscale picture whose blocks start at its top-left corner.
 
     The mean squared difference of neighbours across block edges, less that of neighbours
@@ -97,7 +115,7 @@ def blocking_effect_factor(image: npt.ArrayLike, block: int = dct.BLOCK) -> floa
     return math.log2(block) / math.log2(min(height, width)) * float(edges - inner)
 
 
-def psnr_b(reference: npt.ArrayLike, image: npt.ArrayLike, block: int = dct.BLOCK, peak: float = 255.0) -> float:
+def psnr_b(reference: npt.ArrayLike, image: npt.ArrayLike, block: int = BLOCK, peak: float = 255.0) -> float:
     """PSNR-B of image against reference, in dB: the PSNR of the MSE plus the image's BEF."""
     error = mse(reference, image)
     blocking = blocking_effect_factor(image, block)
@@ -123,22 +141,40 @@ def quantize(picture: npt.ArrayLike) -> npt.NDArray[np.uint8]:
     return np.asarray(np.clip(rounded, 0.0, 255.0), dtype=np.uint8)
 
 
+def block_dct(samples: npt.ArrayLike) -> Array:
+    """The DCT of every 8 x 8 block of samples of whole blocks, (rows, columns, 8, 8)."""
+    values = np.asarray(samples, dtype=np.float64)
+    height, width = values.shape
+    if height % BLOCK or width % BLOCK:
+        message = f"samples of {values.shape} are not whole blocks"
+        raise ValueError(message)
+    blocks = values.reshape(height // BLOCK, BLOCK, width // BLOCK, BLOCK).transpose(0, 2, 1, 3)
+    return np.asarray(dctn(blocks, axes=(2, 3), norm="ortho"), dtype=np.float64)
+
+
+def excess(problem: Problem, coefficients: npt.ArrayLike) -> Array:
+    """How far each coefficient lies outside its interval, in steps of its frequency (0 inside)."""
+    values = np.asarray(coefficients, dtype=np.float64)
+    beyond = np.maximum(np.maximum(problem.lower - values, values - problem.upper), 0.0)
+    return np.asarray(beyond / problem.steps, dtype=np.float64)
+
+
 def picture_excess(problem: Problem, picture: npt.ArrayLike) -> Array:
     """How far each coefficient of a picture lies outside its interval, in steps (0 inside).
 
-    picture has the picture's samples, (height, width), no larger than the canvas. It is
-    padded to the canvas as libjpeg's encoder pads a component, repeating the last column
+    picture has the samples of one component, (height, width), no larger than its blocks.
+    It is padded to them as libjpeg's encoder pads a component, repeating the last column
     and row: the coefficients are those that a file that encoded it would hold. Where the
-    picture is not whole blocks, the blocks at its right and bottom edges hold the
-    repeated samples, not the canvas's own.
+    picture is not whole blocks, the blocks at its right and bottom edges hold the repeated
+    samples, not the canvas's own.
     """
     samples = np.asarray(picture, dtype=np.float64)
-    rows, columns = problem.shape
+    rows, columns = BLOCK * problem.lower.shape[0], BLOCK * problem.lower.shape[1]
     if samples.ndim != _AXES or not (0 < samples.shape[0] <= rows and 0 < samples.shape[1] <= columns):
-        message = f"a picture of {samples.shape} does not fit a canvas of {problem.shape}"
+        message = f"a picture of {samples.shape} does not fit blocks over {(rows, columns)}"
         raise ValueError(message)
     padded = np.pad(samples, ((0, rows - samples.shape[0]), (0, columns - samples.shape[1])), mode="edge")
-    return excess(problem, dct.forward(padded))
+    return excess(problem, block_dct(padded))
 
 
 def consistency(problem: Problem, picture: npt.ArrayLike) -> tuple[float, float]:

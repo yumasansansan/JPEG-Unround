@@ -1,11 +1,14 @@
 # SPDX-FileCopyrightText: 2026 Yuma Kakei <yumasansansan@gmail.com>
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# The Python implementation of JPEG-Unround. Its environment is micromamba's
-# (environment.yml at the root of the repository); it reads JPEG files through
-# the C layer, built by CMake as a shared library (-DUNROUND_WITH_PYTHON=ON) and
-# found at the path in UNROUND_JPEGIO_LIBRARY. ci/python.sh builds that library
-# and runs ruff, mypy and pytest.
+# The Python package of JPEG-Unround: the reference implementation (Rust) through
+# its C interface, which ctypes calls, at the path in UNROUND_LIBRARY or in
+# unround/_native of a wheel; and the C layer that reads JPEG files, through that
+# library or its own, which CMake builds as a shared library
+# (-DUNROUND_WITH_PYTHON=ON) and the package finds at the path in
+# UNROUND_JPEGIO_LIBRARY. Its environment is micromamba's (environment.yml at the
+# root of the repository). ci/python.sh builds both libraries and runs ruff, mypy
+# and pytest.
 
 [build-system]
 requires = ["setuptools>=84"]
@@ -18,6 +21,9 @@ description = "JPEG decoding that removes compression artifacts within the quant
 license = "GPL-3.0-or-later"
 requires-python = ">=3.14"
 dependencies = ["numpy>=2.5"]
+
+[project.scripts]
+unround = "unround.native:main"
 
 [project.urls]
 Repository = "https://github.com/yumasansansan/JPEG-Unround"
