@@ -22,7 +22,7 @@ use std::ops::ControlFlow;
 
 use jpeg_unround::dct::{self, BLOCK, BLOCK_SIZE};
 use jpeg_unround::frames::{self, Frame, Tensor, Vector};
-use jpeg_unround::model::{DataTerm, Problem, Tgv, Tv};
+use jpeg_unround::model::{Problem, Tgv, Tv};
 use jpeg_unround::pdhg::{self, Initial, Options, Record, Weights};
 use jpeg_unround::results::{FrameResult, Stop};
 use jpeg_unround::subgradient;
@@ -30,7 +30,7 @@ use support::rounding::{self, U, gamma};
 use support::synthetic::{self, Numbers};
 
 fn grey(seed: u64) -> (Problem, Frame) {
-    let (problem, _) = synthetic::problem(16, 24, seed, 2.0, &DataTerm::default());
+    let (problem, _) = synthetic::problem(16, 24, seed, 2.0, &synthetic::MEASURED);
     (problem.clone(), Frame::one(problem))
 }
 
@@ -830,7 +830,7 @@ fn tv_of_a_colour_frame_converges_within_the_set() {
     // values about 1e4, far above their rounding; the canvases keep within 84 to 197, in the
     // box of the radius.
     for (ratio, coupled, threshold) in [((2, 2), true, 1e-4), ((2, 2), false, 7e-3), ((1, 1), true, 4e-6)] {
-        let (frame, _) = synthetic::colour_frame(20, 30, 70, ratio, &DataTerm::default());
+        let (frame, _) = synthetic::colour_frame(20, 30, 70, ratio, &synthetic::MEASURED);
         let mut observe = |record: &Record<'_>| {
             within_the_frame(&frame, record.coefficients, record.canvas);
             ControlFlow::Continue(())
@@ -866,7 +866,7 @@ fn tgv_of_a_colour_frame_converges_within_the_set() {
     // Measured after 6000 iterations, with the chroma of 4:2:0: a gap per sample of 1.0e-5
     // coupled and 4.6e-4 apart, and the scaling of the dual 1.
     for (coupled, threshold) in [(true, 1e-4), (false, 5e-3)] {
-        let (frame, _) = synthetic::colour_frame(20, 30, 70, (2, 2), &DataTerm::default());
+        let (frame, _) = synthetic::colour_frame(20, 30, 70, (2, 2), &synthetic::MEASURED);
         let mut observe = |record: &Record<'_>| {
             within_the_frame(&frame, record.coefficients, record.canvas);
             ControlFlow::Continue(())

@@ -115,10 +115,36 @@ fn each_method_keeps_the_intervals() {
 
 #[test]
 fn the_mmse_decoder_is_the_centres() {
-    let (data, _, _) = grey_file(31);
+    let (data, levels, table) = grey_file(31);
     let decoded = decode::decode(&data, &short(Method::Mmse), None).expect("the file decodes");
     let problem = decoded.frame.channels()[0].problem();
     assert_eq!(decoded.coefficients[0], problem.centres());
+    // They are the MMSE centres, whatever centres the data term takes: none farther from 0
+    // than the middle q Q, and some nearer.
+    for centres in [Centres::Mmse, Centres::Midpoint] {
+        let settings = Settings {
+            data: vec![DataTerm {
+                centres,
+                ..DataTerm::default()
+            }],
+            ..short(Method::Mmse)
+        };
+        let other = decode::decode(&data, &settings, None).expect("the file decodes");
+        assert_eq!(other.coefficients, decoded.coefficients);
+    }
+    let middles: Vec<(f64, f64)> = levels
+        .iter()
+        .enumerate()
+        .filter(|&(index, &level)| index % 64 != 0 && level != 0)
+        .map(|(index, &level)| {
+            (
+                problem.centres()[index].abs(),
+                (f64::from(level) * f64::from(table[index % 64])).abs(),
+            )
+        })
+        .collect();
+    assert!(middles.iter().all(|&(centre, middle)| centre <= middle));
+    assert!(middles.iter().any(|&(centre, middle)| centre < middle));
 }
 
 #[test]
@@ -131,7 +157,7 @@ fn the_settings_reach_the_model() {
             centres: Centres::Midpoint,
             ..DataTerm::default()
         }],
-        ..short(Method::Mmse)
+        ..short(Method::Tv)
     };
     let decoded = decode::decode(&data, &settings, None).expect("the file decodes");
     let problem = decoded.frame.channels()[0].problem();
@@ -145,9 +171,10 @@ fn the_settings_reach_the_model() {
         data: vec![DataTerm {
             mu: None,
             mu_scale: 2.0,
+            mu_power: 1.0,
             ..DataTerm::default()
         }],
-        ..short(Method::Mmse)
+        ..short(Method::Tv)
     };
     let decoded = decode::decode(&data, &rule, None).expect("the file decodes");
     let mean = f64::from(table.iter().map(|&step| u32::from(step)).sum::<u32>()) / 64.0;
@@ -171,6 +198,47 @@ fn colour_files_keep_their_intervals() {
             let ratios: Vec<(usize, usize)> = decoded.frame.channels().iter().map(frames::Channel::ratio).collect();
             assert_eq!(ratios, [(1, 1), ratio, ratio]);
         }
+    }
+}
+
+#[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "the weights are computed as the library computes them, to the last bit"
+)]
+fn the_chroma_take_the_rule_s_scale_times_their_factor() {
+    // By default mu follows the rule of each component's steps, and in Cb and Cr its scale
+    // is mu_scale times mu_chroma (docs/math.md, 4.1); DC is weighted as AC. A mu that is
+    // given is every component's.
+    let data = colour_file(36, (2, 2));
+    let defaults = DataTerm::default();
+    let decoded = decode::decode(&data, &short(Method::Tv), None).expect("the file decodes");
+    for (index, channel) in decoded.frame.channels().iter().enumerate() {
+        let problem = channel.problem();
+        let steps = problem.steps();
+        let mean = steps.iter().sum::<f64>() / 64.0;
+        let scale = if index == 0 {
+            defaults.mu_scale
+        } else {
+            defaults.mu_scale * defaults.mu_chroma
+        };
+        let mu = scale * mean.powf(defaults.mu_power);
+        for frequency in [0, 9] {
+            let weight = mu / (steps[frequency] * steps[frequency]);
+            assert_eq!(problem.weights()[frequency], weight, "{index} {frequency}");
+        }
+    }
+    let given = Settings {
+        data: vec![DataTerm {
+            mu: Some(2.0),
+            ..DataTerm::default()
+        }],
+        ..short(Method::Tv)
+    };
+    let decoded = decode::decode(&data, &given, None).expect("the file decodes");
+    for channel in decoded.frame.channels() {
+        let problem = channel.problem();
+        assert_eq!(problem.weights()[9], 2.0 / (problem.steps()[9] * problem.steps()[9]));
     }
 }
 

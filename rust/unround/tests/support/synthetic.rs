@@ -7,7 +7,7 @@
 use jpeg_unround::colour;
 use jpeg_unround::dct::{self, BLOCK, BLOCK_SIZE};
 use jpeg_unround::frames::{Channel, Frame};
-use jpeg_unround::model::{DataTerm, Problem};
+use jpeg_unround::model::{Centres, DataTerm, Problem};
 
 /// The luminance table of the JPEG standard (Annex K), at quality 50, in natural order.
 pub const ANNEX_K: [u16; BLOCK_SIZE] = [
@@ -22,6 +22,21 @@ pub const ANNEX_K_CHROMA: [u16; BLOCK_SIZE] = [
     99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99,
     99, 99, 99, 99, 99, 99,
 ];
+
+/// The data term that the solvers' regression values are measured with (`tests/measure.rs`):
+/// a weak one, `mu = 1e-3` with the MMSE centres and DC unweighted, which leaves the
+/// regularizer most of the work.
+pub const MEASURED: DataTerm = DataTerm {
+    mu: Some(1e-3),
+    mu_scale: 1.0,
+    mu_power: 1.0,
+    mu_chroma: 1.0,
+    slack: 0.0,
+    dc_weight: 0.0,
+    centres: Centres::Mmse,
+    power: 2.0,
+    slack_cost: 0.0,
+};
 
 /// A deterministic stream of numbers, the `SplitMix64` generator.
 #[derive(Debug, Clone)]

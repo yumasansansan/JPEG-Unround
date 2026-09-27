@@ -115,6 +115,7 @@ data_terms = st.builds(
     mu=st.none() | at_least_zero,
     mu_scale=at_least_zero,
     mu_power=finite,
+    mu_chroma=at_least_zero,
     slack=at_least_zero,
     dc_weight=at_least_zero,
     centres=st.sampled_from(["mmse", "midpoint"]),
@@ -182,6 +183,7 @@ def test_the_settings_reach_the_library_to_the_last_bit(
     for name, field in (
         ("mu-scale", "mu_scale"),
         ("mu-power", "mu_power"),
+        ("mu-chroma", "mu_chroma"),
         ("weight-power", "power"),
         ("dc-weight", "dc_weight"),
         ("slack", "slack"),
@@ -302,12 +304,17 @@ def test_a_colour_file_is_reconstructed_within_its_intervals(method: Method, sub
 
 def test_the_centres_follow_the_data_term() -> None:
     # The middles are exact: q Q, and DC's with 1024. The MMSE centres lie in the halves
-    # of the bins towards 0, DC's and those of 0 at the middles.
+    # of the bins towards 0, DC's and those of 0 at the middles. The method mmse takes the
+    # MMSE centres whatever the data term's.
     data = colour_file("4:2:0")
     image = jpegio.read(data)
-    middles = native.decode(data, Settings(method="mmse", data=DataTerm(centres="midpoint", slack=0.5)))
+    solved = Settings(method="tv", data=DataTerm(centres="midpoint", slack=0.5), pdhg=PdhgOptions(iterations=1))
+    middles = native.decode(data, solved)
     check_exact(middles, image, slack=0.5)
     mmse = native.decode(data, Settings(method="mmse"))
+    also = native.decode(data, Settings(method="mmse", data=DataTerm(centres="mmse")))
+    for by_default, by_mmse in zip(mmse.coefficients, also.coefficients, strict=True):
+        np.testing.assert_array_equal(bits(by_default), bits(by_mmse))
     for component, one, other in zip(image.components, middles.problems, mmse.problems, strict=True):
         levels = component.coefficients.astype(np.float64)
         steps = component.quant_table.astype(np.float64)
@@ -329,13 +336,19 @@ def test_the_centres_follow_the_data_term() -> None:
 def test_the_weights_are_those_of_the_data_term() -> None:
     # mu / Q^p, one division by the power of the step, which is exact for p of 1 and 2,
     # and DC's times its weight (docs/math.md, 4.1). The rule's mu is mu_scale times the
-    # mean of the 64 steps, whose sum is exact and so is its division by 64.
+    # mean of the 64 steps, whose sum is exact and so is its division by 64, to the power 1;
+    # in Cb and Cr, the scale is mu_scale times mu_chroma first.
     data = colour_file("4:2:0")
-    terms = (DataTerm(mu=0.25, dc_weight=3.0), DataTerm(mu=None, mu_scale=1e-3, power=1.0), DataTerm(power=2.0))
+    terms = (
+        DataTerm(mu=0.25, dc_weight=3.0),
+        DataTerm(mu=None, mu_scale=1e-3, mu_power=1.0, mu_chroma=0.1, power=1.0),
+        DataTerm(mu=1e-3, dc_weight=0.0, power=2.0),
+    )
     decoded = native.decode(data, Settings(method="mmse", data=terms))
-    for term, problem in zip(terms, decoded.problems, strict=True):
+    for index, (term, problem) in enumerate(zip(terms, decoded.problems, strict=True)):
         steps = problem.steps
-        mu = term.mu if term.mu is not None else term.mu_scale * (float(np.sum(steps)) / 64.0)
+        scale = term.mu_scale * term.mu_chroma if index > 0 else term.mu_scale
+        mu = term.mu if term.mu is not None else scale * (float(np.sum(steps)) / 64.0)
         expected = mu / (steps * steps if term.power == 2.0 else steps)
         expected[0, 0] *= term.dc_weight
         np.testing.assert_array_equal(bits(problem.weights), bits(expected))

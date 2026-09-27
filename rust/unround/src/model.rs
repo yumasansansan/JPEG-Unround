@@ -28,9 +28,9 @@ pub const LEVEL_SHIFT_DC: f64 = 1024.0;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Centres {
     /// The MMSE centres of the Laplace model (docs/math.md, 2.2).
-    #[default]
     Mmse,
     /// The middles of the intervals, `q Q`, which are exact.
+    #[default]
     Midpoint,
 }
 
@@ -39,10 +39,12 @@ pub enum Centres {
 ///
 /// `mu` weights the data term; where it is `None`, it is `mu_scale` times the mean of
 /// the component's 64 steps to the power `mu_power`, which follows the
-/// quantization. `slack` widens every interval by that many steps on each side;
-/// `slack_cost` is what leaving the file's own interval costs, within the slack,
-/// per step (0: nothing). The weight of an AC coefficient is `mu / Q^power`, and
-/// that of DC `dc_weight` times it.
+/// quantization, and in the chroma of a file in YCbCr the scale is `mu_chroma` times
+/// `mu_scale` ([`DataTerm::of_chroma`]). `slack` widens every interval by that many
+/// steps on each side; `slack_cost` is what leaving the file's own interval costs,
+/// within the slack, per step (0: nothing). The weight of an AC coefficient is
+/// `mu / Q^power`, and that of DC `dc_weight` times it. The defaults are those of
+/// docs/math.md, 4.1.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DataTerm {
     /// The weight of the data term, or `None` for the rule of the quantization.
@@ -51,6 +53,8 @@ pub struct DataTerm {
     pub mu_scale: f64,
     /// The power of the mean step in the rule of `mu`.
     pub mu_power: f64,
+    /// The rule's scale in the chroma, a factor of `mu_scale`.
+    pub mu_chroma: f64,
     /// The slack of the intervals, in steps on each side.
     pub slack: f64,
     /// The weight of DC, a factor of that of AC.
@@ -66,14 +70,32 @@ pub struct DataTerm {
 impl Default for DataTerm {
     fn default() -> Self {
         Self {
-            mu: Some(1e-3),
-            mu_scale: 1.0,
-            mu_power: 1.0,
+            mu: None,
+            mu_scale: 9.0,
+            mu_power: 0.9,
+            mu_chroma: 0.3,
             slack: 0.0,
-            dc_weight: 0.0,
-            centres: Centres::Mmse,
+            dc_weight: 1.0,
+            centres: Centres::Midpoint,
             power: 2.0,
             slack_cost: 0.0,
+        }
+    }
+}
+
+impl DataTerm {
+    /// The data term of a chroma component, Cb or Cr of a file in YCbCr: where `mu`
+    /// follows the rule, its scale is `mu_scale` times `mu_chroma`, rounded once; a
+    /// `mu` that is given is taken as it is (docs/math.md, 4.1). [`Problem::new`]
+    /// takes the scale as it is given.
+    #[must_use]
+    pub fn of_chroma(&self) -> Self {
+        if self.mu.is_some() {
+            return *self;
+        }
+        Self {
+            mu_scale: self.mu_scale * self.mu_chroma,
+            ..*self
         }
     }
 }
@@ -199,8 +221,8 @@ impl Step {
 /// mean step to the power `mu_power` (docs/math.md, 4.1).
 ///
 /// The mean of the 64 steps is exact: their sum is an integer below 2^22, and
-/// dividing it by 64 is exact. The power is 1 by default, which rounds nothing
-/// more.
+/// dividing it by 64 is exact. The power 1 rounds nothing more; another rounds as
+/// the platform's `pow` does.
 #[must_use]
 pub fn rule_mu(data: &DataTerm, table: &[u16; BLOCK_SIZE]) -> f64 {
     if let Some(mu) = data.mu {
@@ -683,10 +705,11 @@ fn check(
     scale: Option<&[f64; BLOCK_SIZE]>,
 ) -> Result<(), Error> {
     let refuse = |message: String| Err(Error::Options(message));
-    if !(finite_at_least_zero(data.mu_scale) && data.mu_power.is_finite()) {
+    if !(finite_at_least_zero(data.mu_scale) && finite_at_least_zero(data.mu_chroma) && data.mu_power.is_finite()) {
         return refuse(format!(
-            "the scale of mu is at least 0 and finite, and its power finite, not {} and {}",
-            data.mu_scale, data.mu_power
+            "the scale of mu and its factor in the chroma are at least 0 and finite, and its power finite, not {}, {} \
+             and {}",
+            data.mu_scale, data.mu_chroma, data.mu_power
         ));
     }
     let mu = rule_mu(data, table);
@@ -742,6 +765,7 @@ mod tests {
         let data = DataTerm {
             mu: Some(0.5),
             slack: 0.25,
+            dc_weight: 0.0,
             ..DataTerm::default()
         };
         let problem = Problem::new(&levels, 1, 1, &[10; BLOCK_SIZE], &data, None).expect("a problem");
@@ -839,6 +863,13 @@ mod tests {
                 },
                 "power",
             ),
+            (
+                DataTerm {
+                    mu_chroma: f64::NAN,
+                    ..DataTerm::default()
+                },
+                "chroma",
+            ),
         ];
         for (data, fragment) in cases {
             let error = Problem::new(&levels, 1, 1, &[1; BLOCK_SIZE], &data, None).expect_err("refused");
@@ -890,6 +921,8 @@ mod tests {
         // The MMSE centre of a level that is not 0 lies nearer 0 than the middle.
         let data = DataTerm {
             mu: Some(0.5),
+            dc_weight: 0.0,
+            centres: Centres::Mmse,
             ..DataTerm::default()
         };
         let mmse = Problem::new(&levels, 1, 1, &table, &data, None).expect("a problem");
@@ -911,6 +944,27 @@ mod tests {
         assert_eq!(rule_mu(&rule(None, 1.0), &table), 5.0 * 11.0);
         assert_eq!(rule_mu(&rule(None, 2.0), &table), 5.0 * 121.0);
         assert_eq!(rule_mu(&rule(Some(2.5), 1.0), &table), 2.5);
+        // The chroma's scale is the scale times its factor, rounded once, and a mu given
+        // is the chroma's too.
+        let chroma = |mu: Option<f64>| DataTerm {
+            mu_chroma: 0.3,
+            ..rule(mu, 1.0)
+        };
+        assert_eq!(rule_mu(&chroma(None).of_chroma(), &table), (5.0 * 0.3) * 11.0);
+        assert_eq!(rule_mu(&chroma(None), &table), 5.0 * 11.0);
+        assert_eq!(rule_mu(&chroma(Some(2.5)).of_chroma(), &table), 2.5);
+    }
+
+    #[test]
+    fn the_defaults_are_those_of_the_documentation() {
+        let data = DataTerm::default();
+        assert_eq!(data.mu, None);
+        assert_eq!((data.mu_scale, data.mu_power, data.mu_chroma), (9.0, 0.9, 0.3));
+        assert_eq!(
+            (data.dc_weight, data.power, data.slack, data.slack_cost),
+            (1.0, 2.0, 0.0, 0.0)
+        );
+        assert_eq!(data.centres, Centres::Midpoint);
     }
 
     #[test]

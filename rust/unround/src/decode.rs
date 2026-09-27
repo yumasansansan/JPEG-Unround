@@ -5,11 +5,10 @@
 //! (docs/math.md, 1.3 and 8).
 //!
 //! The components are reconstructed on one canvas ([`frames`]) by one of the
-//! methods, and the picture is cut from it. The methods are the decoder of the data
-//! term's centres ([`Method::Mmse`]: the MMSE decoder with the default centres,
-//! docs/math.md, 2.3), TV and TGV by the primal-dual method (5), and, for greyscale
-//! files, TV by the subgradient method of jpeg2png's kind (7), which is there to be
-//! compared with. A file in YCbCr is solved in YCbCr, and its picture is the RGB that
+//! methods, and the picture is cut from it. The methods are the MMSE decoder
+//! ([`Method::Mmse`], docs/math.md, 2.3), TV and TGV by the primal-dual method (5),
+//! and, for greyscale files, TV by the subgradient method of jpeg2png's kind (7),
+//! which is there to be compared with. A file in YCbCr is solved in YCbCr, and its picture is the RGB that
 //! JFIF's conversion gives (8); that of a file in RGB, or greyscale, is its canvas.
 
 use jpegio_sys::{ColorSpace, Image};
@@ -17,7 +16,7 @@ use jpegio_sys::{ColorSpace, Image};
 use crate::colour;
 use crate::error::Error;
 use crate::frames::{self, Frame};
-use crate::model::{DataTerm, Problem, Tgv, Tv};
+use crate::model::{Centres, DataTerm, Problem, Tgv, Tv};
 use crate::pdhg::{self, Observer};
 use crate::results::FrameResult;
 use crate::subgradient;
@@ -25,7 +24,7 @@ use crate::subgradient;
 /// How a file is reconstructed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Method {
-    /// The decoder of the data term's centres.
+    /// The MMSE decoder, whatever centres the data term takes.
     Mmse,
     /// TV by the primal-dual method.
     Tv,
@@ -198,15 +197,23 @@ impl Input {
     }
 }
 
-/// The data term of component `index`: the one of every component, or its own.
-fn data_of(settings: &Settings, index: usize, count: usize) -> Result<&DataTerm, Error> {
-    match settings.data.len() {
-        1 => Ok(&settings.data[0]),
-        length if length == count => Ok(&settings.data[index]),
-        length => Err(Error::Options(format!(
-            "options of G for each of the {count} components, or one for all, not {length}"
-        ))),
-    }
+/// The data term of component `index`: the one of every component, or its own; of
+/// Cb and Cr in a file in YCbCr, that of the chroma ([`DataTerm::of_chroma`]).
+fn data_of(settings: &Settings, index: usize, count: usize, color_space: ColorSpace) -> Result<DataTerm, Error> {
+    let data = match settings.data.len() {
+        1 => settings.data[0],
+        length if length == count => settings.data[index],
+        length => {
+            return Err(Error::Options(format!(
+                "options of G for each of the {count} components, or one for all, not {length}"
+            )));
+        }
+    };
+    Ok(if color_space == ColorSpace::YCbCr && index > 0 {
+        data.of_chroma()
+    } else {
+        data
+    })
 }
 
 /// The frame of an input's components (docs/math.md, 1.3), with the model of the
@@ -234,13 +241,13 @@ pub fn frame_of(input: &Input, settings: &Settings) -> Result<Frame, Error> {
     let mut problems = Vec::with_capacity(count);
     let mut factors = Vec::with_capacity(count);
     for (index, component) in input.components.iter().enumerate() {
-        let data = data_of(settings, index, count)?;
+        let data = data_of(settings, index, count, input.color_space)?;
         problems.push(Problem::new(
             &component.levels,
             component.rows,
             component.columns,
             &component.quant_table,
-            data,
+            &data,
             None,
         )?);
         factors.push((component.h_samp_factor, component.v_samp_factor));
@@ -255,7 +262,17 @@ pub fn frame_of(input: &Input, settings: &Settings) -> Result<Frame, Error> {
 ///
 /// The errors of [`frame_of`] and of the solvers.
 pub fn solve(input: &Input, settings: &Settings, observer: Option<&mut Observer<'_>>) -> Result<Decoded, Error> {
-    let frame = frame_of(input, settings)?;
+    let frame = if settings.method == Method::Mmse {
+        // The MMSE decoder has the MMSE centres, whatever centres the solvers' data term
+        // takes (docs/math.md, 2.3).
+        let mut mmse = settings.clone();
+        for data in &mut mmse.data {
+            data.centres = Centres::Mmse;
+        }
+        frame_of(input, &mmse)?
+    } else {
+        frame_of(input, settings)?
+    };
     let result = match settings.method {
         Method::Mmse => None,
         Method::Tv => Some(pdhg::solve_tv(&frame, &settings.tv, &settings.pdhg, None, observer)?),

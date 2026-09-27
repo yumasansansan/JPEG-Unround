@@ -8,7 +8,7 @@
 mod support;
 
 use jpeg_unround::frames::Frame;
-use jpeg_unround::model::{DataTerm, Tgv, Tv};
+use jpeg_unround::model::{Tgv, Tv};
 use jpeg_unround::pdhg::{self, Options};
 use jpeg_unround::results::FrameResult;
 use jpeg_unround::subgradient;
@@ -20,7 +20,7 @@ fn per_sample(result: &FrameResult, samples: usize) -> f64 {
 }
 
 fn grey(seed: u64) -> Frame {
-    Frame::one(synthetic::problem(16, 24, seed, 2.0, &DataTerm::default()).0)
+    Frame::one(synthetic::problem(16, 24, seed, 2.0, &synthetic::MEASURED).0)
 }
 
 fn fixed(iterations: u64, ratio: f64, relaxation: Option<f64>, record_every: u64) -> Options {
@@ -133,7 +133,7 @@ fn measure() {
         primal_dual.history.dual[1], primal_dual.history.primal[1], stepped.history.primal[1]
     );
     for (ratio, coupled) in [((2, 2), true), ((2, 2), false), ((1, 1), true)] {
-        let (frame, _) = synthetic::colour_frame(20, 30, 70, ratio, &DataTerm::default());
+        let (frame, _) = synthetic::colour_frame(20, 30, 70, ratio, &synthetic::MEASURED);
         let weights = Tv {
             coupled,
             ..Tv::default()
@@ -155,7 +155,7 @@ fn measure() {
         );
     }
     for coupled in [true, false] {
-        let (frame, _) = synthetic::colour_frame(20, 30, 70, (2, 2), &DataTerm::default());
+        let (frame, _) = synthetic::colour_frame(20, 30, 70, (2, 2), &synthetic::MEASURED);
         let weights = Tgv {
             coupled,
             ..Tgv::default()

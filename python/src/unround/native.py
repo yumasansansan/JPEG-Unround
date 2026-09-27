@@ -240,6 +240,7 @@ def _data_options(data: DataTerm | tuple[DataTerm, ...]) -> list[str]:
         ("--mu", lambda term: "rule" if term.mu is None else _number(term.mu)),
         ("--mu-scale", lambda term: _number(term.mu_scale)),
         ("--mu-power", lambda term: _number(term.mu_power)),
+        ("--mu-chroma", lambda term: _number(term.mu_chroma)),
         ("--weight-power", lambda term: _number(term.power)),
         ("--dc-weight", lambda term: _number(term.dc_weight)),
         ("--centres", lambda term: term.centres),

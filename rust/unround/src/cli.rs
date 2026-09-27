@@ -39,8 +39,9 @@ Output:      --format tiff|png|pnm  --bits 8|16  --compression 0-9  --ycbcr
              --orientation apply|keep  --no-icc  --overwrite
 Method:      --method mmse|tv|tgv|subgradient  --alpha A  --alpha1 A  --alpha0 A
              --channel-weights G,G,G  --channels coupled|apart
-Data term:   --mu X|rule  --mu-scale S  --mu-power R  --weight-power P  --dc-weight W
-             --centres mmse|midpoint  --slack S  --slack-cost B   (one value, or one per component)
+Data term:   --mu X|rule  --mu-scale S  --mu-power R  --mu-chroma K  --weight-power P
+             --dc-weight W  --centres mmse|midpoint  --slack S  --slack-cost B
+             (one value, or one per component)
 Solver:      --iterations N  --tolerance X  --relative-tolerance X  --partial-tolerance X
              --partial-radius X  --step-ratio X  --relaxation X  --step-product X
              --norm-squared X  --no-weight-scaling  --record-every N  --free-radius R
@@ -65,6 +66,7 @@ const VALUED: &[&str] = &[
     "mu",
     "mu-scale",
     "mu-power",
+    "mu-chroma",
     "weight-power",
     "dc-weight",
     "centres",
@@ -343,6 +345,11 @@ fn data_terms(reader: &mut Reader<'_>) -> Vec<DataTerm> {
         "at least 0 and finite",
     );
     let mu_power = reader.list("mu-power", |item| number_list(item, finite), "finite");
+    let mu_chroma = reader.list(
+        "mu-chroma",
+        |item| number_list(item, at_least_zero),
+        "at least 0 and finite",
+    );
     let power = reader.list(
         "weight-power",
         |item| number_list(item, at_least_zero),
@@ -376,6 +383,7 @@ fn data_terms(reader: &mut Reader<'_>) -> Vec<DataTerm> {
         mu.as_ref().map(Vec::len),
         mu_scale.as_ref().map(Vec::len),
         mu_power.as_ref().map(Vec::len),
+        mu_chroma.as_ref().map(Vec::len),
         power.as_ref().map(Vec::len),
         dc_weight.as_ref().map(Vec::len),
         slack.as_ref().map(Vec::len),
@@ -406,6 +414,7 @@ fn data_terms(reader: &mut Reader<'_>) -> Vec<DataTerm> {
                     .map_or(defaults.mu, |values| values[if values.len() == 1 { 0 } else { index }]),
                 mu_scale: pick(&mu_scale, defaults.mu_scale),
                 mu_power: pick(&mu_power, defaults.mu_power),
+                mu_chroma: pick(&mu_chroma, defaults.mu_chroma),
                 slack: pick(&slack, defaults.slack),
                 dc_weight: pick(&dc_weight, defaults.dc_weight),
                 centres: centres.as_ref().map_or(defaults.centres, |values| {
@@ -592,10 +601,11 @@ pub fn options_of(settings: &Settings) -> Vec<String> {
     }
     put("channels", (if coupled { "coupled" } else { "apart" }).to_owned());
     let terms = &settings.data;
-    let fields: [Field<'_>; 8] = [
+    let fields: [Field<'_>; 9] = [
         ("mu", &|term| term.mu.map_or_else(|| "rule".to_owned(), decimal)),
         ("mu-scale", &|term| decimal(term.mu_scale)),
         ("mu-power", &|term| decimal(term.mu_power)),
+        ("mu-chroma", &|term| decimal(term.mu_chroma)),
         ("weight-power", &|term| decimal(term.power)),
         ("dc-weight", &|term| decimal(term.dc_weight)),
         ("centres", &|term| {
@@ -1085,7 +1095,7 @@ mod tests {
     #[expect(clippy::float_cmp, reason = "values are read as they are written")]
     fn the_options_reach_the_settings() {
         let Ok(Request::Run(command)) = parse(arguments(
-            "--method tv --alpha 2 --mu 0.01,rule,0.5 --mu-scale 9 --centres midpoint --slack 0.5 \
+            "--method tv --alpha 2 --mu 0.01,rule,0.5 --mu-scale 9 --mu-chroma 0.5 --centres midpoint --slack 0.5 \
              --iterations 300 --tolerance=1e-5 --relaxation 1.5 --record-every 5 --no-weight-scaling in.jpg out.tif",
         )) else {
             panic!("the arguments are taken");
@@ -1096,6 +1106,7 @@ mod tests {
         assert_eq!(command.settings.data[0].mu, Some(0.01));
         assert_eq!(command.settings.data[1].mu, None);
         assert_eq!(command.settings.data[1].mu_scale, 9.0);
+        assert_eq!(command.settings.data[1].mu_chroma, 0.5);
         assert_eq!(command.settings.data[2].centres, Centres::Midpoint);
         assert_eq!(command.settings.data[2].slack, 0.5);
         assert_eq!(command.settings.pdhg.iterations, Some(300));
@@ -1162,9 +1173,10 @@ mod tests {
                 DataTerm {
                     mu: Some(1e300),
                     mu_power: -0.5,
+                    mu_chroma: 0.1 + 0.2,
                     slack: 0.5,
                     dc_weight: 3.0,
-                    centres: Centres::Midpoint,
+                    centres: Centres::Mmse,
                     power: 1.0,
                     slack_cost: 7.0,
                     ..DataTerm::default()

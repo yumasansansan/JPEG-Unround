@@ -24,20 +24,23 @@ class DataTerm:
     """The options of G: the weights and the centres of the data term, and the intervals' slack.
 
     mu weights the data term; where it is None, it is mu_scale times the mean of the
-    component's 64 steps to the power mu_power, which follows the quantization. slack widens
-    every interval by that many steps on each side (docs/math.md, 1.2); slack_cost is what
-    leaving the file's own interval costs, within the slack, per step (0: nothing). The
-    weight of an AC coefficient is mu / Q^power, and that of DC dc_weight times it (4.1).
-    centres are the data term's: "mmse", the MMSE centres of the Laplace model (2.2), or
-    "midpoint", the middles of the intervals, q Q.
+    component's 64 steps to the power mu_power, which follows the quantization, and in the
+    chroma of a file in YCbCr (Cb and Cr) the scale is mu_chroma times mu_scale; a mu that is
+    given is every component's. slack widens every interval by that many steps on each side
+    (docs/math.md, 1.2); slack_cost is what leaving the file's own interval costs, within the
+    slack, per step (0: nothing). The weight of an AC coefficient is mu / Q^power, and that of
+    DC dc_weight times it (4.1). centres are the data term's: "mmse", the MMSE centres of the
+    Laplace model (2.2), or "midpoint", the middles of the intervals, q Q. The defaults are
+    those of docs/math.md, 4.1.
     """
 
-    mu: float | None = 1e-3
-    mu_scale: float = 1.0
-    mu_power: float = 1.0
+    mu: float | None = None
+    mu_scale: float = 9.0
+    mu_power: float = 0.9
+    mu_chroma: float = 0.3
     slack: float = 0.0
-    dc_weight: float = 0.0
-    centres: Centres = "mmse"
+    dc_weight: float = 1.0
+    centres: Centres = "midpoint"
     power: float = 2.0
     slack_cost: float = 0.0
 
@@ -122,8 +125,8 @@ class SubgradientOptions:
 class Settings:
     """The method, the model, and the solvers' options.
 
-    method is "mmse", the decoder of the data term's centres (docs/math.md, 2.3), "tv" or
-    "tgv" by the primal-dual method (5), or "subgradient", TV by a method of jpeg2png's kind
+    method is "mmse", the MMSE decoder whatever centres the data term takes (docs/math.md,
+    2.3), "tv" or "tgv" by the primal-dual method (5), or "subgradient", TV by a method of jpeg2png's kind
     (7), for greyscale files, to compare with. data are the options of G, one for every
     component or one for each; tv and tgv are the weights of the models, with how they take
     the channels; and pdhg and subgradient the options of the solvers.

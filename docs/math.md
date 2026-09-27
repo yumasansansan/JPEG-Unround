@@ -301,18 +301,19 @@ The MAP estimate under the same model would be the end of the interval nearest
 0, which is worse in mean square: the centres are the conditional means.
 
 The DC coefficient does not follow a Laplace distribution. Its centre is the
-centre of its interval, $q_0 Q_0 + 1024$, and the data term below leaves it
-out by default.
+centre of its interval, $q_0 Q_0 + 1024$.
 
-The data term can take the middles of the intervals, $q_k Q_k$ (with 1024
-added on DC), as its centres instead. They are exact, and their decoder is the
-plain one, without rounding.
+By default the data term (4.1) takes the middles of the intervals, $q_k Q_k$
+(with 1024 added on DC), as its centres instead. They are exact, and their
+decoder is the plain one, without rounding.
 
 ### 2.3 The MMSE decoder
 
 $x = D^\top \hat c$, with the DC centres as above, is a decoder of its own: the
-coefficients' conditional means. It costs one inverse DCT, lies in
-$\mathcal{C}$, and is the default starting point of the solvers below.
+coefficients' conditional means. It costs one inverse DCT and lies in
+$\mathcal{C}$. The method `mmse` is this decoder, whatever centres the data term
+takes; the decoder of the data term's centres, the plain one by default, is
+where the solvers start (5).
 
 ## 3. Finite differences
 
@@ -381,16 +382,30 @@ $\omega_{\mathrm{DC}} \ge 0$ and $p \ge 0$, and the centres $\hat c_k$ (those of
 $$ G(x) = \frac{\mu}{2} \sum_k \omega_k (c_k - \hat c_k)^2 + \iota_{[a, b]}(c), $$
 
 where $\iota$ is 0 on its set and $+\infty$ off it. $G$ is separable in the
-coefficients, and so are its proximal map and its conjugate. By default
-$\mu = 10^{-3}$, $p = 2$, $\omega_{\mathrm{DC}} = 0$ (DC follows no Laplace model,
-and its centre is only the middle of its interval), the centres are the MMSE
-ones, and there is no slack.
+coefficients, and so are its proximal map and its conjugate.
 
-$\mu$ can instead follow the quantization of the component:
-$\mu = \mu_s \bar Q^{\,r}$, where $\bar Q$ is the mean of its 64 steps. $\bar Q$ is
-exact (an integer sum over 64), and with $r = 1$ nothing more rounds but the
-product. The scale $\mu_s$ and the power $r$ are options; the rule is not the
-default yet.
+By default $\mu$ follows the quantization of the component,
+$\mu = \mu_s \bar Q^{\,r}$, where $\bar Q$ is the mean of its 64 steps, with
+$\mu_s = 9$ and $r = 0.9$; in the chroma of a file in YCbCr (Cb and Cr) the scale
+is $\chi \mu_s$, with $\chi = 0.3$. A $\mu$ that is given is taken as it is, in
+every component. By default, too, $p = 2$, $\omega_{\mathrm{DC}} = 1$ (DC weighted
+as AC), the centres are the middles of the intervals, and there is no slack.
+
+These defaults gained most over the standard decoder on the tuning images
+(`experiments/results/phase2-weights.md`). The middles gained more than the MMSE
+centres but on the photographs at the quality 90; each file's best $\mu$ grows
+with the steps, about as $9 \bar Q^{0.9}$; DC weighted gained 0.02 to 0.36 dB, and
+the chroma's $\mu$ lowered up to 0.47 dB. With them TV gains, in the median by
+quality, 1.2 to 4.3 dB of the 8-bit PSNR over the standard decoder on the
+synthetic images and 0.5 to 1.5 dB on the photographs, where the former defaults
+($\mu = 10^{-3}$, the MMSE centres, DC unweighted) gained 0.4 to 1.3 dB on the
+synthetic greyscale images and lost 0.5 to 0.9 dB on the photographs in grey.
+The SSIM prefers a smaller $\mu$ at low qualities.
+
+$\bar Q$ is exact (an integer sum over 64), and with $r = 1$ nothing more rounds
+but the products, $(\chi \mu_s) \bar Q$ in the chroma, in that order: $\mu$ then
+agrees between implementations to the last bit. With another power $\bar Q^{\,r}$
+rounds as the platform's `pow` does, and $\mu$ may differ in its last bits.
 
 **Proximal map.** For $\tau > 0$ and $e = D v$,
 $\mathrm{prox}_{\tau G}(v) = D^\top \zeta$ with
@@ -584,10 +599,11 @@ runs is 2 to 540 for TV and 150 to 2900 for TGV, while the ratios that bring the
 gap down fastest are 10 to 30 for TV and 3 to 10 for TGV. The default ratio
 (6.5) is the one measured to stop soonest.
 
-**Start.** By default $x$ is the MMSE decoder's output (2.3; with several
-components, $\nu_c^{-1} A_c^\top \hat c_c$ for each, the inverse DCT of its
-centres repeated over its cells, and 128 beyond its blocks), $w = \nabla x$, and
-the dual variables are 0. Any start can be given instead: its coefficients are
+**Start.** By default $x$ is the decoder of the data term's centres (2.3; the
+plain decoder with the middles; with several components,
+$\nu_c^{-1} A_c^\top \hat c_c$ for each, the inverse DCT of its centres repeated
+over its cells, and 128 beyond its blocks), $w = \nabla x$, and the dual
+variables are 0. Any start can be given instead: its coefficients are
 clipped to their intervals, and its $p$ and $r$ projected onto their balls.
 (Starting $w$ at 0 puts it 3 to 10 times nearer
 the solution's $w$, which is small across the jumps of the picture, and divides
@@ -734,13 +750,15 @@ and so a gap of $\varepsilon$ per sample bounds
 
 $$ \frac{1}{N} \sum_{k\ \mathrm{AC}} \Bigl(\frac{c_k - c^\ast_k}{Q_k}\Bigr)^2 \le \frac{2 \varepsilon}{\mu}. $$
 
-At $\varepsilon = 10^{-2}$ and $\mu = 10^{-3}$ that allows the coefficients
-$\sqrt{20} \approx 4.5$ steps from the least point on average: more than their
-intervals are wide. The least point is unique in its AC coefficients, but the
-objective is almost flat around it: on the tuning images, the iterates of TV
-still move by hundredths to tenths of a grey level (RMS) thousands of
-iterations after the objective, and the PSNR of the result, have settled. The
-tolerance is therefore chosen by how much stopping changes the result.
+At $\varepsilon = 10^{-2}$ and the former default $\mu = 10^{-3}$ that allows the
+coefficients $\sqrt{20} \approx 4.5$ steps from the least point on average: more
+than their intervals are wide. The least point is unique in its AC coefficients,
+but the objective was almost flat around it: on the tuning images, the iterates
+of TV still moved by hundredths to tenths of a grey level (RMS) thousands of
+iterations after the objective, and the PSNR of the result, had settled. The
+tolerance is therefore chosen by how much stopping changes the result. With
+$\mu$ by the rule of 4.1, about 80 at the quality 90 and 1000 at 10 (libjpeg's
+luminance tables), the bound is 300 to 1000 times smaller.
 
 For the same reason what stopping at a gap leaves depends on the path the
 iterates took, and not on the gap alone. Stopped at a gap per sample of
@@ -807,6 +825,12 @@ a gap of $10^{-6}$ per sample, its PSNR falling as it nears its least point:
 that is the staircasing of TV, not an error of the stop. The defaults stand for
 colour files as well, until they are chosen again with the weights of the
 channels.
+
+**The data term.** These defaults were chosen with the former data term
+($\mu = 10^{-3}$, the MMSE centres, DC unweighted), and stand for that of 4.1
+until they are chosen again. With it, the medians by quality on the tuning files
+(`experiments/results/phase2-weights.md`) were 40 to 1900 iterations for TV and
+300 to 1150 for TGV.
 
 These are for $\alpha = 1$ (for TGV $\alpha_1 = 1$, with $\alpha_0 = 2 \alpha_1$).
 The dual variables are in units of $\alpha$ and the objective scales with it,
@@ -1005,9 +1029,10 @@ iteration is compared more closely.
 What is rational is the same in every implementation (Arithmetic), and the cases
 compare it to the last bit: the ends of the intervals; the weights of the data
 term, $\mu \omega_k$, with $\mu$ given or following the quantization with the
-power 1 (4.1); and the steps $\tau = \sqrt{\kappa \vartheta / L^2}$ and
-$\sigma = \sqrt{\vartheta / (\kappa L^2)}$, each computed in that order, with
-correctly rounded operations, from the same ratio, product and $L^2$.
+power 1 (4.1; in the chroma, the scale times $\chi$ first); and the steps
+$\tau = \sqrt{\kappa \vartheta / L^2}$ and $\sigma = \sqrt{\vartheta / (\kappa L^2)}$,
+each computed in that order, with correctly rounded operations, from the same
+ratio, product and $L^2$.
 
 The MMSE centres (2.2) take logarithms and exponentials, and differ. An
 implementation's scale lies within $16u$ of $\beta^\ast$, relatively, and its
@@ -1034,7 +1059,7 @@ $$ \|x^{0,A} - x^{0,R}\| \le \sum_{I = A, R} \Bigl( \epsilon_I\,
 with $\epsilon_I$ the implementation's bound of the inverse DCT (9.3), $\hat c^\ast$
 the exact means and the norms over every block of every component; $\nabla$ adds
 $\sqrt 8$ times that, and the rounding of its differences, $u \|\nabla x^0\|$. The
-decoder of the centres (2.3) is compared within this bound.
+MMSE decoder (2.3), $x^0$ with the MMSE centres, is compared within this bound.
 
 ### 9.3 One iteration
 

@@ -92,7 +92,7 @@ into the report.
 
 | Option | Values | Default | |
 |---|---|---|---|
-| `--method` | `mmse`, `tv`, `tgv`, `subgradient` | `tgv` | The decoder of the centres (2.3), TV or TGV by the primal–dual method (5), or TV by the subgradient method (7; greyscale files only) |
+| `--method` | `mmse`, `tv`, `tgv`, `subgradient` | `tgv` | The MMSE decoder (2.3; whatever `--centres` says), TV or TGV by the primal–dual method (5), or TV by the subgradient method (7; greyscale files only) |
 | `--alpha` | > 0 | 1 | TV's weight (4.2) |
 | `--alpha1` | > 0 | 1 | TGV's weight of the first-order term (4.3) |
 | `--alpha0` | > 0 | 2 | TGV's weight of the second-order term |
@@ -106,12 +106,13 @@ one value for each (4.1, 4.4).
 
 | Option | Values | Default | |
 |---|---|---|---|
-| `--mu` | ≥ 0, or `rule` | 0.001 | The weight of the data term; `rule` makes it `mu-scale` times the mean of the component's 64 steps to the power `mu-power` |
-| `--mu-scale` | ≥ 0 | 1 | The scale of the rule of `mu` |
-| `--mu-power` | finite | 1 | The power of the rule of `mu` |
+| `--mu` | ≥ 0, or `rule` | `rule` | The weight of the data term; `rule` makes it `mu-scale` times the mean of the component's 64 steps to the power `mu-power` |
+| `--mu-scale` | ≥ 0 | 9 | The scale of the rule of `mu` |
+| `--mu-power` | finite | 0.9 | The power of the rule of `mu` |
+| `--mu-chroma` | ≥ 0 | 0.3 | The rule's scale in the chroma (Cb and Cr) of a file in YCbCr, a factor of `mu-scale`; a `mu` that is given is taken as it is |
 | `--weight-power` | ≥ 0 | 2 | `p`: the weight of a coefficient is `mu / Q^p` |
-| `--dc-weight` | ≥ 0 | 0 | The weight of DC, a factor of that of AC |
-| `--centres` | `mmse`, `midpoint` | `mmse` | The MMSE centres of the Laplace model (2.2), or the middles of the intervals |
+| `--dc-weight` | ≥ 0 | 1 | The weight of DC, a factor of that of AC |
+| `--centres` | `mmse`, `midpoint` | `midpoint` | The MMSE centres of the Laplace model (2.2), or the middles of the intervals |
 | `--slack` | ≥ 0 | 0 | Widens every interval by that many steps on each side (1.2) |
 | `--slack-cost` | ≥ 0 | 0 | What leaving the file's own interval costs, per step, within the slack |
 
