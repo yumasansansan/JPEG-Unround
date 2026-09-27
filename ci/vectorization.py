@@ -13,7 +13,9 @@ the remainders of loops turned off, which LLVM otherwise does at half the width,
 that what is narrower than the full width is code that the compiler kept from it.
 The widths are those of the registers, xmm 128, ymm 256 and zmm 512; on AArch64
 (--neon) a vector is two doubles, 128 bits, in either syntax of NEON (`fadd v0.2d,
-v1.2d, v2.2d`, or Apple's `fadd.2d v0, v1, v2`), and narrower is scalar.
+v1.2d, v2.2d`, or Apple's `fadd.2d v0, v1, v2`), and narrower is scalar. Selections
+count as arithmetic: blendv on x86-64; on AArch64 fcsel between scalars, and between
+vectors bsl, bit and bif, which NEON does bitwise, on all 16 bytes.
 
 The loops are the natural loops of each function's control flow graph: an edge to a
 block that dominates where it comes from closes a loop, of the blocks that reach it
@@ -82,12 +84,13 @@ X86_END = re.compile(r"^(ret\w*|ud2|int3|hlt)\b")
 X86_REGISTER = re.compile(r"%([xyz])mm\d+")
 X86_WIDTHS = {"x": 128, "y": 256, "z": 512}
 # Arithmetic in doubles, AArch64: on vectors of two (v.2d, or .2d on the mnemonic in
-# Apple's syntax), or scalar (d registers).
+# Apple's syntax), or scalar (d registers). A selection between vectors is bitwise, on
+# their 16 bytes (bsl, bit and bif, v.16b or .16b), as fcsel is between scalars.
 ARM_ARITHMETIC = re.compile(
     r"^(fadd|fsub|fmul|fdiv|fsqrt|fmax\w*|fmin\w*|fmla|fmls|fmadd|fmsub|fnmadd|fnmsub|fnmul|fneg|fabs"
-    r"|fcm\w+|fcmp\w*|fcsel|frint\w|fcvt\w+|scvtf|ucvtf)(?:\.(\w+))?\s"
+    r"|fcm\w+|fcmp\w*|fcsel|frint\w|fcvt\w+|scvtf|ucvtf|bsl|bit|bif)(?:\.(\w+))?\s"
 )
-ARM_VECTOR = re.compile(r"\bv\d+\.2d\b")
+ARM_VECTOR = re.compile(r"\bv\d+\.(?:2d|16b)\b")
 ARM_SCALAR = re.compile(r"\bd\d+\b")
 ARM_JUMP = re.compile(r"^(b|b\.\w+|cbz|cbnz|tbz|tbnz)\s+(?:.*,\s*)?(\S+)$")
 ARM_END = re.compile(r"^(ret|br|brk|udf)\b")
@@ -549,7 +552,7 @@ def arm_arithmetic(text: str) -> tuple[int, bool, str] | None:
     match = ARM_ARITHMETIC.match(text)
     if not match:
         return None
-    if match.group(2) == "2d" or ARM_VECTOR.search(text):
+    if match.group(2) in {"2d", "16b"} or ARM_VECTOR.search(text):
         return 128, True, match.group(1)
     return (64, False, match.group(1)) if ARM_SCALAR.search(text) else None
 
@@ -984,6 +987,34 @@ ARM_APPLE = (
     .replace(".LBB", "LBB")
     .replace("fmla\tv0.2d, v1.2d, v2.2d", "fmla.2d\tv0, v1, v2")
 )
+# A clip of C++ on AArch64 and its scalar copy: the selection that the copy's fcsel
+# makes on line 51, the vector loop's bit makes on it too.
+ARM_SELECT = """
+\t.file\t1 "/src" "model.cpp"
+\t.file\t2 "/include" "utility"
+_ZNK7unround7Problem4clipEv:
+.LBB0_1:
+\t.loc\t2 80 0
+\tfcmgt\tv4.2d, v1.2d, v0.2d
+\t.loc\t1 51 0
+\tbit\tv0.16b, v1.16b, v4.16b
+\tsubs\tx8, x8, #2
+\tb.ne\t.LBB0_1
+.LBB0_2:
+\t.loc\t2 80 0
+\tfcmp\td1, d0
+\t.loc\t1 51 0
+\tfcsel\td0, d0, d1, mi
+\tsubs\tx9, x9, #1
+\tb.ne\t.LBB0_2
+\tret
+"""
+ARM_SELECT_APPLE = (
+    ARM_SELECT.replace("_ZNK", "__ZNK")
+    .replace(".LBB", "LBB")
+    .replace("fcmgt\tv4.2d, v1.2d, v0.2d", "fcmgt.2d\tv4, v1, v0")
+    .replace("bit\tv0.16b, v1.16b, v4.16b", "bit.16b\tv0, v1, v4")
+)
 DEMANGLED = {
     "_RNvMs3_NtCs8orh4KnCB2e_12jpeg_unround5modelNtB5_7Problem9data_term": ("jpeg_unround::model::Problem::data_term"),
     "_RINvMs0_NtCs8orh4KnCB2e_12jpeg_unround5sweepNtB6_6Primal4bandKb0_EB8_": (
@@ -1115,6 +1146,10 @@ def self_test() -> int:
         expect(f"{label}: a function allowed", quietly(read[1:2], {"functions": {"test::scalar": "scalar"}}), 0)
         rows = sorted(loop.kind for loop in loops(read[3], width, neon=neon))
         expect(f"{label}: the loops over rows", rows, ["outer", "outer", "vector"])
+    for label, listing in [("AArch64", ARM_SELECT), ("AArch64, Apple's syntax", ARM_SELECT_APPLE)]:
+        read = functions(listing)
+        kinds = sorted(loop.kind for loop in loops(read[0], 128, neon=True)) if read else []
+        expect(f"{label}: a selection and its copy", kinds, ["remainder", "vector"])
     for failure in failures:
         print(f"FAIL  {failure}")
     print(f"self-test: {'ok' if not failures else f'{len(failures)} failed'}")

@@ -1,6 +1,6 @@
 # Feature probes: macos-arm64-sdk26.5-min26.0
 
-- Date: 2026-09-27T08:20:26+00:00
+- Date: 2026-09-27T09:50:51+00:00
 - System: macOS-26.6.2-arm64-arm-64bit-Mach-O (arm64)
 - Compiler: clang version 23.1.2 (https://github.com/llvm/llvm-project 85ac560262434c9ccfc0c183ec22d4138ed647fb) (target arm64-apple-darwin25.6.0)
 - C++ library: libc++ 210106
@@ -19,7 +19,7 @@
 | `aarch64_fmv` | function multiversioning with target_version (AArch64) | Clang extension (ACLE FMV) | ✅ | ✅ |  |
 | `float16_extension` | _Float16 arithmetic (Clang) | Clang extension (ISO/IEC TS 18661-3 type) | ✅ | ✅ |  |
 | `bfloat16_extension` | __bf16 arithmetic (Clang) | Clang extension | ✅ | ✅ |  |
-| `openmp` | OpenMP parallel regions (-fopenmp); prints the threads it ran | OpenMP 5.x | ❌ run | ❌ run | c++23: exit status -6: dyld[1492]: Library not loaded: @rpath/libomp.dylib; c++26: exit status -6: dyld[1491]: Library not loaded: @rpath/libomp.dylib |
+| `openmp` | OpenMP parallel regions (-fopenmp); prints the threads it ran | OpenMP 5.x | ❌ run | ❌ run | c++23: exit status -6: dyld[22924]: Library not loaded: @rpath/libomp.dylib; c++26: exit status -6: dyld[22925]: Library not loaded: @rpath/libomp.dylib |
 | `openmp_simd` | #pragma omp simd without the OpenMP runtime (-fopenmp-simd) | OpenMP 5.x | ✅ (`-fopenmp-simd`) | ✅ (`-fopenmp-simd`) | needs /usr/lib/libc++.1.dylib, /usr/lib/libSystem.B.dylib |
 | `int128_arithmetic` | __int128 and unsigned __int128: sums, products, shifts and comparisons | Clang extension | ✅ | ✅ |  |
 | `int128_division_conversion` | __int128 division and remainder, and conversion from and to double (calls into the compiler's runtime on some targets) | Clang extension | ✅ | ✅ |  |
@@ -54,6 +54,7 @@
 | `expansion_statements` | expansion statements (template for) | P1306R5 | — | ✅ |  |
 | `trivial_unions` | unions of non-trivial members are trivially constructible | P3074R7 | — | ❌ compile | c++26: trivial_unions.cxx26.cpp:13:8: error: call to implicitly-deleted default constructor of 'Slot' |
 | `mdspan` | std::mdspan, extents, layout_right / layout_stride | P0009R18 | ✅ | ✅ |  |
+| `mdspan_views` | std::mdspan as a library of arrays uses it: extents of size_t, static and dynamic mixed, views of const from views, views of a layout_right mapping made first, rows a stride apart, strided views of eight values, and the queries of a view | P0009R18 | ✅ | ✅ |  |
 | `expected` | std::expected with monadic operations | P0323R12, P2505R5 | ✅ | ✅ |  |
 | `print` | std::print / std::println | P2093R14 | ✅ | ✅ | c++23: probe 1 2.500; c++26: probe 1 2.500 |
 | `format_ranges` | formatting ranges with std::format | P2286R8 | ✅ | ✅ |  |
@@ -77,6 +78,7 @@
 | `ranges_fold_right` | ranges::fold_right | P2322R6 | ❌ compile | ❌ compile | c++23: ranges_fold_right.cxx23.cpp:11:23: error: no member named 'fold_right' in namespace 'std::ranges'; c++26: ranges_fold_right.cxx26.cpp:11:23: error: no member named 'fold_right' in namespace 'std::ranges' |
 | `ranges_contains` | ranges::contains, contains_subrange | P2302R4 | ✅ | ✅ |  |
 | `ranges_starts_ends_with` | ranges::starts_with, ends_with | P1659R3 | ✅ | ✅ |  |
+| `ranges_starts_ends_with_text` | ranges::starts_with, ends_with on text and on bytes: a string_view against a string_view, a span of bytes against an array | P1659R3 | ✅ | ✅ |  |
 | `ranges_find_last` | ranges::find_last | P1223R5 | ✅ | ✅ |  |
 | `ranges_iota` | ranges::iota | P2440R1 | ✅ | ✅ |  |
 | `optional_monadic` | std::optional and_then / transform / or_else | P0798R8 | ✅ | ✅ |  |

@@ -1,6 +1,6 @@
 {
  "label": "macos-arm64-sdk26.5-min26.0",
- "date": "2026-09-27T08:20:26+00:00",
+ "date": "2026-09-27T09:50:51+00:00",
  "system": "macos",
  "arch": "arm64",
  "os": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
@@ -209,14 +209,14 @@
      "variant": "-fopenmp",
      "exit": -6,
      "stdout": "",
-     "diag": "exit status -6: dyld[1492]: Library not loaded: @rpath/libomp.dylib"
+     "diag": "exit status -6: dyld[22924]: Library not loaded: @rpath/libomp.dylib"
     },
     "c++26": {
      "status": "run",
      "variant": "-fopenmp",
      "exit": -6,
      "stdout": "",
-     "diag": "exit status -6: dyld[1491]: Library not loaded: @rpath/libomp.dylib"
+     "diag": "exit status -6: dyld[22925]: Library not loaded: @rpath/libomp.dylib"
     }
    }
   },
@@ -971,6 +971,30 @@
    }
   },
   {
+   "id": "mdspan_views",
+   "lang": "c++",
+   "bundle": "library23.cpp",
+   "meta": {
+    "title": "std::mdspan as a library of arrays uses it: extents of size_t, static and dynamic mixed, views of const from views, views of a layout_right mapping made first, rows a stride apart, strided views of eight values, and the queries of a view",
+    "paper": "P0009R18",
+    "macro": "__cpp_lib_mdspan"
+   },
+   "results": {
+    "c++23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    },
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
    "id": "expected",
    "lang": "c++",
    "bundle": "library23.cpp",
@@ -1482,6 +1506,30 @@
    "bundle": "library23.cpp",
    "meta": {
     "title": "ranges::starts_with, ends_with",
+    "paper": "P1659R3",
+    "macro": "__cpp_lib_ranges_starts_ends_with"
+   },
+   "results": {
+    "c++23": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    },
+    "c++26": {
+     "status": "pass",
+     "variant": "",
+     "exit": 0,
+     "stdout": ""
+    }
+   }
+  },
+  {
+   "id": "ranges_starts_ends_with_text",
+   "lang": "c++",
+   "bundle": "library23.cpp",
+   "meta": {
+    "title": "ranges::starts_with, ends_with on text and on bytes: a string_view against a string_view, a span of bytes against an array",
     "paper": "P1659R3",
     "macro": "__cpp_lib_ranges_starts_ends_with"
    },
