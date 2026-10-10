@@ -3,9 +3,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # Sets up a GitHub Actions runner to build and test JPEG-Unround: Clang, LLD and
-# the LLVM tools of one pinned version, first on PATH for the later steps. It
-# follows ADLplug-Next's ci/setup.sh. The runner images carry an older LLVM, or
-# none, so the toolchain is fetched every time:
+# the LLVM tools of one pinned version, first on PATH for the later steps, and the
+# latest stable Rust. It follows ADLplug-Next's ci/setup.sh. The runner images
+# carry an older LLVM, or none, so the toolchain is fetched every time:
 #   - Windows and macOS: LLVM's release archives, checked by their SHA-256.
 #   - Ubuntu: the packages of apt.llvm.org, whose signing key is checked by its
 #     fingerprint. What apt.llvm.org offers for a release is a snapshot of its
@@ -120,6 +120,13 @@ case "$version" in
 esac
 cmake --version
 ninja --version
+# Rust: the latest stable, which rust/rust-toolchain.toml names. A runner's rustup
+# holds the stable of its image, which "stable" would take as it is, older than the
+# latest; updated here, every run builds with the latest, as a developer's does after
+# rustup update.
+if command -v rustup > /dev/null 2>&1; then
+  rustup update stable --no-self-update
+fi
 rustc --version || echo "(no Rust on this runner)"
 
 if [ "$RUNNER_OS" = Windows ]; then
