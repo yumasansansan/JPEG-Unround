@@ -6,7 +6,8 @@
 // ctypes.
 //
 // Settings are made from options by the names of the command line
-// (docs/cli.md), as strings. A JPEG file in memory, or components given as
+// (docs/cli.md), as strings. A file in memory -- a JPEG file, or a PNG file within
+// the intervals of its rounded samples (docs/math.md, 11) -- or components given as
 // arrays, are reconstructed into a result, whose arrays stay valid until the
 // result is freed; an observer can follow the solver's records and stop it.
 // The writers of TIFF, PNG and PNM, the turning of a picture upright, JFIF's
@@ -35,7 +36,7 @@
 extern "C" {
 #endif
 
-#define UNROUND_ABI_VERSION 3
+#define UNROUND_ABI_VERSION 4
 
 // What a function of the interface reports.
 typedef enum unround_status : int32_t {
@@ -116,9 +117,18 @@ typedef struct unround_input {
 
 typedef struct unround_result unround_result;
 
-// Reconstructs a JPEG file of size bytes at data into *result, which
-// unround_result_free frees. observer, where it is not null, is called with user
-// and each record after the first.
+// The format of a result's file (unround_result_format).
+typedef enum unround_format : int32_t {
+  UNROUND_FORMAT_JPEG = 1,  // a JPEG file, or components given as arrays
+  UNROUND_FORMAT_PNG = 2,   // a PNG file, reconstructed within the intervals of its rounded samples
+} unround_format;
+
+// Reconstructs a file of size bytes at data into *result, which unround_result_free
+// frees: a PNG file, known by its signature, within the intervals of its rounded
+// samples, by TV or TGV with --mu and --slack alone of the data term (docs/cli.md),
+// its colours together and its alpha alone; any other file as a JPEG file. observer,
+// where it is not null, is called with user and each record after the first -- of a
+// PNG file with alpha, the colours' and then the alpha's.
 unround_status unround_decode(const uint8_t* data, size_t size, const unround_settings* settings,
                               unround_observer observer, void* user, unround_result** result, char* message,
                               size_t message_size);
@@ -130,21 +140,24 @@ unround_status unround_solve(const unround_input* input, const unround_settings*
 void unround_result_free(unround_result* result);
 
 // The picture: height x width x channels binary64 samples, interleaved,
-// greyscale or RGB. The sizes are written where the pointers are not null.
+// greyscale or RGB, and of a PNG file with alpha the alpha last. The sizes are
+// written where the pointers are not null.
 const double* unround_result_picture(const unround_result* result, uint64_t* height, uint64_t* width,
                                      uint64_t* channels);
 
-// The canvas cut to the picture, channel by channel: the Y, Cb and Cr of a file
-// in YCbCr.
+// The picture channel by channel: of a JPEG file, the canvas cut to the picture
+// (the Y, Cb and Cr of a file in YCbCr); of a PNG file, its colours and its alpha.
 const double* unround_result_planes(const unround_result* result, uint64_t* count);
 
 // The file's color space (unround_jpegio_color_space); 0 for a null result.
 int32_t unround_result_color_space(const unround_result* result);
 
-// The whole canvas, channels x height x width, as the solver left it.
+// The whole canvas, channels x height x width, as the solver left it: of a PNG
+// file, the planes, since nothing lies beyond its picture.
 const double* unround_result_canvas(const unround_result* result, uint64_t* channels, uint64_t* height,
                                     uint64_t* width);
 
+// The components of a JPEG file; a PNG file has none.
 uint64_t unround_result_components(const unround_result* result);
 
 // The coefficients of a component, each within its interval, 64 to a block;
@@ -164,7 +177,7 @@ unround_status unround_result_component(const unround_result* result, uint64_t c
 
 // 1 where a solver made the result, with its iterations and why it stopped (1 a
 // tolerance, 2 the most iterations, 3 the observer, 4 a subgradient of 0); 0 for
-// the decoder of the centres.
+// the decoder of the centres. Of a PNG file, the solver of its colours.
 int32_t unround_result_solver(const unround_result* result, uint64_t* iterations, int32_t* stop);
 
 // The iterations of the solver's records.
@@ -175,15 +188,35 @@ const uint64_t* unround_result_record_iterations(const unround_result* result, u
 // taken).
 const double* unround_result_record_values(const unround_result* result, int32_t which, uint64_t* count);
 
-// The file's ICC profile, or null; and its EXIF orientation, 1 to 8, or 0.
+// 1 where the result has an alpha reconstructed alone (a PNG file's), with its
+// solver's iterations and stop as unround_result_solver says them, and its records
+// as unround_result_record_iterations and unround_result_record_values give them; 0
+// and null otherwise.
+int32_t unround_result_alpha_solver(const unround_result* result, uint64_t* iterations, int32_t* stop);
+const uint64_t* unround_result_alpha_record_iterations(const unround_result* result, uint64_t* count);
+const double* unround_result_alpha_record_values(const unround_result* result, int32_t which, uint64_t* count);
+
+// The file's ICC profile, or null; and its EXIF orientation, 1 to 8, or 0 (a PNG
+// file's is 0).
 const uint8_t* unround_result_icc_profile(const unround_result* result, uint64_t* size);
 int32_t unround_result_exif_orientation(const unround_result* result);
+
+// The file's format (unround_format), and the bits of its samples: a PNG file's 1
+// to 16, a JPEG file's 8. 0 for a null result.
+int32_t unround_result_format(const unround_result* result);
+int32_t unround_result_bits(const unround_result* result);
+
+// The first warning of the file's reading, NUL-terminated, valid while the result
+// lives: a corrupt-data warning of a JPEG file, or a PNG file's transparent colour
+// that is not taken; an empty string where there was none. Null for a null result.
+const char* unround_result_warning(const unround_result* result);
 
 // ---------------------------------------------------------------------------
 // Output and conversion
 
-// The bytes of a TIFF of binary64 samples, height x width x channels (1, or 3
-// interleaved), exactly as they are; with ycbcr nonzero, JFIF's Y, Cb and Cr,
+// The bytes of a TIFF of binary64 samples, height x width x channels (1 to 4
+// interleaved: grey or RGB, and with 2 or 4 the alpha last, which the file declares),
+// exactly as they are; with ycbcr nonzero, JFIF's Y, Cb and Cr,
 // which the file declares. The ICC profile of icc_size bytes at icc (none where
 // icc is null) is embedded where it goes with the picture (unround_jpeg_check_icc);
 // where it does not, it is left out, and on success the message says why (it
@@ -202,7 +235,8 @@ typedef enum unround_dither : int32_t {
   UNROUND_DITHER_BLUE_NOISE_TOGETHER = 2,
 } unround_dither;
 
-// The bytes of a PNG file of 8 bits, or with sixteen nonzero 16 bits, made as
+// The bytes of a PNG file of height x width x channels samples (1 to 4: grey or RGB,
+// and with 2 or 4 the alpha last), of 8 bits, or with sixteen nonzero 16 bits, made as
 // dither says (docs/cli.md), compressed at zlib's level compression, 0 to 9, or -1
 // for zlib's default; with the ICC profile as unround_tiff takes it.
 unround_status unround_png(const double* samples, uint64_t height, uint64_t width, uint64_t channels, int32_t sixteen,

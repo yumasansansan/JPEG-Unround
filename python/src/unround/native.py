@@ -63,12 +63,13 @@ type Array = npt.NDArray[np.float64]
 type Observer = Callable[["Record"], bool | None]
 type Source = bytes | bytearray | memoryview | str | os.PathLike[str] | jpegio.Image
 
-ABI_VERSION: Final = 3
+ABI_VERSION: Final = 4
 """UNROUND_ABI_VERSION of the interface this module mirrors."""
 
 _MESSAGE_SIZE: Final = 4096
 _BLOCK_SIZE: Final = 64
 _CHANNELS: Final = 3
+_FORMAT_PNG: Final = 2
 
 
 class _Record(ctypes.Structure):
@@ -185,8 +186,14 @@ def _declare_all(library: ctypes.CDLL) -> None:
     _declare(library, "unround_result_solver", i32, handle, u64_out, i32_out)
     _declare(library, "unround_result_record_iterations", u64_out, handle, u64_out)
     _declare(library, "unround_result_record_values", doubles, handle, i32, u64_out)
+    _declare(library, "unround_result_alpha_solver", i32, handle, u64_out, i32_out)
+    _declare(library, "unround_result_alpha_record_iterations", u64_out, handle, u64_out)
+    _declare(library, "unround_result_alpha_record_values", doubles, handle, i32, u64_out)
     _declare(library, "unround_result_icc_profile", ctypes.POINTER(ctypes.c_uint8), handle, u64_out)
     _declare(library, "unround_result_exif_orientation", i32, handle)
+    _declare(library, "unround_result_format", i32, handle)
+    _declare(library, "unround_result_bits", i32, handle)
+    _declare(library, "unround_result_warning", ctypes.c_char_p, handle)
     written = (bytes_out, u64_out, *message)
     icc = (ctypes.c_char_p, u64)
     _declare(library, "unround_tiff", i32, doubles, u64, u64, u64, i32, *icc, *written)
@@ -457,12 +464,17 @@ class Solution:
 class Decoded:
     """A file, or arrays, reconstructed by the reference implementation.
 
-    picture is (height, width) of greyscale, or (height, width, 3) of RGB, in binary64,
-    neither clamped nor rounded: of a file in YCbCr, JFIF's RGB of the planes. planes are
-    the canvas cut to the picture, (C, height, width): the Y, Cb and Cr of a file in
-    YCbCr; canvas is the whole of it, (C, H, W). coefficients are each component's,
-    (rows, columns, 8, 8), within their intervals, and problems their models. result is
-    the solver's, None for the decoder of the centres.
+    picture is (height, width) of greyscale, or (height, width, C) of more channels, in
+    binary64, neither clamped nor rounded: of a JPEG file in YCbCr, JFIF's RGB of the
+    planes; of a PNG file, its grey or RGB with its alpha last, where it has one. planes
+    are the picture channel by channel, (C, height, width): of a JPEG file the canvas cut
+    to the picture (the Y, Cb and Cr of a file in YCbCr), of a PNG file its colours and
+    its alpha; canvas is the whole of it, (C, H, W), of a PNG file the planes.
+    coefficients are each component's of a JPEG file, (rows, columns, 8, 8), within their
+    intervals, and problems their models; a PNG file has none. result is the solver's,
+    None for the decoder of the centres; of a PNG file, its colours' solver, and
+    alpha_result its alpha's, reconstructed alone. input_format is "jpeg" or "png", and
+    bits the bits of the file's samples (8 of a JPEG file).
     """
 
     picture: Array
@@ -474,6 +486,9 @@ class Decoded:
     result: Solution | None
     icc_profile: bytes | None
     exif_orientation: int
+    input_format: str = "jpeg"
+    bits: int = 8
+    alpha_result: Solution | None = None
 
 
 def _copy(pointer: object, shape: tuple[int, ...]) -> Array:
@@ -520,18 +535,29 @@ def _problem(library: ctypes.CDLL, result: ctypes.c_void_p, index: int) -> tuple
     return coefficients, Problem(ratio, lower, upper, centres, steps, weights)
 
 
-def _solution(library: ctypes.CDLL, result: ctypes.c_void_p) -> Solution | None:
+def _solution(library: ctypes.CDLL, result: ctypes.c_void_p, *, alpha: bool = False) -> Solution | None:
+    """The solver of the result, or of its alpha."""
+    solver, recorded_at, values_of = (
+        (
+            library.unround_result_alpha_solver,
+            library.unround_result_alpha_record_iterations,
+            library.unround_result_alpha_record_values,
+        )
+        if alpha
+        else (
+            library.unround_result_solver,
+            library.unround_result_record_iterations,
+            library.unround_result_record_values,
+        )
+    )
     iterations, stop = ctypes.c_uint64(), ctypes.c_int32()
-    if not library.unround_result_solver(result, ctypes.byref(iterations), ctypes.byref(stop)):
+    if not solver(result, ctypes.byref(iterations), ctypes.byref(stop)):
         return None
     count = ctypes.c_uint64()
-    recorded = library.unround_result_record_iterations(result, ctypes.byref(count))
+    recorded = recorded_at(result, ctypes.byref(count))
     size = int(count.value)
     steps = np.array(np.ctypeslib.as_array(recorded, shape=(size,)), dtype=np.int64) if size else np.zeros(0, np.int64)
-    values = [
-        _checked(library.unround_result_record_values(result, which, ctypes.byref(count)), count, (size,))
-        for which in range(5)
-    ]
+    values = [_checked(values_of(result, which, ctypes.byref(count)), count, (size,)) for which in range(5)]
     seconds, primal, dual, scaling, partial_gap = values
     history = History(steps, seconds, primal, dual, scaling, partial_gap)
     return Solution(int(iterations.value), Stop(int(stop.value)), history)
@@ -553,6 +579,10 @@ def _decoded(library: ctypes.CDLL, result: ctypes.c_void_p) -> Decoded:
     components = [_problem(library, result, index) for index in range(int(library.unround_result_components(result)))]
     profile_size = ctypes.c_uint64()
     profile = library.unround_result_icc_profile(result, ctypes.byref(profile_size))
+    warning = (library.unround_result_warning(result) or b"").decode("utf-8", "replace")
+    if warning:
+        # Said to the caller of decode or solve, past _reconstruct.
+        warnings.warn(warning, UnroundWarning, stacklevel=4)
     return Decoded(
         picture=picture,
         planes=planes,
@@ -563,6 +593,9 @@ def _decoded(library: ctypes.CDLL, result: ctypes.c_void_p) -> Decoded:
         result=_solution(library, result),
         icc_profile=ctypes.string_at(profile, int(profile_size.value)) if profile else None,
         exif_orientation=int(library.unround_result_exif_orientation(result)),
+        input_format="png" if int(library.unround_result_format(result)) == _FORMAT_PNG else "jpeg",
+        bits=int(library.unround_result_bits(result)),
+        alpha_result=_solution(library, result, alpha=True),
     )
 
 
@@ -624,13 +657,19 @@ def decode(  # noqa: PLR0913 -- the file, the settings, the observer, and the li
     max_scans: int = 0,
     warnings_are_errors: bool = False,
 ) -> Decoded:
-    """Reconstructs a JPEG file: its bytes, its path, or its components as unround.jpegio.read gives them.
+    """Reconstructs a JPEG file or a PNG file: its bytes or its path; or a JPEG file's components as
+    unround.jpegio.read gives them.
 
-    observer, where given, is called with each record after the first, and stops the
-    solver where it returns True; an exception it raises stops the solver too, and is
-    raised here. The limits of reading are those of unround.jpegio.read, and an image read
-    already takes none. A file that is not reconstructed raises UnroundError, and options
-    out of their ranges too.
+    A PNG file, known by its signature, is reconstructed within the intervals of its rounded
+    samples (docs/math.md, 11), by TV or TGV with mu and slack alone of the data term, its
+    colours together and its alpha alone (docs/cli.md); it takes max_pixels alone of the
+    limits of reading. observer, where given, is called with each record after the first --
+    of a PNG file with alpha, the colours' and then the alpha's -- and stops the solver
+    where it returns True; an exception it raises stops the solver too, and is raised here.
+    The limits of reading are those of unround.jpegio.read, and an image read already takes
+    none. A warning of the reading (a JPEG file's corrupt data, a PNG file's transparent
+    colour that is not taken) is said as an UnroundWarning. A file that is not
+    reconstructed raises UnroundError, and options out of their ranges too.
     """
     if isinstance(source, jpegio.Image):
         if max_pixels or max_scans or warnings_are_errors:

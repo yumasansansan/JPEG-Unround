@@ -4,9 +4,10 @@
 
 The Python package of JPEG-Unround: the reference implementation (Rust), called
 through its C interface, with NumPy arrays in and out. The mathematics is
-docs/math.md's, and the options are the command line's (docs/cli.md).
+docs/math.md's, and the options are the command line's (docs/cli.md). A PNG file is
+reconstructed alike, within the intervals of its rounded samples.
 
-  decode    a file, its bytes, or its components as read, reconstructed (unround.native.decode)
+  decode    a JPEG or PNG file, its bytes, or its components as read, reconstructed (unround.native.decode)
   read      a file's quantized coefficients, tables and sampling factors (unround.jpegio.read)
   settings  the method, the model and the solvers' options
   native    the reference implementation: reconstruction, its writers (TIFF in binary64, PNG,

@@ -1052,11 +1052,12 @@ fn write(command: &Command, decoded: &decode::Decoded) -> Result<(Written, Outco
             && icc_profile.is_some_and(|profile| {
                 jpegio_sys::check_icc(profile, u32::try_from(channels).unwrap_or(u32::MAX)).is_ok()
             }),
-        warnings: if written.warning.is_empty() {
-            Vec::new()
-        } else {
-            vec![written.warning.clone()]
-        },
+        // The reading's, then the writing's.
+        warnings: [&decoded.warning, &written.warning]
+            .into_iter()
+            .filter(|warning| !warning.is_empty())
+            .cloned()
+            .collect(),
     };
     Ok((written, outcome))
 }

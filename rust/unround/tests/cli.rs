@@ -335,3 +335,36 @@ fn the_summary_names_the_stop_as_the_report_does() {
     assert_eq!(errors, format!("{}: 5 iterations, iterations\n", output.display()));
     std::fs::remove_dir_all(&place).expect("the directory is removed");
 }
+
+#[test]
+fn a_file_cut_short_is_written_with_the_warning_of_its_reading() {
+    let place = directory("cut");
+    let data = grey_file();
+    let input = place.join("in.jpg");
+    std::fs::write(&input, &data[..data.len() - 40]).expect("the file is written");
+    let (output, report) = (place.join("out.tif"), place.join("report.json"));
+    let (status, errors) = unround(&[
+        "--method",
+        "mmse",
+        "--report",
+        text(&report),
+        text(&input),
+        text(&output),
+    ]);
+    assert_eq!(status, 0, "{errors}");
+    let said = format!("unround: {}: Premature end of JPEG file", output.display());
+    assert!(errors.contains(&said), "{errors}");
+    let report = std::fs::read_to_string(&report).expect("the report");
+    assert!(report.contains("Premature end of JPEG file"), "{report}");
+    // Not read where warnings are errors.
+    let (status, errors) = unround(&[
+        "--method",
+        "mmse",
+        "--warnings-are-errors",
+        "--overwrite",
+        text(&input),
+        text(&output),
+    ]);
+    assert_eq!(status, 1, "{errors}");
+    std::fs::remove_dir_all(&place).expect("the directory is removed");
+}

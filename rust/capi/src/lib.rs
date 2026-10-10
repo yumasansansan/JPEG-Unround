@@ -5,9 +5,10 @@
 //! that calls C, the Python package among them.
 //!
 //! Settings are made from options by the names of the command line (docs/cli.md).
-//! A file in memory, or components given as arrays, are reconstructed into a result,
-//! whose arrays the caller reads until it frees the result; an observer can follow
-//! the solver's records and stop it. The writers of TIFF, PNG and PNM, the turning
+//! A file in memory -- a JPEG file, or a PNG file within the intervals of its rounded
+//! samples (docs/math.md, 11) -- or components given as arrays, are reconstructed into
+//! a result, whose arrays the caller reads until it frees the result; an observer can
+//! follow the solver's records and stop it. The writers of TIFF, PNG and PNM, the turning
 //! of a picture upright, JFIF's conversion, the command line, and the C layer's
 //! reading of JPEG files are there too.
 //!
@@ -16,20 +17,21 @@
 //! gives, NUL-terminated and cut at a character's boundary where it is too short.
 //! This crate and jpegio-sys hold all the unsafe code of the Rust implementation.
 
-use std::ffi::{CStr, OsString, c_char, c_void};
+use std::ffi::{CStr, CString, OsString, c_char, c_void};
 use std::ops::ControlFlow;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
 use std::slice;
 
 use jpeg_unround::decode::{self, Component, Decoded, Input, Settings};
-use jpeg_unround::pdhg::Record as SolverRecord;
-use jpeg_unround::results::Stop;
+use jpeg_unround::pdhg::{Observer, Record as SolverRecord};
+use jpeg_unround::results::{History, Stop};
+use jpeg_unround::rounded::{self, Reconstructed};
 use jpeg_unround::{Error, cli, colour, orientation, output, tiff};
 use jpegio_sys::{ColorSpace, ffi};
 
 /// The version of this interface: `UNROUND_ABI_VERSION` of the header it matches.
-pub const ABI_VERSION: i32 = 3;
+pub const ABI_VERSION: i32 = 4;
 
 /// Success.
 pub const OK: i32 = 0;
@@ -258,25 +260,208 @@ fn narrow(value: u64) -> Result<usize, (i32, String)> {
     usize::try_from(value).map_err(|_| refuse("a size that does not fit"))
 }
 
+/// A result of a JPEG file, or of components given as arrays (`unround_result_format`).
+pub const FORMAT_JPEG: i32 = 1;
+/// A result of a PNG file, reconstructed within the intervals of its rounded samples.
+pub const FORMAT_PNG: i32 = 2;
+
 /// A reconstruction: what the solver made, and what the caller reads of it.
 #[derive(Debug)]
 pub struct UnroundResult {
-    decoded: Decoded,
+    made: Made,
+    /// The first warning of the reading, or an empty string, NUL-terminated.
+    warning: CString,
 }
 
-/// Solves an input with the settings and the observer, into `result`.
+/// A JPEG file's reconstruction, or a PNG file's.
+#[derive(Debug)]
+enum Made {
+    /// A JPEG file's, or its components'.
+    Jpeg(Box<Decoded>),
+    /// A PNG file's.
+    Png(Box<Rounded>),
+}
+
+/// A PNG file's reconstruction, and its picture's planes: the colours', then the
+/// alpha's.
+#[derive(Debug)]
+struct Rounded {
+    reconstructed: Reconstructed,
+    planes: Vec<f64>,
+}
+
+/// What a solver did: its iterations, why it stopped, and its records.
+#[derive(Debug, Clone, Copy)]
+struct Solved<'a> {
+    iterations: u64,
+    stop: Stop,
+    history: &'a History,
+}
+
+/// A warning as a C string: what lies before a NUL, which no message of the library
+/// holds.
+fn c_string(text: &str) -> CString {
+    let end = text.find('\0').unwrap_or(text.len());
+    CString::new(&text[..end]).unwrap_or_default()
+}
+
+impl UnroundResult {
+    fn jpeg(decoded: Decoded) -> Self {
+        let warning = c_string(&decoded.warning);
+        Self {
+            made: Made::Jpeg(Box::new(decoded)),
+            warning,
+        }
+    }
+
+    fn png(reconstructed: Reconstructed) -> Self {
+        let mut planes = reconstructed.colours.picture.clone();
+        if let Some(alpha) = &reconstructed.alpha {
+            planes.extend_from_slice(&alpha.picture);
+        }
+        let warning = c_string(&reconstructed.warning);
+        Self {
+            made: Made::Png(Box::new(Rounded { reconstructed, planes })),
+            warning,
+        }
+    }
+
+    /// The picture, interleaved, and its rows, columns and channels.
+    fn picture(&self) -> (&[f64], usize, usize, usize) {
+        match &self.made {
+            Made::Jpeg(decoded) => (&decoded.picture, decoded.height, decoded.width, decoded.channels),
+            Made::Png(rounded) => (
+                &rounded.reconstructed.picture,
+                rounded.reconstructed.height,
+                rounded.reconstructed.width,
+                rounded.reconstructed.channels,
+            ),
+        }
+    }
+
+    /// The picture channel by channel: a JPEG file's canvas cut to it, a PNG file's
+    /// colours and alpha.
+    fn planes(&self) -> &[f64] {
+        match &self.made {
+            Made::Jpeg(decoded) => &decoded.planes,
+            Made::Png(rounded) => &rounded.planes,
+        }
+    }
+
+    fn color_space(&self) -> i32 {
+        match &self.made {
+            Made::Jpeg(decoded) => match decoded.color_space {
+                ColorSpace::Grayscale => ffi::GRAYSCALE,
+                ColorSpace::YCbCr => ffi::YCBCR,
+                ColorSpace::Rgb => ffi::RGB,
+            },
+            Made::Png(rounded) => {
+                if rounded.reconstructed.channels <= 2 {
+                    ffi::GRAYSCALE
+                } else {
+                    ffi::RGB
+                }
+            }
+        }
+    }
+
+    /// The whole canvas, `channels x height x width`, as the solver left it: of a PNG
+    /// file, the picture's planes, since nothing lies beyond the picture.
+    fn canvas(&self) -> (&[f64], usize, usize, usize) {
+        match &self.made {
+            Made::Jpeg(decoded) => (
+                &decoded.canvas,
+                decoded.frame.channels().len(),
+                decoded.frame.height(),
+                decoded.frame.width(),
+            ),
+            Made::Png(rounded) => (
+                &rounded.planes,
+                rounded.reconstructed.channels,
+                rounded.reconstructed.height,
+                rounded.reconstructed.width,
+            ),
+        }
+    }
+
+    /// The reconstruction of a JPEG file, whose components a PNG file has none of.
+    fn decoded(&self) -> Option<&Decoded> {
+        match &self.made {
+            Made::Jpeg(decoded) => Some(decoded),
+            Made::Png(_) => None,
+        }
+    }
+
+    /// The solver of the picture, or of a PNG file's colours: none for the MMSE decoder.
+    fn solved(&self) -> Option<Solved<'_>> {
+        match &self.made {
+            Made::Jpeg(decoded) => decoded.result.as_ref().map(|result| Solved {
+                iterations: result.iterations,
+                stop: result.stop,
+                history: &result.history,
+            }),
+            Made::Png(rounded) => Some(Solved {
+                iterations: rounded.reconstructed.colours.iterations,
+                stop: rounded.reconstructed.colours.stop,
+                history: &rounded.reconstructed.colours.history,
+            }),
+        }
+    }
+
+    /// The solver of a PNG file's alpha, reconstructed alone.
+    fn alpha(&self) -> Option<Solved<'_>> {
+        match &self.made {
+            Made::Jpeg(_) => None,
+            Made::Png(rounded) => rounded.reconstructed.alpha.as_ref().map(|alpha| Solved {
+                iterations: alpha.iterations,
+                stop: alpha.stop,
+                history: &alpha.history,
+            }),
+        }
+    }
+
+    fn icc_profile(&self) -> Option<&[u8]> {
+        match &self.made {
+            Made::Jpeg(decoded) => decoded.icc_profile.as_deref(),
+            Made::Png(rounded) => rounded.reconstructed.icc_profile.as_deref(),
+        }
+    }
+
+    fn exif_orientation(&self) -> i32 {
+        match &self.made {
+            Made::Jpeg(decoded) => decoded.exif_orientation,
+            Made::Png(_) => 0,
+        }
+    }
+
+    fn format(&self) -> i32 {
+        match &self.made {
+            Made::Jpeg(_) => FORMAT_JPEG,
+            Made::Png(_) => FORMAT_PNG,
+        }
+    }
+
+    /// The bits of a sample of the file: a PNG file's 1 to 16, a JPEG file's 8, which
+    /// are the only ones the C layer reads.
+    fn bits(&self) -> i32 {
+        match &self.made {
+            Made::Jpeg(_) => 8,
+            Made::Png(rounded) => i32::try_from(rounded.reconstructed.bits).unwrap_or(0),
+        }
+    }
+}
+
+/// Runs `body` with the caller's observer, where one is given: each record goes to
+/// the callback with `user`, and a nonzero return stops the solver.
 ///
 /// # Safety
 ///
-/// `callback` is null, or callable with `user` and a record for the length of the call;
-/// `result` is valid for a write.
-unsafe fn reconstruct(
-    input: &Input,
-    settings: &Settings,
+/// `callback` is null, or callable with `user` and a record for the length of the call.
+unsafe fn observed<T>(
     callback: UnroundObserver,
     user: *mut c_void,
-    result: *mut *mut UnroundResult,
-) -> Result<(), (i32, String)> {
+    body: impl FnOnce(Option<&mut Observer<'_>>) -> Result<T, Error>,
+) -> Result<T, (i32, String)> {
     let mut observe = |record: &SolverRecord<'_>| {
         let Some(callback) = callback else {
             return ControlFlow::Continue(());
@@ -300,19 +485,27 @@ unsafe fn reconstruct(
             ControlFlow::Break(())
         }
     };
-    let observer: Option<&mut jpeg_unround::pdhg::Observer<'_>> =
-        if callback.is_some() { Some(&mut observe) } else { None };
-    let decoded = decode::solve(input, settings, observer).map_err(|error| (status_of(&error), error.to_string()))?;
-    let made = Box::into_raw(Box::new(UnroundResult { decoded }));
-    // SAFETY: the caller promised result valid for a write.
-    unsafe { result.write(made) };
-    Ok(())
+    let observer: Option<&mut Observer<'_>> = if callback.is_some() { Some(&mut observe) } else { None };
+    body(observer).map_err(|error| (status_of(&error), error.to_string()))
 }
 
-/// Reconstructs a JPEG file of `size` bytes at `data` with the settings, into a
-/// result that `unround_result_free` frees. `observer`, where it is not null, is
-/// called with `user` and each record after the first, and stops the solver where it
-/// returns nonzero.
+/// Hands a result over to the caller, who frees it with `unround_result_free`.
+///
+/// # Safety
+///
+/// `result` is valid for a write.
+unsafe fn deliver(made: UnroundResult, result: *mut *mut UnroundResult) {
+    let made = Box::into_raw(Box::new(made));
+    // SAFETY: the caller promised result valid for a write.
+    unsafe { result.write(made) };
+}
+
+/// Reconstructs a file of `size` bytes at `data` with the settings, into a result that
+/// `unround_result_free` frees: a PNG file, known by its signature, within the
+/// intervals of its rounded samples (docs/math.md, 11), and any other as a JPEG file.
+/// `observer`, where it is not null, is called with `user` and each record after the
+/// first -- of a PNG file with alpha, the colours' and then the alpha's -- and stops
+/// the solver where it returns nonzero.
 ///
 /// # Safety
 ///
@@ -339,9 +532,20 @@ pub unsafe extern "C" fn unround_decode(
         let bytes = unsafe { slice::from_raw_parts(data, size) };
         // SAFETY: the caller promised settings of unround_settings_new.
         let settings = unsafe { &(*settings).settings };
-        let input = Input::read(bytes, &settings.read).map_err(|error| (status_of(&error), error.to_string()))?;
-        // SAFETY: the caller's promises of observer, user and result are passed on.
-        unsafe { reconstruct(&input, settings, observer, user, result) }
+        let made = if rounded::is_png(bytes) {
+            // SAFETY: the caller's promises of observer and user are passed on.
+            let reconstructed =
+                unsafe { observed(observer, user, |watch| rounded::reconstruct(bytes, settings, watch)) }?;
+            UnroundResult::png(reconstructed)
+        } else {
+            let input = Input::read(bytes, &settings.read).map_err(|error| (status_of(&error), error.to_string()))?;
+            // SAFETY: as above.
+            let decoded = unsafe { observed(observer, user, |watch| decode::solve(&input, settings, watch)) }?;
+            UnroundResult::jpeg(decoded)
+        };
+        // SAFETY: the caller promised result valid for a write.
+        unsafe { deliver(made, result) };
+        Ok(())
     })
 }
 
@@ -436,6 +640,7 @@ unsafe fn input_of(given: &UnroundInput) -> Result<Input, (i32, String)> {
         components: copied,
         icc_profile: None,
         exif_orientation: 0,
+        warning: String::new(),
     })
 }
 
@@ -465,8 +670,11 @@ pub unsafe extern "C" fn unround_solve(
         let input = unsafe { input_of(given) }?;
         // SAFETY: the caller promised settings of unround_settings_new.
         let settings = unsafe { &(*settings).settings };
-        // SAFETY: the caller's promises of observer, user and result are passed on.
-        unsafe { reconstruct(&input, settings, observer, user, result) }
+        // SAFETY: the caller's promises of observer and user are passed on.
+        let decoded = unsafe { observed(observer, user, |watch| decode::solve(&input, settings, watch)) }?;
+        // SAFETY: the caller promised result valid for a write.
+        unsafe { deliver(UnroundResult::jpeg(decoded), result) };
+        Ok(())
     })
 }
 
@@ -483,14 +691,14 @@ pub unsafe extern "C" fn unround_result_free(result: *mut UnroundResult) {
     }
 }
 
-/// The reconstruction of a result, where the pointer is not null.
+/// A result, where the pointer is not null.
 ///
 /// # Safety
 ///
 /// `result` is null, or a result not freed yet, which lives for `'a`.
-unsafe fn decoded<'a>(result: *const UnroundResult) -> Option<&'a Decoded> {
+unsafe fn result_of<'a>(result: *const UnroundResult) -> Option<&'a UnroundResult> {
     // SAFETY: the caller promised null or a live result.
-    unsafe { result.as_ref() }.map(|result| &result.decoded)
+    unsafe { result.as_ref() }
 }
 
 /// Writes a value where the pointer is not null.
@@ -506,7 +714,8 @@ unsafe fn put<T>(target: *mut T, value: T) {
 }
 
 /// The picture of a result, `height x width x channels` binary64 samples, interleaved:
-/// greyscale, or RGB. Its sizes are written where the pointers are not null.
+/// greyscale or RGB, and of a PNG file with alpha, the alpha last. Its sizes are
+/// written where the pointers are not null.
 ///
 /// # Safety
 ///
@@ -519,20 +728,22 @@ pub unsafe extern "C" fn unround_result_picture(
     channels: *mut u64,
 ) -> *const f64 {
     // SAFETY: the caller promised a live result.
-    let Some(decoded) = (unsafe { decoded(result) }) else {
+    let Some(made) = (unsafe { result_of(result) }) else {
         return ptr::null();
     };
+    let (picture, rows, columns, count) = made.picture();
     // SAFETY: the caller promised each pointer null or valid for a write.
-    unsafe { put(height, wide(decoded.height)) };
+    unsafe { put(height, wide(rows)) };
     // SAFETY: as above.
-    unsafe { put(width, wide(decoded.width)) };
+    unsafe { put(width, wide(columns)) };
     // SAFETY: as above.
-    unsafe { put(channels, wide(decoded.channels)) };
-    decoded.picture.as_ptr()
+    unsafe { put(channels, wide(count)) };
+    picture.as_ptr()
 }
 
-/// The planes of a result: the canvas cut to the picture, channel by channel (the Y,
-/// Cb and Cr of a file in YCbCr), `count` samples in all.
+/// The planes of a result, channel by channel, `count` samples in all: of a JPEG file,
+/// the canvas cut to the picture (the Y, Cb and Cr of a file in YCbCr); of a PNG file,
+/// the picture's colours and its alpha.
 ///
 /// # Safety
 ///
@@ -540,15 +751,17 @@ pub unsafe extern "C" fn unround_result_picture(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn unround_result_planes(result: *const UnroundResult, count: *mut u64) -> *const f64 {
     // SAFETY: the caller promised a live result.
-    let Some(decoded) = (unsafe { decoded(result) }) else {
+    let Some(made) = (unsafe { result_of(result) }) else {
         return ptr::null();
     };
+    let planes = made.planes();
     // SAFETY: the caller promised a pointer null or valid for a write.
-    unsafe { put(count, wide(decoded.planes.len())) };
-    decoded.planes.as_ptr()
+    unsafe { put(count, wide(planes.len())) };
+    planes.as_ptr()
 }
 
-/// The color space of a result's file: 1 greyscale, 2 YCbCr, 3 RGB; 0 for a null result.
+/// The color space of a result's file: 1 greyscale, 2 YCbCr, 3 RGB (a PNG file's
+/// colours are greyscale or RGB, with alpha or without); 0 for a null result.
 ///
 /// # Safety
 ///
@@ -556,16 +769,12 @@ pub unsafe extern "C" fn unround_result_planes(result: *const UnroundResult, cou
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn unround_result_color_space(result: *const UnroundResult) -> i32 {
     // SAFETY: the caller promised null or a live result.
-    match unsafe { decoded(result) }.map(|decoded| decoded.color_space) {
-        Some(ColorSpace::Grayscale) => ffi::GRAYSCALE,
-        Some(ColorSpace::YCbCr) => ffi::YCBCR,
-        Some(ColorSpace::Rgb) => ffi::RGB,
-        None => 0,
-    }
+    unsafe { result_of(result) }.map_or(0, UnroundResult::color_space)
 }
 
 /// The whole canvas of a result, `channels x height x width` samples, as the solver
-/// left it: the picture and what lies beyond it.
+/// left it: the picture and what lies beyond it, of a PNG file the planes, since
+/// nothing lies beyond its picture.
 ///
 /// # Safety
 ///
@@ -578,19 +787,21 @@ pub unsafe extern "C" fn unround_result_canvas(
     width: *mut u64,
 ) -> *const f64 {
     // SAFETY: the caller promised a live result.
-    let Some(decoded) = (unsafe { decoded(result) }) else {
+    let Some(made) = (unsafe { result_of(result) }) else {
         return ptr::null();
     };
+    let (canvas, count, rows, columns) = made.canvas();
     // SAFETY: the caller promised each pointer null or valid for a write.
-    unsafe { put(channels, wide(decoded.frame.channels().len())) };
+    unsafe { put(channels, wide(count)) };
     // SAFETY: as above.
-    unsafe { put(height, wide(decoded.frame.height())) };
+    unsafe { put(height, wide(rows)) };
     // SAFETY: as above.
-    unsafe { put(width, wide(decoded.frame.width())) };
-    decoded.canvas.as_ptr()
+    unsafe { put(width, wide(columns)) };
+    canvas.as_ptr()
 }
 
-/// The number of components of a result; 0 for a null result.
+/// The number of components of a result: those of a JPEG file, none of a PNG file's;
+/// 0 for a null result.
 ///
 /// # Safety
 ///
@@ -598,7 +809,9 @@ pub unsafe extern "C" fn unround_result_canvas(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn unround_result_components(result: *const UnroundResult) -> u64 {
     // SAFETY: the caller promised null or a live result.
-    unsafe { decoded(result) }.map_or(0, |decoded| wide(decoded.coefficients.len()))
+    unsafe { result_of(result) }
+        .and_then(UnroundResult::decoded)
+        .map_or(0, |decoded| wide(decoded.coefficients.len()))
 }
 
 /// The coefficients of component `component` of a result, each within its interval,
@@ -615,7 +828,7 @@ pub unsafe extern "C" fn unround_result_coefficients(
     count: *mut u64,
 ) -> *const f64 {
     // SAFETY: the caller promised a live result.
-    let Some(decoded) = (unsafe { decoded(result) }) else {
+    let Some(decoded) = (unsafe { result_of(result) }).and_then(UnroundResult::decoded) else {
         return ptr::null();
     };
     let Some(values) = usize::try_from(component)
@@ -645,7 +858,7 @@ pub unsafe extern "C" fn unround_result_problem(
     count: *mut u64,
 ) -> *const f64 {
     // SAFETY: the caller promised a live result.
-    let Some(decoded) = (unsafe { decoded(result) }) else {
+    let Some(decoded) = (unsafe { result_of(result) }).and_then(UnroundResult::decoded) else {
         return ptr::null();
     };
     let Some(channel) = usize::try_from(component)
@@ -685,7 +898,7 @@ pub unsafe extern "C" fn unround_result_component(
     across: *mut u64,
 ) -> i32 {
     // SAFETY: the caller promised a live result.
-    let Some(decoded) = (unsafe { decoded(result) }) else {
+    let Some(decoded) = (unsafe { result_of(result) }).and_then(UnroundResult::decoded) else {
         return ERROR_ARGUMENT;
     };
     let Some(channel) = usize::try_from(component)
@@ -706,21 +919,15 @@ pub unsafe extern "C" fn unround_result_component(
     OK
 }
 
-/// Whether a solver made a result (1) or not (0: the decoder of the centres), with
-/// the iterations it took and why it stopped: 1 a tolerance, 2 the most iterations,
-/// 3 the observer, 4 a subgradient of 0.
+/// Writes a solver's iterations and why it stopped -- 1 a tolerance, 2 the most
+/// iterations, 3 the observer, 4 a subgradient of 0 -- and says whether there was
+/// one (1) or not (0).
 ///
 /// # Safety
 ///
-/// As for `unround_result_picture`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn unround_result_solver(
-    result: *const UnroundResult,
-    iterations: *mut u64,
-    stop: *mut i32,
-) -> i32 {
-    // SAFETY: the caller promised a live result.
-    let Some(solved) = (unsafe { decoded(result) }).and_then(|decoded| decoded.result.as_ref()) else {
+/// Each pointer is null or valid for a write.
+unsafe fn solver(solved: Option<Solved<'_>>, iterations: *mut u64, stop: *mut i32) -> i32 {
+    let Some(solved) = solved else {
         return 0;
     };
     let reason = match solved.stop {
@@ -736,6 +943,63 @@ pub unsafe extern "C" fn unround_result_solver(
     1
 }
 
+/// The iterations of a solver's records; null where there was no solver.
+///
+/// # Safety
+///
+/// `count` is null or valid for a write.
+unsafe fn record_iterations(solved: Option<Solved<'_>>, count: *mut u64) -> *const u64 {
+    let Some(solved) = solved else {
+        return ptr::null();
+    };
+    // SAFETY: the caller promised a pointer null or valid for a write.
+    unsafe { put(count, wide(solved.history.iterations.len())) };
+    solved.history.iterations.as_ptr()
+}
+
+/// A value of a solver's records; null where there was no solver, or for a `which`
+/// that is not there.
+///
+/// # Safety
+///
+/// `count` is null or valid for a write.
+unsafe fn record_values(solved: Option<Solved<'_>>, which: i32, count: *mut u64) -> *const f64 {
+    let Some(solved) = solved else {
+        return ptr::null();
+    };
+    let history = solved.history;
+    let values = match which {
+        0 => &history.seconds,
+        1 => &history.primal,
+        2 => &history.dual,
+        3 => &history.scaling,
+        4 => &history.partial_gap,
+        _ => return ptr::null(),
+    };
+    // SAFETY: the caller promised a pointer null or valid for a write.
+    unsafe { put(count, wide(values.len())) };
+    values.as_ptr()
+}
+
+/// Whether a solver made a result (1) or not (0: the decoder of the centres), with
+/// the iterations it took and why it stopped: 1 a tolerance, 2 the most iterations,
+/// 3 the observer, 4 a subgradient of 0. Of a PNG file, the solver of its colours.
+///
+/// # Safety
+///
+/// As for `unround_result_picture`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn unround_result_solver(
+    result: *const UnroundResult,
+    iterations: *mut u64,
+    stop: *mut i32,
+) -> i32 {
+    // SAFETY: the caller promised a live result.
+    let solved = unsafe { result_of(result) }.and_then(UnroundResult::solved);
+    // SAFETY: the caller promised each pointer null or valid for a write.
+    unsafe { solver(solved, iterations, stop) }
+}
+
 /// The iterations of the solver's records, `count` of them; null where no solver ran.
 ///
 /// # Safety
@@ -744,12 +1008,9 @@ pub unsafe extern "C" fn unround_result_solver(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn unround_result_record_iterations(result: *const UnroundResult, count: *mut u64) -> *const u64 {
     // SAFETY: the caller promised a live result.
-    let Some(solved) = (unsafe { decoded(result) }).and_then(|decoded| decoded.result.as_ref()) else {
-        return ptr::null();
-    };
+    let solved = unsafe { result_of(result) }.and_then(UnroundResult::solved);
     // SAFETY: the caller promised a pointer null or valid for a write.
-    unsafe { put(count, wide(solved.history.iterations.len())) };
-    solved.history.iterations.as_ptr()
+    unsafe { record_iterations(solved, count) }
 }
 
 /// A value of the solver's records, one for each: `which` 0 the solver's seconds, 1 the
@@ -766,21 +1027,63 @@ pub unsafe extern "C" fn unround_result_record_values(
     count: *mut u64,
 ) -> *const f64 {
     // SAFETY: the caller promised a live result.
-    let Some(solved) = (unsafe { decoded(result) }).and_then(|decoded| decoded.result.as_ref()) else {
-        return ptr::null();
-    };
-    let history = &solved.history;
-    let values = match which {
-        0 => &history.seconds,
-        1 => &history.primal,
-        2 => &history.dual,
-        3 => &history.scaling,
-        4 => &history.partial_gap,
-        _ => return ptr::null(),
-    };
+    let solved = unsafe { result_of(result) }.and_then(UnroundResult::solved);
     // SAFETY: the caller promised a pointer null or valid for a write.
-    unsafe { put(count, wide(values.len())) };
-    values.as_ptr()
+    unsafe { record_values(solved, which, count) }
+}
+
+/// Whether a result has an alpha reconstructed alone (1: a PNG file's with alpha) or
+/// not (0), with its solver's iterations and why it stopped, as
+/// `unround_result_solver` says them.
+///
+/// # Safety
+///
+/// As for `unround_result_picture`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn unround_result_alpha_solver(
+    result: *const UnroundResult,
+    iterations: *mut u64,
+    stop: *mut i32,
+) -> i32 {
+    // SAFETY: the caller promised a live result.
+    let solved = unsafe { result_of(result) }.and_then(UnroundResult::alpha);
+    // SAFETY: the caller promised each pointer null or valid for a write.
+    unsafe { solver(solved, iterations, stop) }
+}
+
+/// The iterations of the records of the alpha's solver, `count` of them; null where
+/// the result has no alpha.
+///
+/// # Safety
+///
+/// As for `unround_result_picture`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn unround_result_alpha_record_iterations(
+    result: *const UnroundResult,
+    count: *mut u64,
+) -> *const u64 {
+    // SAFETY: the caller promised a live result.
+    let solved = unsafe { result_of(result) }.and_then(UnroundResult::alpha);
+    // SAFETY: the caller promised a pointer null or valid for a write.
+    unsafe { record_iterations(solved, count) }
+}
+
+/// A value of the records of the alpha's solver, as `unround_result_record_values`
+/// says them; null where the result has no alpha, or for a `which` that is not there.
+///
+/// # Safety
+///
+/// As for `unround_result_picture`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn unround_result_alpha_record_values(
+    result: *const UnroundResult,
+    which: i32,
+    count: *mut u64,
+) -> *const f64 {
+    // SAFETY: the caller promised a live result.
+    let solved = unsafe { result_of(result) }.and_then(UnroundResult::alpha);
+    // SAFETY: the caller promised a pointer null or valid for a write.
+    unsafe { record_values(solved, which, count) }
 }
 
 /// The ICC profile of a result's file, `size` bytes; null where it has none.
@@ -791,7 +1094,7 @@ pub unsafe extern "C" fn unround_result_record_values(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn unround_result_icc_profile(result: *const UnroundResult, size: *mut u64) -> *const u8 {
     // SAFETY: the caller promised a live result.
-    let Some(profile) = (unsafe { decoded(result) }).and_then(|decoded| decoded.icc_profile.as_ref()) else {
+    let Some(profile) = (unsafe { result_of(result) }).and_then(UnroundResult::icc_profile) else {
         return ptr::null();
     };
     // SAFETY: the caller promised a pointer null or valid for a write.
@@ -799,7 +1102,8 @@ pub unsafe extern "C" fn unround_result_icc_profile(result: *const UnroundResult
     profile.as_ptr()
 }
 
-/// The EXIF orientation of a result's file, 1 to 8, or 0 where it has none.
+/// The EXIF orientation of a result's file, 1 to 8, or 0 where it has none (and for a
+/// PNG file).
 ///
 /// # Safety
 ///
@@ -807,7 +1111,45 @@ pub unsafe extern "C" fn unround_result_icc_profile(result: *const UnroundResult
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn unround_result_exif_orientation(result: *const UnroundResult) -> i32 {
     // SAFETY: the caller promised null or a live result.
-    unsafe { decoded(result) }.map_or(0, |decoded| decoded.exif_orientation)
+    unsafe { result_of(result) }.map_or(0, UnroundResult::exif_orientation)
+}
+
+/// The format of a result's file: `FORMAT_JPEG` (and for components given as arrays)
+/// or `FORMAT_PNG`; 0 for a null result.
+///
+/// # Safety
+///
+/// `result` is null, or a live result.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn unround_result_format(result: *const UnroundResult) -> i32 {
+    // SAFETY: the caller promised null or a live result.
+    unsafe { result_of(result) }.map_or(0, UnroundResult::format)
+}
+
+/// The bits of a sample of a result's file: a PNG file's, 1 to 16; a JPEG file's, 8;
+/// 0 for a null result.
+///
+/// # Safety
+///
+/// `result` is null, or a live result.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn unround_result_bits(result: *const UnroundResult) -> i32 {
+    // SAFETY: the caller promised null or a live result.
+    unsafe { result_of(result) }.map_or(0, UnroundResult::bits)
+}
+
+/// The first warning of the reading of a result's file, NUL-terminated and valid
+/// while the result lives: a corrupt-data warning of a JPEG file, or a PNG file's
+/// transparent colour that is not taken; an empty string where there was none. Null
+/// for a null result.
+///
+/// # Safety
+///
+/// `result` is null, or a live result.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn unround_result_warning(result: *const UnroundResult) -> *const c_char {
+    // SAFETY: the caller promised null or a live result.
+    unsafe { result_of(result) }.map_or(ptr::null(), |made| made.warning.as_ptr())
 }
 
 /// Samples of `height x width x channels`, from a pointer.
@@ -875,8 +1217,9 @@ unsafe fn hand_over_written(
     unsafe { write_message(message, message_size, &written.warning) };
 }
 
-/// The bytes of a TIFF of binary64 samples, `height x width x channels` (1, or 3
-/// interleaved), exactly as they are; with `ycbcr` nonzero, the three samples of a
+/// The bytes of a TIFF of binary64 samples, `height x width x channels` (1 to 4
+/// interleaved: grey or RGB, and with 2 or 4 the alpha last, which the file declares),
+/// exactly as they are; with `ycbcr` nonzero, the three samples of a
 /// pixel are JFIF's Y, Cb and Cr, and the file says so. The ICC profile of
 /// `icc_size` bytes at `icc` (none where `icc` is null) is embedded where it goes
 /// with the picture; where it does not, it is left out, and the message says why.
@@ -943,7 +1286,8 @@ pub const DITHER_BLUE_NOISE: i32 = 1;
 /// The ordered dither of the blue-noise matrix, the channels of a pixel together.
 pub const DITHER_BLUE_NOISE_TOGETHER: i32 = 2;
 
-/// The bytes of a PNG file of `height x width x channels` samples (1 or 3), of 8
+/// The bytes of a PNG file of `height x width x channels` samples (1 to 4: grey or
+/// RGB, and with 2 or 4 the alpha last), of 8
 /// bits, or with `sixteen` nonzero of 16 bits, made as `dither` says
 /// ([`DITHER_NONE`], [`DITHER_BLUE_NOISE`] or [`DITHER_BLUE_NOISE_TOGETHER`];
 /// docs/cli.md), compressed at zlib's level `compression`, 0 to 9, or -1 for zlib's

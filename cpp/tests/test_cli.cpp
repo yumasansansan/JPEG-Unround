@@ -6,8 +6,9 @@
 // EXIF orientation says, to the last bit; the orientation kept; the Y, Cb and Cr of
 // --ycbcr; the name of the output next to the input; a file that exists, written over
 // only with --overwrite; a PNG file with alpha, refused as PNM; the report; the
-// verbose records; an ICC profile left out with a warning; --version and --help; and
-// the exit statuses of what is refused and of what is not read.
+// verbose records; an ICC profile left out with a warning; a file cut short, with the
+// warning of its reading; --version and --help; and the exit statuses of what is
+// refused and of what is not read.
 
 #include "unround/cli.hpp"
 
@@ -320,6 +321,15 @@ void refusals(const fs::path& directory) {
   const fs::path garbage = directory / "garbage.jpg";
   write_file(garbage, std::array<std::uint8_t, 5>{1, 2, 3, 4, 5});
   CHECK(run({garbage.string(), out}).status == unround::cli::not_read);
+  // A file cut short: written, with the warning of its reading; not read where warnings
+  // are errors.
+  const fs::path cut = directory / "cut.jpg";
+  write_file(cut, std::span<const std::uint8_t>(grey).first(grey.size() - 40u));
+  const std::string cut_out = (directory / "cut.tif").string();
+  const Ran warned = run({"--method", "mmse", cut.string(), cut_out});
+  CHECK(warned.status == 0 && contains(warned.err, std::format("unround: {}: Premature end of JPEG file", cut_out)));
+  CHECK(run({"--method", "mmse", "--warnings-are-errors", "--overwrite", cut.string(), cut_out}).status ==
+        unround::cli::not_read);
   const Ran version = run({"--version"});
   CHECK(version.status == 0 && version.out == "unround 0.1.0 (C++)\n");
   const Ran help = run({"-h"});

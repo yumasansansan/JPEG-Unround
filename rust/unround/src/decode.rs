@@ -108,6 +108,8 @@ pub struct Decoded {
     pub icc_profile: Option<Vec<u8>>,
     /// The file's EXIF orientation, 1 to 8, or 0 where it has none.
     pub exif_orientation: i32,
+    /// The first corrupt-data warning of the file's reading, or an empty string.
+    pub warning: String,
 }
 
 /// A component of a file: its quantized levels, `rows x columns` blocks of 64 in
@@ -145,6 +147,8 @@ pub struct Input {
     pub icc_profile: Option<Vec<u8>>,
     /// The EXIF orientation, 1 to 8, or 0 where there is none.
     pub exif_orientation: i32,
+    /// The first corrupt-data warning of the reading, or an empty string.
+    pub warning: String,
 }
 
 fn factor(value: i32) -> Result<usize, Error> {
@@ -183,6 +187,7 @@ impl Input {
             components,
             icc_profile: image.icc_profile().map(<[u8]>::to_vec),
             exif_orientation: image.exif_orientation(),
+            warning: image.warning().to_owned(),
         })
     }
 
@@ -325,6 +330,7 @@ pub fn solve(input: &Input, settings: &Settings, observer: Option<&mut Observer<
         result,
         icc_profile: input.icc_profile.clone(),
         exif_orientation: input.exif_orientation,
+        warning: input.warning.clone(),
     })
 }
 

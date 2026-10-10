@@ -855,6 +855,78 @@ def test_the_c_layer_is_read_through_either_library(monkeypatch: pytest.MonkeyPa
         np.testing.assert_array_equal(one_plane, other_plane)
 
 
+def png_file(*, sixteen: bool = False, alpha: bool = True) -> bytes:
+    """A smooth picture of 12 x 17 pixels, RGB with alpha or grey without, rounded into a PNG file."""
+    rows, columns = np.mgrid[0:12, 0:17].astype(np.float64)
+    if alpha:
+        planes = [30 + 3.3 * columns, 90 + 2.1 * rows, 160 + rows + columns, 200 + 2.2 * columns]
+        picture = np.stack(planes, axis=-1)
+    else:
+        picture = 40 + 3.1 * columns + 1.7 * rows
+    return native.png_bytes(picture, sixteen=sixteen, dither="none")
+
+
+@pytest.mark.parametrize("sixteen", [False, True])
+@pytest.mark.parametrize("method", ["tgv", "tv"])
+def test_a_png_file_is_reconstructed_within_its_intervals(method: Method, *, sixteen: bool) -> None:
+    data = png_file(sixteen=sixteen)
+    decoded = native.decode(data, Settings(method=method, pdhg=PdhgOptions(iterations=60)))
+    assert (decoded.input_format, decoded.bits) == ("png", 16 if sixteen else 8)
+    assert decoded.picture.shape == (12, 17, 4)
+    assert decoded.color_space is jpegio.ColorSpace.RGB
+    np.testing.assert_array_equal(bits(decoded.planes), bits(np.moveaxis(decoded.picture, -1, 0)))
+    np.testing.assert_array_equal(bits(decoded.canvas), bits(decoded.planes))
+    assert (decoded.coefficients, decoded.problems) == ((), ())
+    assert decoded.result is not None
+    assert decoded.alpha_result is not None
+    assert len(decoded.alpha_result.history.iterations) > 0
+    assert (decoded.exif_orientation, decoded.icc_profile) == (0, None)
+    # Rounded to its own bits without a dither, the result gives back the file.
+    assert native.png_bytes(decoded.picture, sixteen=sixteen, dither="none") == data
+
+
+def test_a_png_file_decodes_as_the_command_line_writes_it(tmp_path: Path) -> None:
+    data = png_file()
+    source, target = tmp_path / "in.png", tmp_path / "out.tif"
+    source.write_bytes(data)
+    assert native.main(["--quiet", "--iterations", "60", str(source), str(target)]) == 0
+    decoded = native.decode(source, Settings(pdhg=PdhgOptions(iterations=60)))
+    assert target.read_bytes() == native.tiff_bytes(decoded.picture)
+    # A grey file without alpha.
+    grey = native.decode(png_file(alpha=False), Settings(pdhg=PdhgOptions(iterations=30)))
+    assert grey.picture.shape == (12, 17)
+    assert grey.color_space is jpegio.ColorSpace.GRAYSCALE
+    assert grey.alpha_result is None
+
+
+def test_an_observer_follows_the_colours_and_the_alpha_of_a_png_file() -> None:
+    channels: list[int] = []
+
+    def watch(record: native.Record) -> None:
+        channels.append(int(record.canvas.shape[0]))
+
+    settings = Settings(pdhg=PdhgOptions(iterations=20, tolerance=0.0, record_every=5))
+    native.decode(png_file(), settings, observer=watch)
+    assert channels == [3] * 4 + [1] * 4
+
+
+def test_what_a_png_file_does_not_take_is_refused() -> None:
+    for settings in (Settings(method="mmse"), Settings(data=DataTerm(centres="mmse"))):
+        with pytest.raises(native.UnroundError) as refused:
+            native.decode(png_file(), settings)
+        assert refused.value.status is native.Status.OPTIONS
+
+
+def test_a_warning_of_the_reading_is_said() -> None:
+    data = grey_file()
+    with pytest.warns(native.UnroundWarning, match="Premature end of JPEG file"):
+        decoded = native.decode(data[:-40], Settings(method="mmse"))
+    assert decoded.input_format == "jpeg"
+    with pytest.raises(native.UnroundError) as strict:
+        native.decode(data[:-40], Settings(method="mmse"), warnings_are_errors=True)
+    assert strict.value.status is native.Status.READ
+
+
 def test_the_package_decodes_a_path_bytes_or_an_image(tmp_path: Path) -> None:
     data = colour_file("4:2:0")
     source = tmp_path / "in.jpg"

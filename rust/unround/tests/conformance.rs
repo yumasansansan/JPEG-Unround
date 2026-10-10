@@ -200,6 +200,7 @@ impl Case {
                 .collect(),
             icc_profile: None,
             exif_orientation: 0,
+            warning: String::new(),
         }
     }
 

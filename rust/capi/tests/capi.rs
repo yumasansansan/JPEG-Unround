@@ -2,15 +2,17 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The C interface, called as C calls it: its results are the library's to the last
-//! bit, its observer stops the solver, and what it refuses it says.
+//! bit, a JPEG file's and a PNG file's, its observer stops the solver, and what it
+//! refuses it says.
 
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::ptr;
 use std::slice;
 
 use jpeg_unround::decode::{self, Method, Settings};
-use jpeg_unround::{colour, orientation, output, pdhg, tiff};
+use jpeg_unround::{colour, orientation, output, pdhg, rounded, tiff};
 use jpegio_sys::testing::{File, Layout, read_png};
+use jpegio_sys::{Png, Samples, ffi};
 use unround_capi as capi;
 use unround_capi::{UnroundInput, UnroundRecord, UnroundResult, UnroundSettings};
 
@@ -118,7 +120,7 @@ fn picture_of(result: *const UnroundResult) -> (Vec<f64>, u64, u64, u64) {
 
 #[test]
 fn the_versions_are_those_of_the_header() {
-    assert_eq!(capi::unround_abi_version(), 3);
+    assert_eq!(capi::unround_abi_version(), 4);
     // SAFETY: the version is a NUL-terminated string of static storage.
     let version = unsafe { CStr::from_ptr(capi::unround_version()) };
     assert!(version.to_string_lossy().starts_with("unround "));
@@ -308,6 +310,231 @@ fn an_observer_follows_the_records_and_stops_the_solver() {
     free_settings(made);
 }
 
+/// An RGBA picture of 12 x 17 pixels of 8 bits, ramps in every channel, and its PNG
+/// file.
+fn rgba_file() -> (Vec<u8>, Vec<u8>) {
+    let mut levels = Vec::with_capacity(12 * 17 * 4);
+    for i in 0..12u8 {
+        for j in 0..17u8 {
+            levels.extend([30 + 3 * j, 90 + 2 * i, 160 + i + j, 200 + 2 * j]);
+        }
+    }
+    let png = Png {
+        width: 17,
+        height: 12,
+        channels: 4,
+        samples: Samples::Eight(&levels),
+        compression: None,
+        icc_profile: None,
+    };
+    (jpegio_sys::write_png(&png).expect("a file").bytes, levels)
+}
+
+/// `count` values at a pointer of the interface.
+fn values<T: Copy>(pointer: *const T, count: u64) -> Vec<T> {
+    assert!(!pointer.is_null());
+    // SAFETY: the interface promised count values, valid while the result lives.
+    unsafe { slice::from_raw_parts(pointer, usize::try_from(count).expect("fits")) }.to_vec()
+}
+
+/// A solver of a result as the interface says it: whether there was one, its
+/// iterations and stop, and the iterations and primal values of its records.
+fn solver_of(result: *const UnroundResult, alpha: bool) -> (i32, u64, i32, Vec<u64>, Vec<f64>) {
+    let (mut iterations, mut stop, mut count) = (0u64, 0i32, 0u64);
+    let (there, recorded, primal) = if alpha {
+        // SAFETY: result is a live result, and the pointers are valid for writes.
+        let there = unsafe { capi::unround_result_alpha_solver(result, &raw mut iterations, &raw mut stop) };
+        // SAFETY: as above.
+        let recorded = unsafe { capi::unround_result_alpha_record_iterations(result, &raw mut count) };
+        // SAFETY: as above.
+        let primal = unsafe { capi::unround_result_alpha_record_values(result, 1, ptr::null_mut()) };
+        (there, recorded, primal)
+    } else {
+        // SAFETY: as above.
+        let there = unsafe { capi::unround_result_solver(result, &raw mut iterations, &raw mut stop) };
+        // SAFETY: as above.
+        let recorded = unsafe { capi::unround_result_record_iterations(result, &raw mut count) };
+        // SAFETY: as above.
+        let primal = unsafe { capi::unround_result_record_values(result, 1, ptr::null_mut()) };
+        (there, recorded, primal)
+    };
+    if there == 0 {
+        assert!(recorded.is_null() && primal.is_null());
+        return (0, 0, 0, Vec::new(), Vec::new());
+    }
+    (there, iterations, stop, values(recorded, count), values(primal, count))
+}
+
+/// The warning of a result, as the interface gives it.
+fn warning_of(result: *const UnroundResult) -> String {
+    // SAFETY: result is a live result.
+    let warning = unsafe { capi::unround_result_warning(result) };
+    assert!(!warning.is_null());
+    // SAFETY: the interface promised a NUL-terminated string, valid while the result lives.
+    let text = unsafe { CStr::from_ptr(warning) };
+    text.to_string_lossy().into_owned()
+}
+
+/// What a result says of its file: its format, its bits, its colour space, its EXIF
+/// orientation and its components.
+fn file_of(result: *const UnroundResult) -> (i32, i32, i32, i32, u64) {
+    // SAFETY: result is null or a live result, for each call.
+    let format = unsafe { capi::unround_result_format(result) };
+    // SAFETY: as above.
+    let bits = unsafe { capi::unround_result_bits(result) };
+    // SAFETY: as above.
+    let space = unsafe { capi::unround_result_color_space(result) };
+    // SAFETY: as above.
+    let orientation = unsafe { capi::unround_result_exif_orientation(result) };
+    // SAFETY: as above.
+    let components = unsafe { capi::unround_result_components(result) };
+    (format, bits, space, orientation, components)
+}
+
+#[test]
+fn a_png_file_reconstructs_as_the_library_reconstructs_it() {
+    let (data, levels) = rgba_file();
+    for (method, options) in [
+        (Method::Tgv, vec!["--iterations", "40"]),
+        (Method::Tv, vec!["--method", "tv", "--iterations", "40"]),
+    ] {
+        let made = settings(&options).expect("settings");
+        let (status, result, message) = decode_with(&data, made, None, ptr::null_mut());
+        assert_eq!(status, capi::OK, "{message}");
+        let library = Settings {
+            method,
+            pdhg: pdhg::Options {
+                iterations: Some(40),
+                ..pdhg::Options::default()
+            },
+            ..Settings::default()
+        };
+        let expected = rounded::reconstruct(&data, &library, None).expect("the file is reconstructed");
+        let (picture, height, width, channels) = picture_of(result);
+        assert_eq!((height, width, channels), (12, 17, 4));
+        assert_eq!(picture, expected.picture);
+        assert_eq!(file_of(result), (capi::FORMAT_PNG, 8, ffi::RGB, 0, 0));
+        // The planes: the colours', then the alpha's, each the picture's channel.
+        let alpha = expected.alpha.as_ref().expect("the file has alpha");
+        let mut count = 0u64;
+        // SAFETY: result is a live result, and count is valid for a write.
+        let planes = values(unsafe { capi::unround_result_planes(result, &raw mut count) }, count);
+        assert_eq!(
+            planes,
+            [expected.colours.picture.as_slice(), alpha.picture.as_slice()].concat()
+        );
+        let size = 12 * 17;
+        for (index, sample) in picture.iter().enumerate() {
+            assert_eq!(planes[(index % 4) * size + index / 4].to_bits(), sample.to_bits());
+        }
+        let (mut layers, mut rows, mut columns) = (0u64, 0u64, 0u64);
+        // SAFETY: as above.
+        let canvas = unsafe { capi::unround_result_canvas(result, &raw mut layers, &raw mut rows, &raw mut columns) };
+        assert_eq!((layers, rows, columns), (4, 12, 17));
+        assert_eq!(values(canvas, layers * rows * columns), planes);
+        // No components, no profile, no warning.
+        // SAFETY: as above.
+        let coefficients = unsafe { capi::unround_result_coefficients(result, 0, &raw mut count) };
+        // SAFETY: as above.
+        let problem = unsafe { capi::unround_result_problem(result, 0, 0, &raw mut count) };
+        let none = ptr::null_mut();
+        // SAFETY: as above; null pointers are not written.
+        let component = unsafe { capi::unround_result_component(result, 0, none, none, none, none) };
+        // SAFETY: as above.
+        let profile = unsafe { capi::unround_result_icc_profile(result, &raw mut count) };
+        assert!(coefficients.is_null() && problem.is_null() && profile.is_null());
+        assert_eq!(component, capi::ERROR_ARGUMENT);
+        assert_eq!(warning_of(result), "");
+        // The colours' solver and the alpha's, as the library's.
+        let colours = solver_of(result, false);
+        assert_eq!(
+            (colours.0, colours.1, colours.3, colours.4),
+            (
+                1,
+                expected.colours.iterations,
+                expected.colours.history.iterations.clone(),
+                expected.colours.history.primal.clone()
+            )
+        );
+        let alone = solver_of(result, true);
+        assert_eq!(
+            (alone.0, alone.1, alone.3, alone.4),
+            (
+                1,
+                alpha.iterations,
+                alpha.history.iterations.clone(),
+                alpha.history.primal.clone()
+            )
+        );
+        // Rounded to 8 bits, the result gives back the file's levels.
+        let back = output::eight_bits(&picture, 12, 17, 4, output::Dither::None).expect("finite samples");
+        assert_eq!(back, levels);
+        free_result(result);
+        free_settings(made);
+    }
+    // A JPEG file's result says so, and has no alpha.
+    let (jpeg, _, _) = grey_file();
+    let made = settings(&["--method", "mmse"]).expect("settings");
+    let (status, result, message) = decode_with(&jpeg, made, None, ptr::null_mut());
+    assert_eq!(status, capi::OK, "{message}");
+    assert_eq!(file_of(result), (capi::FORMAT_JPEG, 8, ffi::GRAYSCALE, 0, 1));
+    assert_eq!(solver_of(result, true).0, 0);
+    assert_eq!(warning_of(result), "");
+    free_result(result);
+    free_settings(made);
+    // A null result has no format, no bits and no warning.
+    assert_eq!(file_of(ptr::null()), (0, 0, 0, 0, 0));
+    // SAFETY: null is what is asked about; nothing is read.
+    assert!(unsafe { capi::unround_result_warning(ptr::null()) }.is_null());
+}
+
+/// Counts the records of the colours (3 channels) and of the alpha (1).
+unsafe extern "C" fn count_by_channels(user: *mut c_void, record: *const UnroundRecord) -> i32 {
+    // SAFETY: the test gives a pointer to two u64 as user.
+    let seen = unsafe { &mut *user.cast::<[u64; 2]>() };
+    // SAFETY: the interface gives a record valid for the call.
+    let record = unsafe { &*record };
+    assert_eq!((record.height, record.width), (12, 17));
+    match record.channels {
+        3 => seen[0] += 1,
+        1 => seen[1] += 1,
+        other => panic!("a record of {other} channels"),
+    }
+    0
+}
+
+#[test]
+fn an_observer_follows_the_colours_and_the_alpha() {
+    let (data, _) = rgba_file();
+    let made = settings(&["--iterations", "20", "--tolerance", "0", "--record-every", "5"]).expect("settings");
+    let mut seen = [0u64; 2];
+    let (status, result, message) = decode_with(&data, made, Some(count_by_channels), (&raw mut seen).cast());
+    assert_eq!(status, capi::OK, "{message}");
+    // Records at 5, 10, 15 and 20 of each, after the first at 0.
+    assert_eq!(seen, [4, 4]);
+    free_result(result);
+    free_settings(made);
+}
+
+#[test]
+fn a_jpeg_file_cut_short_is_read_with_a_warning() {
+    let (data, _, _) = grey_file();
+    let cut = &data[..data.len() - 40];
+    let made = settings(&["--method", "mmse"]).expect("settings");
+    let (status, result, message) = decode_with(cut, made, None, ptr::null_mut());
+    assert_eq!(status, capi::OK, "{message}");
+    let warning = warning_of(result);
+    assert!(warning.contains("Premature end of JPEG file"), "{warning}");
+    free_result(result);
+    free_settings(made);
+    // As an error where warnings are.
+    let strict = settings(&["--method", "mmse", "--warnings-are-errors"]).expect("settings");
+    let (status, result, message) = decode_with(cut, strict, None, ptr::null_mut());
+    assert_eq!(status, capi::ERROR_READ, "{message}");
+    assert!(result.is_null());
+    free_settings(strict);
+}
+
 #[test]
 fn what_is_refused_is_said() {
     let made = settings(&[]).expect("settings");
@@ -347,6 +574,16 @@ fn what_is_refused_is_said() {
     assert_eq!(status, capi::ERROR_ARGUMENT);
     assert_eq!(short[4], 0);
     free_settings(made);
+    // What a PNG file does not take: a method other than TV and TGV, and the data
+    // term's options other than --mu and --slack.
+    let (png, _) = rgba_file();
+    for options in [["--method", "mmse"], ["--centres", "mmse"]] {
+        let made = settings(&options).expect("settings");
+        let (status, result, message) = decode_with(&png, made, None, ptr::null_mut());
+        assert_eq!(status, capi::ERROR_OPTIONS, "{message}");
+        assert!(result.is_null() && !message.is_empty());
+        free_settings(made);
+    }
     // SAFETY: freeing null does nothing.
     unsafe { capi::unround_result_free(ptr::null_mut()) };
 }

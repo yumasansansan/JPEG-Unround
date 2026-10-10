@@ -279,7 +279,7 @@ pub fn pnm(samples: &[f64], height: usize, width: usize, channels: usize, depth:
 ///
 /// # Errors
 ///
-/// [`Error::Options`] for a picture that is not of that size, of other than 1 or 3
+/// [`Error::Options`] for a picture that is not of that size, of other than 1 to 4
 /// channels, larger than PNG allows, or of samples that are not finite, and a level
 /// above 9; [`Error::Write`] where the C layer could not write the file.
 pub fn png(

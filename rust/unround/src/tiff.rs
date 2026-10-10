@@ -194,14 +194,15 @@ fn layout(
 }
 
 /// The bytes of a TIFF of binary64 samples: `height x width` pixels of `channels`
-/// samples each (1, or 3 interleaved), exactly as they are. With `ycbcr`, the three
+/// samples each (1 to 4 interleaved: grey or RGB, and with 2 or 4 the alpha last,
+/// unassociated, which the file declares), exactly as they are. With `ycbcr`, the three
 /// samples of a pixel are JFIF's Y, Cb and Cr, and the file says so. The ICC profile
 /// is embedded where it goes with the picture; otherwise it is left out, and the
 /// warning says why.
 ///
 /// # Errors
 ///
-/// [`Error::Options`] for a picture that is empty, not of that size, not of 1 or 3
+/// [`Error::Options`] for a picture that is empty, not of that size, not of 1 to 4
 /// channels, of Y, Cb and Cr in other than 3 channels, or too large for a classic
 /// TIFF.
 pub fn float64(
