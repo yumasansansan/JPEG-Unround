@@ -27,11 +27,11 @@ enum class Dither : std::int32_t { none, blue_noise };
 [[nodiscard]] std::span<const std::uint16_t, 4096> blue_noise(void) noexcept;
 
 // The levels of a picture's samples in a file of 8 or 16 bits (docs/math.md, 10): of
-// y = x or y = 257 x, clamp(floor(y) + [y - floor(y) >= 1 - t], 0, T) with the
-// threshold t of the pixel and the channel, or clamp(round(y), 0, T), halves away
-// from 0. The channels take the matrix shifted apart, (0, 0), (0, 32), (32, 0) and
+// y = x or y = 257 x, the product exact, clamp(floor(y) + [y - floor(y) >= 1 - t], 0, T)
+// with the threshold t of the pixel and the channel, or clamp(round(y), 0, T), halves
+// away from 0. The channels take the matrix shifted apart, (0, 0), (0, 32), (32, 0) and
 // (32, 32), or all at (0, 0). Every implementation makes the same levels of the same
-// samples: each is computed exactly from y.
+// samples: each is computed exactly from x.
 [[nodiscard]] LevelsArray levels_of(Picture<const double> picture, std::int32_t bits, Dither dither, bool apart);
 
 // Whether an EXIF orientation turns a picture: 2 to 8; 1, and every other value, is the

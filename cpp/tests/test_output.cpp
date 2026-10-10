@@ -3,13 +3,15 @@
 //
 // Tests of what the files are made of (docs/math.md, 10, and docs/cli.md): every level
 // of the ordered dither against its definition in integers, the levels of a constant
-// over the matrix keeping its mean, the channels' shifts, the levels of 16 bits, and
-// rounding with its clamps; the eight orientations; and TIFF and PNM files read back,
-// their samples to the last bit and their fields.
+// over the matrix keeping its mean, the channels' shifts, the levels of 16 bits of the
+// exact product 257 x (samples whose rounded product lands on a place where the level
+// turns, from below, among them), and rounding with its clamps; the eight orientations;
+// and TIFF and PNM files read back, their samples to the last bit and their fields.
 
 #include "unround/output.hpp"
 
 #include "unround/arrays.hpp"
+#include "unround/exact.hpp"
 
 #include "support/check.hpp"
 
@@ -35,6 +37,41 @@ using unround::output::LevelsArray;
 using unround::output::PictureArray;
 
 bool same(double a, double b) noexcept { return std::bit_cast<std::uint64_t>(a) == std::bit_cast<std::uint64_t>(b); }
+
+using i128 = unround::exact::i128;
+
+// The level of scale x, the product exact, where its fraction reaches bound / 8192 (8191
+// - 2 R for the dither by rank R, 4096 for rounding), clamped to 0 to top: x = m 2^-k,
+// and the whole part and the fraction of scale m / 2^k in 128-bit integers.
+std::int64_t exact_level(double x, std::int64_t scale, std::int64_t bound, std::int64_t top) {
+  if (!(x > 0.0)) return 0;
+  int exponent = 0;
+  const double fraction = std::frexp(x, &exponent);
+  // Through 64 bits: a conversion of a double to 128 bits calls the compiler's runtime.
+  const auto m = static_cast<i128>(static_cast<std::int64_t>(std::ldexp(fraction, 53)));
+  const int k = 53 - exponent;
+  const i128 product = m * scale;
+  const i128 whole = product >> k;
+  const i128 rest = product - (whole << k);
+  const bool up = rest * 8192 >= static_cast<i128>(bound) << k;
+  return std::clamp(static_cast<std::int64_t>(whole) + (up ? 1 : 0), std::int64_t{0}, top);
+}
+
+// Whether the product 257 x rounds to the double place, the exact one lying below it.
+bool onto_from_below(double x, double place) noexcept {
+  const double y = 257.0 * x;
+  return y == place && std::fma(257.0, x, -y) < 0.0;
+}
+
+// The samples near place / 257 whose products round to place from below, where there is
+// one; else the nearest.
+double near_257th(double place) noexcept {
+  const double near = place / 257.0;
+  for (const double x : {std::nextafter(near, 0.0), near, std::nextafter(near, 256.0)}) {
+    if (onto_from_below(x, place)) return x;
+  }
+  return near;
+}
 
 // The level of y against rank r, in integers: y = n / 2^20 for an integer n, floor(y)
 // = n >> 20 (rounding toward minus infinity), and the fraction reaches 1 - t, t = (2 r +
@@ -86,18 +123,27 @@ void dither(void) {
     const double fraction = y - std::floor(y);
     CHECK(up == static_cast<std::size_t>(std::floor(4096.0 * fraction + 0.5)));
   }
-  // 16 bits: y = 257 x, one product rounded once.
-  PictureArray picture(unround::PictureExtents{8, 9, 1});
-  for (double& sample : picture.entries()) sample = numbers.uniform(-1.0, 256.0);
+  // 16 bits: y = 257 x, the product exact. Half the samples at random, half where the
+  // rounded product lands on the place where the dither of the sample goes up.
+  PictureArray picture(unround::PictureExtents{8, 64, 1});
+  std::size_t onto = 0;
+  for (std::size_t i = 0; i < 8u; ++i) {
+    for (std::size_t j = 0; j < 64u; ++j) {
+      const double limit = 1.0 - (2.0 * unround::output::blue_noise()[i * 64u + j] + 1.0) / 8192.0;
+      const double place = static_cast<double>(997u * (i * 64u + j) % 65000u) + limit;
+      const double x = j % 2u == 0u ? numbers.uniform(-1.0, 256.0) : near_257th(place);
+      onto += onto_from_below(x, place) ? 1u : 0u;
+      picture.view()[i, j, 0] = x;
+    }
+  }
+  CHECK(onto > 20u);
   const LevelsArray sixteen = unround::output::levels_of(picture.view(), 16, Dither::blue_noise, true);
   bool scaled = true;
   for (std::size_t i = 0; i < 8u; ++i) {
-    for (std::size_t j = 0; j < 9u; ++j) {
-      const double y = 257.0 * picture.view()[i, j, 0];
-      const double t = (2.0 * unround::output::blue_noise()[i * 64u + j] + 1.0) / 8192.0;
-      const double whole = std::floor(y);
-      const double level = y < 0.0 ? 0.0 : y >= 65535.0 ? 65535.0 : whole + (y - whole >= 1.0 - t ? 1.0 : 0.0);
-      scaled = scaled && static_cast<double>(sixteen.view()[i, j, 0]) == level;
+    for (std::size_t j = 0; j < 64u; ++j) {
+      const std::int64_t bound = 8191 - 2 * std::int64_t{unround::output::blue_noise()[i * 64u + j]};
+      scaled =
+          scaled && std::int64_t{sixteen.view()[i, j, 0]} == exact_level(picture.view()[i, j, 0], 257, bound, 65535);
     }
   }
   CHECK(scaled);
@@ -110,6 +156,23 @@ void rounding(void) {
   std::ranges::copy(samples, picture.entries().begin());
   const LevelsArray levels = unround::output::levels_of(picture.view(), 8, Dither::none, true);
   CHECK(std::ranges::equal(levels.entries(), expected));
+  // 16 bits: the nearest level to the exact 257 x, at halves k + 1/2 where the rounded
+  // product lands on the half from below.
+  PictureArray halves(unround::PictureExtents{1, 3000, 1});
+  std::size_t onto = 0;
+  for (std::size_t j = 0; j < 3000u; ++j) {
+    const double half = static_cast<double>(21u * j) + 0.5;
+    const double x = near_257th(half);
+    onto += onto_from_below(x, half) ? 1u : 0u;
+    halves.view()[0, j, 0] = x;
+  }
+  CHECK(onto > 500u);
+  const LevelsArray rounded = unround::output::levels_of(halves.view(), 16, Dither::none, true);
+  bool nearest = true;
+  for (std::size_t j = 0; j < 3000u; ++j) {
+    nearest = nearest && std::int64_t{rounded.view()[0, j, 0]} == exact_level(halves.view()[0, j, 0], 257, 4096, 65535);
+  }
+  CHECK(nearest);
   // NaN and the infinities clamp.
   PictureArray odd(unround::PictureExtents{1, 3, 1});
   odd.entries()[0] = std::numeric_limits<double>::quiet_NaN();

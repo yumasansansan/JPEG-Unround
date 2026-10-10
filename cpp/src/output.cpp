@@ -46,40 +46,46 @@ const std::array<double, side * side>& limits(void) noexcept {
 // The shifts of the matrix of channels 0 to 3, apart.
 constexpr std::array<std::array<std::size_t, 2>, 4> shifts = {{{0, 0}, {0, 32}, {32, 0}, {32, 32}}};
 
-// levels[j] = the dithered level of y[j] against limits[j] = 1 - t, clamped to 0 to
-// top: floor(y) and the fraction y - floor(y) are exact, and so is the comparison.
-void dithered(std::span<const double> y, std::span<const double> limits_row, double top,
-              std::span<double> levels) noexcept {
+// y[j] = scale x[j] rounded, and e[j] the error of that rounding, exact: the product is
+// y + e (docs/math.md, 10).
+void scaled(double scale, std::span<const double> x, std::span<double> y, std::span<double> e) noexcept {
+  const double* samples = x.data();
+  double* products = y.data();
+  double* errors = e.data();
+  const std::size_t count = y.size();
+  for (std::size_t j = 0; j < count; ++j) {
+    const double product = scale * samples[j];
+    products[j] = product;
+    errors[j] = std::fma(scale, samples[j], -product);
+  }
+}
+
+// levels[j] = the level of y[j] + e[j] by bounds[j], 1 - t of the dither or 1/2 of
+// rounding (halves away from 0): floor(y), or the level above where the fraction of y
+// passes the bound, or is the bound and e >= 0; clamped to 0 to top. y lies on the same
+// side of floor(y) + bound, a double, as y + e does, unless it is that double itself,
+// where e tells; floor(y) and the fraction are exact, and so are the comparisons.
+void leveled(std::span<const double> y, std::span<const double> e, std::span<const double> bounds, double top,
+             std::span<double> levels) noexcept {
   const double* values = y.data();
-  const double* bounds = limits_row.data();
+  const double* errors = e.data();
+  const double* limits_row = bounds.data();
   double* out = levels.data();
   const std::size_t count = levels.size();
   for (std::size_t j = 0; j < count; ++j) {
+    // Every value read before any is compared, and each choice a selection: vector code
+    // with no masked loads, which NEON has none of.
     const double value = values[j];
+    const double error = errors[j];
+    const double bound = limits_row[j];
     const double whole = std::floor(value);
-    const double up = value - whole >= bounds[j] ? 1.0 : 0.0;
+    const double fraction = value - whole;
+    const double on = error >= 0.0 ? 1.0 : 0.0;
+    const double at = fraction == bound ? on : 0.0;
+    const double up = fraction > bound ? 1.0 : at;
     const double within = value < top ? whole + up : top;
     out[j] = value >= 0.0 ? within : 0.0;
   }
-}
-
-// levels[j] = round(y[j]), halves away from 0, clamped to 0 to top.
-void rounded(std::span<const double> y, double top, std::span<double> levels) noexcept {
-  const double* values = y.data();
-  double* out = levels.data();
-  const std::size_t count = levels.size();
-  for (std::size_t j = 0; j < count; ++j) {
-    const double value = values[j];
-    const double within = value < top ? std::round(value) : top;
-    out[j] = value >= 0.0 ? within : 0.0;
-  }
-}
-
-// y = scale x.
-void scaled(double scale, std::span<double> row) noexcept {
-  double* values = row.data();
-  const std::size_t count = row.size();
-  for (std::size_t j = 0; j < count; ++j) values[j] = scale * values[j];
 }
 
 void put16(std::vector<std::uint8_t>& bytes, std::uint16_t value) {
@@ -140,20 +146,20 @@ LevelsArray levels_of(Picture<const double> picture, std::int32_t bits, Dither d
   const double scale = bits == 16 ? 257.0 : 1.0;
   const std::array<double, side * side>& table = limits();
   std::vector<double> row(columns);
-  std::vector<double> bounds(columns);
+  std::vector<double> products(columns);
+  std::vector<double> errors(columns);
+  std::vector<double> bounds(columns, 0.5);
   std::vector<double> levels(columns);
   for (std::size_t c = 0; c < channels; ++c) {
     const std::array<std::size_t, 2> shift = apart ? shifts[c % shifts.size()] : std::array<std::size_t, 2>{0, 0};
     for (std::size_t i = 0; i < rows; ++i) {
       for (std::size_t j = 0; j < columns; ++j) row[j] = picture[i, j, c];
-      if (bits == 16) scaled(scale, row);
+      scaled(scale, row, products, errors);
       if (dither == Dither::blue_noise) {
         const std::size_t matrix_row = ((i + shift[0]) % side) * side;
         for (std::size_t j = 0; j < columns; ++j) bounds[j] = table[matrix_row + (j + shift[1]) % side];
-        dithered(row, bounds, top, levels);
-      } else {
-        rounded(row, top, levels);
       }
+      leveled(products, errors, bounds, top, levels);
       for (std::size_t j = 0; j < columns; ++j) out[i, j, c] = static_cast<std::uint16_t>(levels[j]);
     }
   }

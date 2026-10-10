@@ -3,11 +3,10 @@
 //
 // Pictures of rounded samples: docs/math.md, 11.
 //
-// The ends of the intervals are rationals, 255 (2 v -+ 1 -+ 2 slack) / (2 (2^b - 1)),
-// and each is rounded once to the nearest double: the slack, a double, is m 2^e, so that
-// the numerator times 2^K, K = -e, is an integer; it is divided by the small
-// denominator in a few words of 64 bits, and its top 64 bits, with a sticky bit for
-// what lies below them, are converted once.
+// Without slack, the ends of the intervals are rationals, 255 (2 v -+ 1) / (2 (2^b - 1)),
+// rounded inward: each is divided into a quotient of 53 bits, the rational rounded down,
+// and a remainder, which says whether the rational is that double itself. With a slack,
+// the ends are computed in floating point.
 
 #include "unround/samples.hpp"
 
@@ -41,172 +40,66 @@ namespace {
 
 using exact::u128;
 
-// An unsigned integer of 64-bit words, the least first.
-using Words = std::vector<std::uint64_t>;
-
-void trim(Words& words) {
-  while (!words.empty() && words.back() == 0u) words.pop_back();
-}
-
-// value 2^shift.
-Words shifted(std::uint64_t value, std::size_t shift) {
-  Words words(shift / 64u + 2u, 0);
-  const std::size_t word = shift / 64u;
-  const std::size_t bit = shift % 64u;
-  words[word] = value << bit;
-  if (bit != 0u) words[word + 1u] = value >> (64u - bit);
-  trim(words);
-  return words;
-}
-
-void add_small(Words& words, std::uint64_t value) {
-  for (std::size_t k = 0; value != 0u; ++k) {
-    if (k == words.size()) words.push_back(0);
-    const std::uint64_t before = words[k];
-    words[k] = before + value;
-    value = words[k] < before ? 1u : 0u;
-  }
-}
-
-// words - value, which is at least value.
-void subtract_small(Words& words, std::uint64_t value) {
-  for (std::size_t k = 0; value != 0u; ++k) {
-    const std::uint64_t before = words[k];
-    words[k] = before - value;
-    value = before < value ? 1u : 0u;
-  }
-  trim(words);
-}
-
-void multiply_small(Words& words, std::uint64_t factor) {
-  std::uint64_t carry = 0;
-  for (std::uint64_t& word : words) {
-    const u128 product = static_cast<u128>(word) * factor + carry;
-    word = static_cast<std::uint64_t>(product);
-    carry = static_cast<std::uint64_t>(product >> 64u);
-  }
-  if (carry != 0u) words.push_back(carry);
-}
-
-// The quotient by a small divisor, in place, and the remainder: each step by exact::divide,
-// whose long division needs none of the compiler's runtime.
-std::uint64_t divide_small(Words& words, std::uint64_t divisor) {
-  u128 remainder = 0;
-  for (std::size_t k = words.size(); k-- > 0;) {
-    const exact::Division step = exact::divide((remainder << 64u) | words[k], divisor);
-    words[k] = static_cast<std::uint64_t>(step.quotient);
-    remainder = step.remainder;
-  }
-  trim(words);
-  return static_cast<std::uint64_t>(remainder);
-}
-
-std::size_t bit_length(const Words& words) noexcept {
-  if (words.empty()) return 0;
-  return 64u * (words.size() - 1u) + static_cast<std::size_t>(std::bit_width(words.back()));
-}
-
-int compare(const Words& a, const Words& b) noexcept {
-  if (a.size() != b.size()) return a.size() < b.size() ? -1 : 1;
-  for (std::size_t k = a.size(); k-- > 0;) {
-    if (a[k] != b[k]) return a[k] < b[k] ? -1 : 1;
-  }
-  return 0;
-}
-
-// words 2^shift.
-Words shifted_left(const Words& words, std::size_t shift) {
-  const std::size_t word = shift / 64u;
-  const std::size_t bit = shift % 64u;
-  Words result(words.size() + word + 1u, 0);
-  for (std::size_t k = 0; k < words.size(); ++k) {
-    result[k + word] |= words[k] << bit;
-    if (bit != 0u) result[k + word + 1u] |= words[k] >> (64u - bit);
-  }
-  trim(result);
-  return result;
-}
-
-bool bit_of(const Words& words, std::size_t at) noexcept { return ((words[at / 64u] >> (at % 64u)) & 1u) != 0u; }
-
-// The double nearest to numerator / (divisor 2^power): the quotient, of 64 bits at
-// least, its top 64 bits with a sticky bit where any bit below them, or the remainder,
-// is not 0, converted once.
-double nearest_quotient(Words numerator, std::uint64_t divisor, std::size_t power) {
-  if (numerator.empty()) return 0.0;
-  const std::size_t wanted = 64u + static_cast<std::size_t>(std::bit_width(divisor));
-  const std::size_t length = bit_length(numerator);
-  if (length < wanted) {
-    numerator = shifted_left(numerator, wanted - length);
-    power += wanted - length;
-  }
-  const std::uint64_t remainder = divide_small(numerator, divisor);
-  const std::size_t below = bit_length(numerator) - 64u;
-  std::uint64_t top = 0;
-  for (std::size_t bit = 0; bit < 64u; ++bit) {
-    if (bit_of(numerator, below + bit)) top |= std::uint64_t{1} << bit;
-  }
-  bool sticky = remainder != 0u;
-  for (std::size_t at = 0; at < below && !sticky; ++at) sticky = bit_of(numerator, at);
-  const double rounded = exact::nearest(static_cast<u128>(top | (sticky ? 1u : 0u)));
-  return std::ldexp(rounded, static_cast<int>(below) - static_cast<int>(power));
-}
-
-// The slack as m 2^-K: m an integer of at most 53 bits, K at least 0; none where the
-// slack is so large (2^20 levels or more) that it reaches past 0 and 255 whatever the
-// level.
-struct Dyadic {
-  std::uint64_t m = 0;
-  std::size_t k = 0;
+// A positive rational n / d as q 2^-p, q of 53 bits (2^52 <= q < 2^53): the rational
+// rounded down to a double, and whether anything is left below it.
+struct Truncated {
+  std::uint64_t q = 0;
+  int p = 0;
+  bool inexact = false;
 };
 
-std::optional<Dyadic> dyadic_of(double slack) noexcept {
-  if (slack == 0.0) return Dyadic{};
-  if (slack >= 1048576.0) return std::nullopt;
-  int exponent = 0;
-  const double fraction = std::frexp(slack, &exponent);
-  // slack = fraction 2^exponent, fraction in [1/2, 1): m = fraction 2^53, K = 53 - exponent.
-  const auto m = static_cast<std::uint64_t>(std::ldexp(fraction, 53));
-  return Dyadic{.m = m, .k = static_cast<std::size_t>(53 - exponent)};
+Truncated truncated(std::uint64_t numerator, std::uint64_t denominator) noexcept {
+  if (numerator == 0u) return Truncated{};
+  // n 2^p / d near 2^52 from the lengths, then a step or two to put it within [2^52,
+  // 2^53); for the ends, n < 2^26 and d < 2^18, so that n 2^p stays below 2^97.
+  int p = 52 + std::bit_width(denominator) - std::bit_width(numerator);
+  exact::Division division{};
+  while (true) {
+    division = exact::divide(static_cast<u128>(numerator) << static_cast<unsigned>(p), denominator);
+    if (division.quotient >= (u128{1} << 53u)) {
+      --p;
+    } else if (division.quotient < (u128{1} << 52u)) {
+      ++p;
+    } else {
+      break;
+    }
+  }
+  return Truncated{.q = static_cast<std::uint64_t>(division.quotient), .p = p, .inexact = division.remainder != 0u};
+}
+
+// The least double at or above n / d.
+double at_or_above(std::uint64_t numerator, std::uint64_t denominator) noexcept {
+  const Truncated r = truncated(numerator, denominator);
+  return std::ldexp(static_cast<double>(r.q + (r.inexact ? 1u : 0u)), -r.p);
+}
+
+// The greatest double below n / d.
+double under(std::uint64_t numerator, std::uint64_t denominator) noexcept {
+  const Truncated r = truncated(numerator, denominator);
+  const double down = std::ldexp(static_cast<double>(r.q), -r.p);
+  return r.inexact ? down : std::nextafter(down, 0.0);
 }
 
 }  // namespace
 
 Interval interval(std::uint32_t level, std::int32_t bits, double slack) noexcept {
-  const std::uint64_t most = (std::uint64_t{1} << static_cast<std::uint32_t>(bits)) - 1u;
-  const std::uint64_t denominator = 2u * most;
+  const std::uint64_t top = (std::uint64_t{1} << static_cast<std::uint32_t>(bits)) - 1u;
   const std::uint64_t v = level;
   Interval result;
-  // The centre: 255 v / (2^b - 1) = 255 (2 v) / (2 (2^b - 1)).
-  result.centre = nearest_quotient(shifted(510u * v, 0), denominator, 0);
-  const std::optional<Dyadic> widened = dyadic_of(slack);
-  if (!widened) {
-    result.lower = 0.0;
-    result.upper = 255.0;
+  const exact::MaybeRational centre = exact::rational(255 * static_cast<exact::i128>(v), static_cast<exact::i128>(top));
+  result.centre = exact::nearest(*centre);
+  if (slack == 0.0) {
+    // max(0, (v - 1/2) s) <= x < (v + 1/2) s, s = 255 / top, or x <= 255 at the last level.
+    result.lower = v == 0u ? 0.0 : at_or_above(255u * (2u * v - 1u), 2u * top);
+    result.upper = v == top ? 255.0 : under(255u * (2u * v + 1u), 2u * top);
     return result;
   }
-  const std::size_t k = widened->k;
-  const std::uint64_t twice = 2u * widened->m;
-  // Lower: 255 ((2 v - 1) 2^K - 2 m) / (2 (2^b - 1) 2^K), 0 where it is not above 0.
-  if (v > 0u) {
-    Words numerator = shifted(2u * v - 1u, k);
-    const Words floor = shifted(twice, 0);
-    if (compare(numerator, floor) > 0) {
-      subtract_small(numerator, twice);
-      multiply_small(numerator, 255);
-      result.lower = nearest_quotient(std::move(numerator), denominator, k);
-    }
-  }
-  // Upper: 255 ((2 v + 1) 2^K + 2 m) / (2 (2^b - 1) 2^K), 255 where it is not below.
-  Words numerator = shifted(2u * v + 1u, k);
-  add_small(numerator, twice);
-  const Words ceiling = shifted(denominator, k);
-  if (compare(numerator, ceiling) >= 0) {
-    result.upper = 255.0;
-  } else {
-    multiply_small(numerator, 255);
-    result.upper = nearest_quotient(std::move(numerator), denominator, k);
-  }
+  const double step = exact::nearest(*exact::rational(255, static_cast<exact::i128>(top)));
+  const double own = static_cast<double>(v);
+  const double lower = ((own - 0.5) - slack) * step;
+  const double upper = ((own + 0.5) + slack) * step;
+  result.lower = lower > 0.0 ? lower : 0.0;
+  result.upper = upper < 255.0 ? upper : 255.0;
   return result;
 }
 

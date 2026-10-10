@@ -4,8 +4,9 @@
 //! Pictures of rounded samples -- 8-bit PNG files, say -- reconstructed within the
 //! intervals of their samples by TV or TGV (docs/math.md, 11).
 //!
-//! A sample of level `v` of a file of `b` bits stands for every value within half a
-//! level of `v s`, `s = 255 / (2^b - 1)`, within 0 to 255. The unknown is the picture
+//! A sample of level `v` of a file of `b` bits stands for every value that rounds to
+//! `v s`, `s = 255 / (2^b - 1)`: from half a level below it to half a level above,
+//! that end left out, within 0 to 255. The unknown is the picture
 //! itself, `C x H x W` values, channel by channel, each row by row; nothing is free.
 //! The methods are those of [`crate::pdhg`], with its options and defaults but those
 //! of when they stop and TGV's ratio of the steps, computed on the picture in its
@@ -13,7 +14,7 @@
 
 use crate::dct::multiply_add;
 use crate::error::Error;
-use crate::exact::{Ratio, Sum, added, lanes, nearest_from_usize};
+use crate::exact::{Ratio, Sum, added, lanes, nearest_from_usize, quotient};
 use crate::frames::{Tensor, Vector};
 use crate::kernels::{self, at_least, at_most};
 use crate::model::{Tgv, Tv};
@@ -249,9 +250,13 @@ struct Tables {
 }
 
 impl Tables {
-    /// For levels 0 to `top`: `max(0, (v - 1/2 - slack) s)`, `min(255, (v + 1/2 + slack)
-    /// s)` and `v s`, `s = 255 / top`. Without slack, each is a rational, rounded once to
-    /// the nearest double; with it, the ends are computed in floating point.
+    /// For levels 0 to `top`, `s = 255 / top`: without slack, the doubles within the
+    /// half-open interval `max(0, (v - 1/2) s) <= x < (v + 1/2) s`, or `<= 255` at the
+    /// last level, its ends rationals rounded inward, the lower one up to the least
+    /// double at or above it and the upper one down to the greatest double below it;
+    /// with a slack, `max(0, ((v - 1/2) - slack) s)` and `min(255, ((v + 1/2) + slack)
+    /// s)`, both taken, in floating point. And the centre `v s`, the nearest double
+    /// (docs/math.md, 11).
     fn new(top: u32, slack: f64) -> Self {
         let wide = i128::from(top);
         let step = Ratio::new(255, wide).nearest();
@@ -260,8 +265,8 @@ impl Tables {
             let value = i128::from(level);
             let (below, above) = if slack == 0.0 {
                 (
-                    Ratio::new((2 * value - 1) * 255, 2 * wide).nearest(),
-                    Ratio::new((2 * value + 1) * 255, 2 * wide).nearest(),
+                    at_or_above((2 * value - 1) * 255, 2 * wide),
+                    under((2 * value + 1) * 255, 2 * wide),
                 )
             } else {
                 let own = f64::from(level);
@@ -272,6 +277,52 @@ impl Tables {
             centre.push(Ratio::new(value * 255, wide).nearest());
         }
         Self { low, high, centre }
+    }
+}
+
+/// A double as `mantissa / 2^power`, exactly: 0, or a normal double of magnitude below
+/// 2^53.
+#[expect(clippy::as_conversions, reason = "the fields of a double's bits")]
+fn dyadic(value: f64) -> (i128, u32) {
+    let bits = value.to_bits();
+    let exponent = (bits >> 52) & 0x7FF;
+    if exponent == 0 {
+        assert!(value == 0.0, "no subnormal numbers here");
+        return (0, 0);
+    }
+    let mantissa = i128::from((bits & ((1 << 52) - 1)) | (1 << 52));
+    let power = 1075 - exponent as u32;
+    (if value < 0.0 { -mantissa } else { mantissa }, power)
+}
+
+/// Whether a double lies below `numerator / denominator`, `denominator > 0`: exactly,
+/// as `mantissa denominator < numerator 2^power`, for the ends of the intervals of
+/// rounded samples (numerators below 2^26, denominators below 2^18, doubles from 2^-10
+/// to 2^9).
+fn lies_below(value: f64, numerator: i128, denominator: i128) -> bool {
+    let (mantissa, power) = dyadic(value);
+    mantissa * denominator < numerator << power
+}
+
+/// The least double at or above `numerator / denominator`: the nearest, or the one
+/// above it where the nearest lies below.
+fn at_or_above(numerator: i128, denominator: i128) -> f64 {
+    let near = quotient(numerator, denominator);
+    if lies_below(near, numerator, denominator) {
+        near.next_up()
+    } else {
+        near
+    }
+}
+
+/// The greatest double below `numerator / denominator`: the nearest, or the one below
+/// it where the nearest does not lie below.
+fn under(numerator: i128, denominator: i128) -> f64 {
+    let near = quotient(numerator, denominator);
+    if lies_below(near, numerator, denominator) {
+        near
+    } else {
+        near.next_down()
     }
 }
 

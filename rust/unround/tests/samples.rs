@@ -1,16 +1,21 @@
 // SPDX-FileCopyrightText: 2026 Yuma Kakei <yumasansansan@gmail.com>
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Pictures of rounded samples (docs/math.md, 11): the intervals exactly, the proximal
-//! map's optimality, the projection's idempotence, the conjugate by Fenchel and
-//! Young, and the solvers on smooth pictures rounded to levels, with their defaults
-//! of when they stop.
+//! Pictures of rounded samples (docs/math.md, 11): the intervals exactly, the doubles
+//! that round to each level and no others, the proximal map's optimality, the
+//! projection's idempotence, the conjugate by Fenchel and Young, and the solvers on
+//! smooth pictures rounded to levels, with their defaults of when they stop.
+
+mod support;
+
+use std::cmp::Ordering;
 
 use jpeg_unround::model::{Tgv, Tv};
 use jpeg_unround::output;
 use jpeg_unround::pdhg::Options;
 use jpeg_unround::results::Stop;
 use jpeg_unround::samples::{self, Data, Method, Model};
+use support::exact::Dyadic;
 
 /// A smooth picture of `channels x height x width`, its values, and their levels of 8
 /// bits (the nearest, halves away from 0).
@@ -41,19 +46,23 @@ fn smooth(channels: usize, height: usize, width: usize) -> (Vec<f64>, Vec<u16>) 
 
 #[test]
 fn the_intervals_are_half_a_level_on_each_side_within_0_and_255() {
+    // From half a level below, taken, to half a level above, left out: the double
+    // below it, but at 255.
     let levels = [0u16, 1, 128, 254, 255];
     let model = Model::new(&levels, (1, 1, 5), 8, &Data::default()).expect("a model");
     assert_eq!(model.low(), [0.0, 0.5, 127.5, 253.5, 254.5]);
-    assert_eq!(model.high(), [0.5, 1.5, 128.5, 254.5, 255.0]);
+    let below = [0.5_f64, 1.5, 128.5, 254.5].map(f64::next_down);
+    assert_eq!(model.high(), [below[0], below[1], below[2], below[3], 255.0]);
     assert_eq!(model.centres(), [0.0, 1.0, 128.0, 254.0, 255.0]);
     // Four bits: levels of 17, half of it on each side.
     let model = Model::new(&[0, 3, 15], (1, 1, 3), 4, &Data::default()).expect("a model");
     assert_eq!(model.low(), [0.0, 42.5, 246.5]);
-    assert_eq!(model.high(), [8.5, 59.5, 255.0]);
+    assert_eq!(model.high(), [8.5_f64.next_down(), 59.5_f64.next_down(), 255.0]);
     assert_eq!(model.centres(), [0.0, 51.0, 255.0]);
-    // Sixteen bits: (2v -+ 1) 255 / 131070, each the nearest double.
+    // Sixteen bits: (2v -+ 1) 255 / 131070, rounded inward; the centre the nearest.
     let model = Model::new(&[1000], (1, 1, 1), 16, &Data::default()).expect("a model");
-    assert_eq!(model.low()[0], 1999.0 * 255.0 / 131_070.0);
+    assert_eq!(against(model.low()[0], 1999 * 255, 131_070), Ordering::Greater);
+    assert_eq!(against(model.high()[0], 2001 * 255, 131_070), Ordering::Less);
     assert_eq!(model.centres()[0], 1000.0 * 255.0 / 65535.0);
     // A slack widens them, within 0 and 255.
     let data = Data { mu: 0.0, slack: 0.25 };
@@ -70,6 +79,75 @@ fn the_intervals_are_half_a_level_on_each_side_within_0_and_255() {
     }
 }
 
+/// A double against `numerator / denominator`, `denominator > 0`, exactly.
+fn against(value: f64, numerator: i128, denominator: i128) -> Ordering {
+    Dyadic::from_f64(value)
+        .mul(&Dyadic::from_i128(denominator))
+        .compare(&Dyadic::from_i128(numerator))
+}
+
+#[test]
+fn every_interval_holds_the_doubles_that_round_to_its_level() {
+    for bits in [1u32, 2, 4, 8, 16] {
+        let top = (1u32 << bits) - 1;
+        let levels: Vec<u16> = (0..=top).map(|level| u16::try_from(level).expect("16 bits")).collect();
+        let model = Model::new(&levels, (1, 1, levels.len()), bits, &Data::default()).expect("a model");
+        let wide = i128::from(top);
+        for (level, (&low, &high)) in (0..).zip(model.low().iter().zip(model.high())) {
+            // The least double at or above max(0, (v - 1/2) s).
+            if level == 0 {
+                assert_eq!(low, 0.0);
+            } else {
+                let (numerator, denominator) = ((2 * level - 1) * 255, 2 * wide);
+                assert_ne!(against(low, numerator, denominator), Ordering::Less, "{bits}: {level}");
+                assert_eq!(against(low.next_down(), numerator, denominator), Ordering::Less);
+            }
+            // The greatest double below (v + 1/2) s, or 255 at the last level.
+            if level == wide {
+                assert_eq!(high, 255.0);
+            } else {
+                let (numerator, denominator) = ((2 * level + 1) * 255, 2 * wide);
+                assert_eq!(against(high, numerator, denominator), Ordering::Less, "{bits}: {level}");
+                assert_ne!(against(high.next_up(), numerator, denominator), Ordering::Less);
+            }
+        }
+        if bits != 8 && bits != 16 {
+            continue;
+        }
+        // Rounded to the file's own bits, the ends give back their level, and the
+        // doubles beyond them the levels beside it (docs/math.md, 10).
+        let ends: Vec<f64> = model
+            .low()
+            .iter()
+            .zip(model.high())
+            .flat_map(|(&low, &high)| [low, high, low.next_down(), high.next_up()])
+            .collect();
+        let count = ends.len();
+        let made: Vec<u32> = if bits == 8 {
+            output::eight_bits(&ends, 1, count, 1, output::Dither::None)
+                .expect("finite samples")
+                .into_iter()
+                .map(u32::from)
+                .collect()
+        } else {
+            output::sixteen_bits(&ends, 1, count, 1, output::Dither::None)
+                .expect("finite samples")
+                .into_iter()
+                .map(u32::from)
+                .collect()
+        };
+        for (level, four) in (0..).zip(made.chunks(4)) {
+            assert_eq!((four[0], four[1]), (level, level), "{bits}: {level}");
+            if level > 0 {
+                assert_eq!(four[2], level - 1, "{bits}: {level}");
+            }
+            if level < top {
+                assert_eq!(four[3], level + 1, "{bits}: {level}");
+            }
+        }
+    }
+}
+
 #[test]
 #[expect(clippy::float_cmp, reason = "dyadic values compute exactly")]
 fn the_proximal_map_is_optimal_and_the_projection_idempotent() {
@@ -78,11 +156,12 @@ fn the_proximal_map_is_optimal_and_the_projection_idempotent() {
     let values = [9.0, 20.25, 31.0, -4.0];
     let mut out = [0.0; 4];
     plain.prox(&values, 0.7, 0, &mut out);
-    assert_eq!(out, [9.5, 20.25, 30.5, 39.5]);
+    let top = 30.5_f64.next_down();
+    assert_eq!(out, [9.5, 20.25, top, 39.5]);
     let projected = plain.project(&values);
     assert_eq!(projected, out);
     assert_eq!(plain.project(&projected), projected);
-    assert_eq!(plain.excess(&values), [0.5, 0.0, 0.5, 43.5]);
+    assert_eq!(plain.excess(&values), [0.5, 0.0, 31.0 - top, 43.5]);
     // With mu tau = 1, r = 1/2 and the minimizer of (z - v)^2 / 2 + (z - c)^2 / 2 is
     // (v + c) / 2, exactly for dyadic values, then clipped: the first-order condition
     // holds where it is inside, and the gradient points outward at an end.

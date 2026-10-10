@@ -64,22 +64,46 @@ static THRESHOLDS: [f64; SIDE * SIDE] = {
     thresholds
 };
 
-/// The level of `y` by the threshold: the level below, or the one above where the
-/// fraction reaches `1 - threshold`, clamped to `0..=top`. Both differences are exact
-/// where it matters (docs/math.md, 10): `y - floor(y)` for `y >= 0`, and `1 - t` for a
-/// threshold of 13 bits.
-fn dithered(y: f64, threshold: f64, top: f64) -> f64 {
+/// The level of `y + error` by the threshold: the level below, or the one above where
+/// the fraction reaches `1 - threshold`, clamped to `0..=top`. `y` is the rounding of the
+/// exact `y + error` (docs/math.md, 10), on the same side of `floor(y) + 1 - threshold`,
+/// a double, unless it is that double itself, where the sign of the error tells. Both
+/// differences are exact where it matters: `y - floor(y)` for `y >= 0`, and `1 - t` for
+/// a threshold of 13 bits.
+#[expect(
+    clippy::float_cmp,
+    reason = "the fraction is compared with the threshold exactly, as docs/math.md, 10, says"
+)]
+fn dithered(y: f64, error: f64, threshold: f64, top: f64) -> f64 {
     let whole = y.floor();
-    let above = if y - whole >= 1.0 - threshold { 1.0 } else { 0.0 };
+    let fraction = y - whole;
+    let limit = 1.0 - threshold;
+    let above = if fraction > limit || (fraction == limit && error >= 0.0) {
+        1.0
+    } else {
+        0.0
+    };
     (whole + above).clamp(0.0, top)
 }
 
-/// The nearest level to `y`, halves away from 0, clamped to `0..=top`.
+/// The nearest level to `y + error`, halves away from 0, clamped to `0..=top`: that of
+/// `y`, which is on the same side of every half as `y + error` unless it is the half
+/// itself, where the sign of the error tells (docs/math.md, 10).
 ///
 /// The rounding is exact: `f64::round` compares the fraction with 1/2 as it is,
 /// where `floor(y + 1/2)` would round `0.49999999999999994` up.
-fn rounded(y: f64, top: f64) -> f64 {
-    y.round().clamp(0.0, top)
+#[expect(
+    clippy::float_cmp,
+    reason = "the fraction is compared with 1/2 exactly, as docs/math.md, 10, says"
+)]
+fn rounded(y: f64, error: f64, top: f64) -> f64 {
+    let whole = y.floor();
+    let level = if y - whole == 0.5 && error < 0.0 {
+        whole
+    } else {
+        y.round()
+    };
+    level.clamp(0.0, top)
 }
 
 #[expect(
@@ -103,9 +127,10 @@ fn word(level: f64) -> u16 {
 }
 
 /// The levels of a picture of rows of `width` pixels of `channels` interleaved
-/// samples (1 to 4): each sample times `scale`, made as the dither says, within
-/// `0..=top`, and stored by `store`. Sample `c` of pixel `(i, j)` takes the threshold
-/// of the matrix at `((i + a) mod 64, (j + b) mod 64)`, `(a, b)` its channel's shift.
+/// samples (1 to 4): each sample times `scale`, exactly, as its rounding and the error
+/// of that rounding, made as the dither says, within `0..=top`, and stored by `store`.
+/// Sample `c` of pixel `(i, j)` takes the threshold of the matrix at
+/// `((i + a) mod 64, (j + b) mod 64)`, `(a, b)` its channel's shift.
 fn levels<T: Copy + Default>(
     samples: &[f64],
     width: usize,
@@ -118,7 +143,8 @@ fn levels<T: Copy + Default>(
     let mut levels = vec![T::default(); samples.len()];
     if dither == Dither::None {
         for (level, &sample) in levels.iter_mut().zip(samples) {
-            *level = store(rounded(sample * scale, top));
+            let y = sample * scale;
+            *level = store(rounded(y, sample.mul_add(scale, -y), top));
         }
         return levels;
     }
@@ -143,7 +169,8 @@ fn levels<T: Copy + Default>(
         }
         for (piece, out) in line.chunks(period).zip(out.chunks_mut(period)) {
             for ((level, &sample), &threshold) in out.iter_mut().zip(piece).zip(&pattern) {
-                *level = store(dithered(sample * scale, threshold, top));
+                let y = sample * scale;
+                *level = store(dithered(y, sample.mul_add(scale, -y), threshold, top));
             }
         }
     }
@@ -170,8 +197,8 @@ pub fn eight_bits(
 }
 
 /// 16-bit samples of a picture of `height x width` pixels of `channels` interleaved
-/// samples: each sample times 257, so that 255 is 65535, is the level, made as the
-/// dither says and clamped to 0-65535.
+/// samples: each sample times 257, exactly, so that 255 is 65535, is the level, made as
+/// the dither says and clamped to 0-65535.
 ///
 /// # Errors
 ///
@@ -333,12 +360,42 @@ mod tests {
     /// The level of docs/math.md, 10, in integers: `floor(y)`, plus 1 where the
     /// fraction is at least `1 - (2R + 1) / 8192`, clamped to `0..=top`.
     fn exact_level(y: f64, rank: u16, top: u16) -> u16 {
-        let (numerator, power) = dyadic(y);
-        let whole = numerator >> power;
-        let fraction = numerator - (whole << power);
+        exact_level_of(y, 1, rank, top)
+    }
+
+    /// The same of `y = scale x`, the product taken exactly.
+    fn exact_level_of(x: f64, scale: i128, rank: u16, top: u16) -> u16 {
+        if x < 0.0 {
+            return 0;
+        }
+        let (numerator, power) = dyadic(x);
+        let product = numerator * scale;
+        let whole = product >> power;
+        let fraction = product - (whole << power);
         let threshold = 2 * i128::from(rank) + 1;
         let above = fraction * 8192 >= (8192 - threshold) << power;
         u16::try_from((whole + i128::from(above)).clamp(0, i128::from(top))).expect("within 0..=top")
+    }
+
+    /// The nearest level to `scale x`, the product taken exactly, halves up (away from
+    /// 0, for `x >= 0`), clamped to `0..=top`.
+    fn exact_rounded(x: f64, scale: i128, top: u16) -> u16 {
+        if x < 0.0 {
+            return 0;
+        }
+        let (numerator, power) = dyadic(x);
+        let product = numerator * scale;
+        let whole = product >> power;
+        let fraction = product - (whole << power);
+        let above = 2 * fraction >= 1 << power;
+        u16::try_from((whole + i128::from(above)).clamp(0, i128::from(top))).expect("within 0..=top")
+    }
+
+    /// Samples whose product with 257 rounds to `target`, a double, and the doubles
+    /// beside them: the double nearest to `target / 257` and its neighbours.
+    fn near_257ths(target: f64) -> [f64; 3] {
+        let near = target / 257.0;
+        [near.next_down(), near, near.next_up()]
     }
 
     #[test]
@@ -388,15 +445,15 @@ mod tests {
             for (index, &rank) in RANKS.iter().enumerate().step_by(97) {
                 let threshold = THRESHOLDS[index];
                 let eight = f64::from(exact_level(value, rank, 255));
-                assert_eq!(dithered(value, threshold, 255.0), eight, "{value}, {rank}");
+                assert_eq!(dithered(value, 0.0, threshold, 255.0), eight, "{value}, {rank}");
                 let sixteen = f64::from(exact_level(value, rank, 65535));
-                assert_eq!(dithered(value, threshold, 65535.0), sixteen, "{value}, {rank}");
+                assert_eq!(dithered(value, 0.0, threshold, 65535.0), sixteen, "{value}, {rank}");
             }
         }
         // Below 0 either level clamps to 0.
         for value in [-1e-300, -0.3, -1.0, -1e9] {
             for threshold in [THRESHOLDS[0], 1.0 - 1.0 / 8192.0] {
-                assert_eq!(dithered(value, threshold, 255.0), 0.0);
+                assert_eq!(dithered(value, 0.0, threshold, 255.0), 0.0);
             }
         }
     }
@@ -416,7 +473,7 @@ mod tests {
             let y = whole + f64::from(eighths) / 8192.0;
             let up = THRESHOLDS
                 .iter()
-                .filter(|&&threshold| dithered(y, threshold, 255.0) > whole)
+                .filter(|&&threshold| dithered(y, 0.0, threshold, 255.0) > whole)
                 .count();
             assert_eq!(up, usize::try_from(eighths.div_ceil(2)).expect("small"), "{y}");
         }
@@ -450,12 +507,68 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "products are compared exactly with the doubles they round to"
+    )]
     fn sixteen_bits_dither_257_times_the_sample() {
-        let samples = [0.0, 255.0, 1.0 / 257.0, 128.5, -3.0, 256.0];
-        let made = sixteen_bits(&samples, 1, 6, 1, Dither::BlueNoise).expect("finite samples");
+        let mut samples = vec![0.0, 255.0, 1.0 / 257.0, 128.5, -3.0, 256.0];
+        // Samples whose product rounds onto the place where the dither of its column goes
+        // up, from below it or from above, and their neighbours.
+        for column in 6..64 {
+            let place = f64::from(u32::try_from(column).expect("small") * 997) + (1.0 - THRESHOLDS[column]);
+            let near = near_257ths(place);
+            let from_below = near.iter().copied().find(|&sample| {
+                let y = sample * 257.0;
+                y == place && sample.mul_add(257.0, -y) < 0.0
+            });
+            samples.push(from_below.unwrap_or(near[column % 3]));
+        }
+        let width = samples.len();
+        let made = sixteen_bits(&samples, 1, width, 1, Dither::BlueNoise).expect("finite samples");
+        let mut onto = 0;
         for (column, (&sample, &level)) in samples.iter().zip(&made).enumerate() {
-            let expected = exact_level(sample.max(0.0) * 257.0, RANKS[column], 65535);
+            let expected = exact_level_of(sample, 257, RANKS[column], 65535);
             assert_eq!(level, expected, "{sample}");
+            // The product rounded alone takes the other level where it lands on the place
+            // but the exact one lies below it.
+            let y = sample * 257.0;
+            if y - y.floor() == 1.0 - THRESHOLDS[column] && sample.mul_add(257.0, -y) < 0.0 {
+                onto += 1;
+                assert_eq!(level, exact_level(y.floor(), RANKS[column], 65535));
+            }
+        }
+        assert!(onto > 0, "no product landed on a place from below");
+    }
+
+    #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "products are compared exactly with the doubles they round to"
+    )]
+    fn sixteen_bits_round_257_times_the_sample() {
+        // Every half k + 1/2 near which a 16-bit level of a sample of 0 to 255 lies, the
+        // samples whose products round onto it and their neighbours.
+        let mut samples = Vec::new();
+        let mut onto = 0;
+        for whole in (0..65535).step_by(7) {
+            for sample in near_257ths(f64::from(whole) + 0.5) {
+                let y = sample * 257.0;
+                if y == f64::from(whole) + 0.5 && sample.mul_add(257.0, -y) < 0.0 {
+                    onto += 1;
+                }
+                samples.push(sample);
+            }
+        }
+        assert!(onto > 1000, "{onto} products landed on a half from below");
+        let made = sixteen_bits(&samples, 1, samples.len(), 1, Dither::None).expect("finite samples");
+        for (&sample, &level) in samples.iter().zip(&made) {
+            assert_eq!(level, exact_rounded(sample, 257, 65535), "{sample}");
+        }
+        // 8 bits: the sample is its own level, rounded.
+        for sample in [0.5, 0.5_f64.next_down(), 254.5, 254.5_f64.next_down()] {
+            let made = eight_bits(&[sample], 1, 1, 1, Dither::None).expect("a finite sample");
+            assert_eq!(u16::from(made[0]), exact_rounded(sample, 1, 255), "{sample}");
         }
     }
 

@@ -1,21 +1,22 @@
 // SPDX-FileCopyrightText: 2026 Yuma Kakei <yumasansansan@gmail.com>
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// Tests of pictures of rounded samples (docs/math.md, 11): the ends of the intervals,
-// each the double nearest to its rational (against the same rational in 128-bit
-// integers where it fits), those of 8 bits without slack exact, a slack so small that
-// it moves no end (it lies orders of magnitude below the distance of any end from a
-// point where the rounding turns), and one so large that every interval is 0 to 255;
-// the proximal map, at mu = 0 the clip to the last bit and above 0 within the bound of
-// its roundings of the exact minimizer; the conjugate by Fenchel and Young; the
-// solvers' records, gaps and stops, and their results within the intervals; and PNG
-// files reconstructed, their alpha alone, and the settings they refuse.
+// Tests of pictures of rounded samples (docs/math.md, 11): the ends of the intervals
+// without slack, of every level of 1 to 16 bits, the rationals rounded inward (against
+// the rationals in 128-bit integers), and of 8 and 16 bits the doubles whose level is
+// the interval's and no others; with a slack, the ends of floating point to the last
+// bit, and a slack so large that every interval is 0 to 255; the proximal map, at mu = 0
+// the clip to the last bit and above 0 within the bound of its roundings of the exact
+// minimizer; the conjugate by Fenchel and Young; the solvers' records, gaps and stops,
+// and their results within the intervals; and PNG files reconstructed, their alpha
+// alone, rounded to their own bits their levels again, and the settings they refuse.
 
 #include "unround/samples.hpp"
 
 #include "unround/arrays.hpp"
 #include "unround/exact.hpp"
 #include "unround/jpegio.hpp"
+#include "unround/output.hpp"
 #include "unround/pdhg.hpp"
 #include "unround/settings.hpp"
 
@@ -35,74 +36,106 @@
 #include <print>
 #include <span>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace {
 
 using unround::GridArray;
 using unround::exact::i128;
+using unround::output::PictureArray;
 using unround::test::gamma;
 using unround::test::u;
 
 bool same(double a, double b) noexcept { return std::bit_cast<std::uint64_t>(a) == std::bit_cast<std::uint64_t>(b); }
 
-// The end 255 (2 v + side (1 + 2 slack)) / (2 (2^b - 1)) in rationals, clamped to 0 to
-// 255, for a slack m 2^-K that keeps every integer within 128 bits.
-double exact_end(std::uint32_t level, std::int32_t bits, double slack, int side) {
-  const auto most = static_cast<i128>((std::uint64_t{1} << static_cast<std::uint32_t>(bits)) - 1u);
+// The sign of x d - n: a double against the rational n / d, d > 0, exactly (x = m 2^-k,
+// m of 53 bits; for the ends, x from 2^-12 to 2^9 and n below 2^26).
+int against(double x, i128 numerator, i128 denominator) {
+  if (x == 0.0) return numerator > 0 ? -1 : numerator < 0 ? 1 : 0;
   int exponent = 0;
-  const double fraction = std::frexp(slack, &exponent);
+  const double fraction = std::frexp(x, &exponent);
   // Through 64 bits: a conversion of a double to 128 bits calls the compiler's runtime.
   const auto m = static_cast<i128>(static_cast<std::int64_t>(std::ldexp(fraction, 53)));
-  const int k = slack == 0.0 ? 0 : 53 - exponent;
-  const i128 scale = i128{1} << k;
-  const i128 numerator = 255 * ((2 * static_cast<i128>(level) + side) * scale + 2 * (slack == 0.0 ? 0 : m) * side);
-  const i128 denominator = 2 * most * scale;
-  if (numerator <= 0) return 0.0;
-  if (numerator >= 255 * denominator) return 255.0;
-  return unround::exact::nearest(unround::exact::Rational{.numerator = numerator, .denominator = denominator});
+  const i128 left = m * denominator;
+  const i128 right = numerator << (53 - exponent);
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 void intervals(void) {
-  bool exact = true;
-  bool eight = true;
+  // Without slack: the least double at or above max(0, (v - 1/2) s) and the greatest
+  // below (v + 1/2) s, or 255 at the last level; the centre the nearest to v s.
+  bool inward = true;
+  bool centres = true;
+  for (std::int32_t bits = 1; bits <= 16; ++bits) {
+    const std::uint32_t top = (std::uint32_t{1} << static_cast<std::uint32_t>(bits)) - 1u;
+    const i128 twice = 2 * static_cast<i128>(top);
+    for (std::uint32_t level = 0; level <= top; ++level) {
+      const unround::samples::Interval ends = unround::samples::interval(level, bits, 0.0);
+      const i128 v = level;
+      if (level == 0u) {
+        inward = inward && same(ends.lower, 0.0);
+      } else {
+        const i128 lower = 255 * (2 * v - 1);
+        inward = inward && against(ends.lower, lower, twice) >= 0 &&
+                 against(std::nextafter(ends.lower, 0.0), lower, twice) < 0;
+      }
+      if (level == top) {
+        inward = inward && same(ends.upper, 255.0);
+      } else {
+        const i128 upper = 255 * (2 * v + 1);
+        inward = inward && against(ends.upper, upper, twice) < 0 &&
+                 against(std::nextafter(ends.upper, 256.0), upper, twice) >= 0;
+      }
+      centres = centres && same(ends.centre, unround::exact::nearest(unround::exact::Rational{
+                                                 .numerator = 255 * v, .denominator = static_cast<i128>(top)}));
+    }
+  }
+  CHECK(inward);
+  CHECK(centres);
+  // Of 8 and 16 bits, rounded to their own bits, the ends give back their level, and the
+  // doubles beyond them the levels beside it.
+  for (const std::int32_t bits : {8, 16}) {
+    const std::uint32_t top = (std::uint32_t{1} << static_cast<std::uint32_t>(bits)) - 1u;
+    PictureArray ends(unround::PictureExtents{1, 4u * (std::size_t{top} + 1u), 1});
+    for (std::uint32_t level = 0; level <= top; ++level) {
+      const unround::samples::Interval interval = unround::samples::interval(level, bits, 0.0);
+      const std::size_t at = 4u * std::size_t{level};
+      ends.view()[0, at, 0] = interval.lower;
+      ends.view()[0, at + 1u, 0] = interval.upper;
+      ends.view()[0, at + 2u, 0] = std::nextafter(interval.lower, -1.0);
+      ends.view()[0, at + 3u, 0] = std::nextafter(interval.upper, 256.0);
+    }
+    const unround::output::LevelsArray made =
+        unround::output::levels_of(std::as_const(ends).view(), bits, unround::output::Dither::none, true);
+    bool back = true;
+    for (std::uint32_t level = 0; level <= top; ++level) {
+      const std::size_t at = 4u * std::size_t{level};
+      const auto own = [&made](std::size_t k) { return std::uint32_t{made.view()[0, k, 0]}; };
+      back = back && own(at) == level && own(at + 1u) == level && (level == 0u || own(at + 2u) == level - 1u) &&
+             (level == top || own(at + 3u) == level + 1u);
+    }
+    if (!CHECK(back)) std::println(stderr, "{} bits", bits);
+  }
+  // With a slack: max(0, ((v - 1/2) - slack) s) and min(255, ((v + 1/2) + slack) s) in
+  // floating point, s the nearest double.
+  bool floating = true;
   for (const std::int32_t bits : {1, 2, 4, 8, 16}) {
-    const std::uint32_t most = (std::uint32_t{1} << static_cast<std::uint32_t>(bits)) - 1u;
-    for (const std::uint32_t level : {0u, 1u, most / 3u, most / 2u, most - 1u, most}) {
-      for (const double slack : {0.0, 0.25, 0.5, 1.5, 0.1, 0.01, 3.0}) {
+    const std::uint32_t top = (std::uint32_t{1} << static_cast<std::uint32_t>(bits)) - 1u;
+    const double s =
+        unround::exact::nearest(unround::exact::Rational{.numerator = 255, .denominator = static_cast<i128>(top)});
+    for (const std::uint32_t level : {0u, 1u, top / 3u, top / 2u, top - 1u, top}) {
+      for (const double slack : {0.25, 0.5, 1.5, 0.1, 0.01, 3.0, 1e-300}) {
         const unround::samples::Interval ends = unround::samples::interval(level, bits, slack);
-        exact = exact && same(ends.lower, exact_end(level, bits, slack, -1)) &&
-                same(ends.upper, exact_end(level, bits, slack, 1)) &&
-                same(ends.centre, unround::exact::nearest(unround::exact::Rational{
-                                      .numerator = 255 * static_cast<i128>(level), .denominator = most}));
-      }
-      if (bits == 8) {
-        const unround::samples::Interval ends = unround::samples::interval(level, 8, 0.0);
-        const double v = static_cast<double>(level);
-        eight =
-            eight && ends.lower == std::max(0.0, v - 0.5) && ends.upper == std::min(255.0, v + 0.5) && ends.centre == v;
+        const double own = static_cast<double>(level);
+        const double lower = ((own - 0.5) - slack) * s;
+        const double upper = ((own + 0.5) + slack) * s;
+        floating = floating && same(ends.lower, std::max(lower, 0.0)) && same(ends.upper, std::min(upper, 255.0));
       }
     }
   }
-  CHECK(exact);
-  CHECK(eight);
-  // A slack below 2^-80 moves 255 (2 slack) / (2 (2^b - 1)) by less than 2^-72, where an
-  // end that is not a double lies at least 2^-81 from the nearest point where the
-  // rounding turns (its denominator divides 2^18 times an odd number, the points'
-  // spacing is at least 2^-62): every end is that of no slack.
-  bool tiny = true;
-  for (const std::int32_t bits : {1, 8, 16}) {
-    const std::uint32_t most = (std::uint32_t{1} << static_cast<std::uint32_t>(bits)) - 1u;
-    for (std::uint32_t level = 0; level <= most; level += std::max<std::uint32_t>(1u, most / 97u)) {
-      for (const double slack : {1e-25, 1e-300, 5e-324}) {
-        const unround::samples::Interval a = unround::samples::interval(level, bits, slack);
-        const unround::samples::Interval b = unround::samples::interval(level, bits, 0.0);
-        tiny = tiny && same(a.lower, b.lower) && same(a.upper, b.upper);
-      }
-    }
-  }
-  CHECK(tiny);
-  // A slack of 2^20 levels or more reaches past 0 and 255 whatever the level.
+  CHECK(floating);
+  // A slack of a million levels reaches past 0 and 255 whatever the level.
   const unround::samples::Interval wide = unround::samples::interval(100, 8, 2e6);
   CHECK(wide.lower == 0.0 && wide.upper == 255.0);
 }
@@ -166,6 +199,7 @@ void prox(void) {
         continue;
       }
       // z* = (v + t c) / (1 + t), t = tau mu = 3/8: rationals with denominators 512, 4 and 8.
+      // Through 64 bits: a conversion of a double to 128 bits calls the compiler's runtime.
       const i128 v_512 = static_cast<i128>(static_cast<std::int64_t>(vs[k] * 512.0));
       const i128 c_4 = static_cast<i128>(static_cast<std::int64_t>(centres[k] * 4.0));
       // (v + 3/8 c) / (11/8) = (8 v + 3 c) / 11 = (8 v_512 / 512 + 3 c_4 / 4) / 11.
@@ -304,6 +338,18 @@ void files(void) {
         }
       }
       CHECK(within);
+      // Rounded to its own bits without a dither, by TGV and by TV, the result gives back
+      // the file's levels.
+      for (const std::string_view method : {"tgv", "tv"}) {
+        const auto run = unround::samples::reconstruct(
+            file->bytes, settings_of({"--iterations", "200", "--tolerance", "0", "--method", method}));
+        if (!CHECK(run.has_value())) continue;
+        const unround::output::LevelsArray back =
+            unround::output::levels_of(std::as_const(run->picture).view(), bits, unround::output::Dither::none, true);
+        if (!CHECK(std::ranges::equal(back.entries(), levels.entries()))) {
+          std::println(stderr, "{} channels of {} bits by {}", channels, bits, method);
+        }
+      }
     }
   }
   // What a PNG file refuses: the data term's other options, a method other than TV or

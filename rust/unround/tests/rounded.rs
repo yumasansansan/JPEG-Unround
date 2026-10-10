@@ -3,13 +3,14 @@
 
 //! PNG files reconstructed within the intervals of their rounded samples
 //! (docs/math.md, 11; docs/cli.md): the library's result read back by the C layer,
-//! and the command line's files -- TIFF with alpha declared, PNG with alpha, PNM
-//! refused -- with the report and the refusals.
+//! rounded to the file's own 8 or 16 bits it gives back the file's levels, and the
+//! command line's files -- TIFF with alpha declared, PNG with alpha, PNM refused --
+//! with the report and the refusals.
 
 use std::path::PathBuf;
 use std::process::Command;
 
-use jpeg_unround::decode::Settings;
+use jpeg_unround::decode::{Method, Settings};
 use jpeg_unround::{output, rounded};
 use jpegio_sys::testing::read_png;
 use jpegio_sys::{Png, Samples};
@@ -94,6 +95,53 @@ fn a_png_file_is_reconstructed_within_its_intervals() {
     // The ramps are found: far nearer than the levels (measured: a fifth of their
     // error or less; a regression check).
     assert!(error < rounded_error / 4.0, "{error} against {rounded_error}");
+    // Rounded to 8 bits without a dither, by TGV and by TV, it gives back the levels.
+    let tv = Settings {
+        method: Method::Tv,
+        ..Settings::default()
+    };
+    for settings in [Settings::default(), tv] {
+        let reconstructed = rounded::reconstruct(&file, &settings, None).expect("reconstructed");
+        let back =
+            output::eight_bits(&reconstructed.picture, height, width, 4, output::Dither::None).expect("finite values");
+        assert!(back.iter().map(|&level| u16::from(level)).eq(levels.iter().copied()));
+    }
+}
+
+#[test]
+fn a_file_of_sixteen_bits_gives_back_its_levels() {
+    // A smooth grey picture rounded to 16 bits, where a level is 1/257 wide.
+    let (height, width) = (18, 24);
+    let drawn: Vec<f64> = (0..height * width)
+        .map(|k| {
+            let (i, j) = (
+                f64::from(u32::try_from(k / width).expect("small")),
+                f64::from(u32::try_from(k % width).expect("small")),
+            );
+            40.0 + 3.1 * j + 1.7 * i + 0.05 * i * j
+        })
+        .collect();
+    let levels = output::sixteen_bits(&drawn, height, width, 1, output::Dither::None).expect("finite values");
+    let png = Png {
+        width: u32::try_from(width).expect("small"),
+        height: u32::try_from(height).expect("small"),
+        channels: 1,
+        samples: Samples::Sixteen(&levels),
+        compression: None,
+        icc_profile: None,
+    };
+    let file = jpegio_sys::write_png(&png).expect("a file").bytes;
+    let tv = Settings {
+        method: Method::Tv,
+        ..Settings::default()
+    };
+    for settings in [Settings::default(), tv] {
+        let reconstructed = rounded::reconstruct(&file, &settings, None).expect("reconstructed");
+        assert_eq!(reconstructed.bits, 16);
+        let back = output::sixteen_bits(&reconstructed.picture, height, width, 1, output::Dither::None)
+            .expect("finite values");
+        assert_eq!(back, levels);
+    }
 }
 
 #[test]

@@ -539,10 +539,20 @@ def test_ycbcr_is_declared_as_it_is() -> None:
 
 
 def rounded(value: float, scale: int, top: int) -> int:
-    """value times scale, as a double, rounded to the nearest integer, halves away from 0, and clamped."""
-    exact = Fraction(value * scale)
+    """value times scale, exactly, rounded to the nearest integer, halves away from 0, and clamped."""
+    exact = Fraction(value) * scale
     whole = int(abs(exact) + Fraction(1, 2)) * (1 if exact >= 0 else -1)
     return min(max(whole, 0), top)
+
+
+def onto_from_below(target: float) -> list[float]:
+    """The samples whose product with 257, rounded, is target, the exact product lying below it."""
+    near = target / 257
+    return [
+        sample
+        for sample in (math.nextafter(near, 0.0), near, math.nextafter(near, 256.0))
+        if sample * 257 == target and Fraction(sample) * 257 < Fraction(target)
+    ]
 
 
 def test_the_pnm_rounds_halves_away_from_zero() -> None:
@@ -559,6 +569,13 @@ def test_the_pnm_rounds_halves_away_from_zero() -> None:
     values = np.frombuffer(sixteen[len(header) :], dtype=">u2")
     expected = [rounded(float(value), 257, 65535) for value in samples.ravel() for _ in range(3)]
     assert values.tolist() == expected
+    # 16 bits round the exact product 257 x: where it rounds onto a half from below, down.
+    below = np.array([[sample for whole in range(16, 400) for sample in onto_from_below(whole + 0.5)]])
+    assert below.size > 100
+    sixteen = native.pnm_bytes(below, sixteen=True, dither="none")
+    values = np.frombuffer(sixteen[sixteen.index(b"65535\n") + 6 :], dtype=">u2")
+    assert values.tolist() == [rounded(float(value), 257, 65535) for value in below.ravel()]
+    assert values.tolist() == [math.floor(float(value) * 257) for value in below.ravel()]
     with pytest.raises(native.UnroundError, match="not finite"):
         native.pnm_bytes(np.array([[np.nan]]))
 
@@ -577,9 +594,9 @@ def blue_noise() -> npt.NDArray[np.int64]:
 
 
 def dithered(value: float, rank: int, scale: int, top: int) -> int:
-    """The level of docs/math.md, 10, in rationals: of y, value times scale as a double, floor(y), or the
+    """The level of docs/math.md, 10, in rationals: of y, value times scale exactly, floor(y), or the
     level above where the fraction of y reaches 1 - (2 rank + 1) / 8192; clamped to 0..top."""
-    y = Fraction(value * scale)
+    y = Fraction(value) * scale
     whole = math.floor(y)
     above = y - whole >= 1 - Fraction(2 * rank + 1, 8192)
     return min(max(whole + int(above), 0), top)

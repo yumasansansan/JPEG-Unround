@@ -20,9 +20,11 @@ What is rational is computed exactly, and is the same to the last bit in every
 implementation: the levels and the steps; the counts of 2.1 and the integers
 made of them ($D$ needs up to about 80 bits: 128-bit integers in C++ and Rust);
 the intervals without slack, $(q - \tfrac12) Q$, which binary64 holds exactly for
-levels and steps of 16 bits; the coefficients of the series of 2.2, computed in
-rationals; and, for pictures of integers, the sums and means of the metrics. A
-rational enters floating point once, rounded to the nearest double. With a slack
+levels and steps of 16 bits, and those of rounded samples (11); the coefficients of
+the series of 2.2, computed in rationals; the levels of samples of 8 and 16 bits
+(10); and, for pictures of integers, the sums and means of the metrics. A rational
+enters floating point once, rounded to the nearest double, but for the ends of the
+intervals of rounded samples, which are rounded inward (11). With a slack
 $s$, the ends are $((q - \tfrac12) - s) Q$ and $((q + \tfrac12) + s) Q$, with
 1024 added to those of DC last (1.1); they are computed in floating point.
 
@@ -1271,12 +1273,15 @@ Python implementations on Windows (x86-64).
 writes.*
 
 A file of integer samples holds levels $n$ from 0 to $T$. Of 8 bits, $T = 255$ and
-the level of a sample $x$ is $y = x$; of 16 bits, $T = 65535$ and $y = 257 x$, one
-product rounded once, so that 255 is $T$ in both. Either way the binary64 result
-loses what lies between the levels. By default that loss is dithered: each sample
-goes to the level below or the level above, in proportions that keep the mean, so
-that a smooth gradient keeps its slope between the levels instead of breaking into
-bands, and what is lost becomes a fine-grained noise.
+the level of a sample $x$ is that of $y = x$; of 16 bits, $T = 65535$ and
+$y = 257 x$, so that 255 is $T$ in both. The product is taken exactly: it needs up
+to 62 bits, and is held as its rounding $\hat y$ and the error of that rounding,
+$e = \mathrm{fma}(257, x, -\hat y)$, which is exact, so that $y = \hat y + e$
+($e = 0$ of 8 bits). Either way the binary64 result loses what lies between the
+levels. By default that loss is dithered: each sample goes to the level below or the
+level above, in proportions that keep the mean, so that a smooth gradient keeps its
+slope between the levels instead of breaking into bands, and what is lost becomes a
+fine-grained noise.
 
 **Rounding.** Without a dither, $n = \mathrm{clamp}(\mathrm{round}(y), 0, T)$, halves
 rounded away from 0.
@@ -1285,12 +1290,21 @@ rounded away from 0.
 
 $$ n = \mathrm{clamp}\bigl(\lfloor y \rfloor + [\, y - \lfloor y \rfloor \ge 1 - t \,],\ 0,\ T\bigr): $$
 
-$\lfloor y \rfloor$, or the level above where the fraction reaches $1 - t$. This is
-computed exactly. For $y \ge 1$, $y / 2 \le \lfloor y \rfloor \le y$, and the
-difference is exact (Sterbenz); for $0 \le y < 1$ it is $y$; for $y < 0$ either
-level clamps to 0. The thresholds below have 13 bits, so that $1 - t$ is exact too.
-Every implementation therefore makes the same level of the same $y$; the levels of
-two implementations differ only where their $y$ do, as the samples' last bits may
+$\lfloor y \rfloor$, or the level above where the fraction reaches $1 - t$.
+
+**Exactly.** Both are computed exactly from $\hat y$ and $e$. The halves
+$k + \tfrac12$ and the places $k + 1 - t$ where the dither goes up are doubles (the
+thresholds below have 13 bits), and $\hat y$, the double nearest to $y$, lies on the
+same side of each as $y$ does, unless it is that double itself, where the sign of
+$e$ tells: $\mathrm{round}(y)$ is $\mathrm{round}(\hat y)$, but $k + [e \ge 0]$
+where $\hat y = k + \tfrac12$; and with $\hat f = \hat y - \lfloor \hat y \rfloor$,
+the level above is taken where $\hat f > 1 - t$, and where $\hat f = 1 - t$ if
+$e \ge 0$. (Where $\hat y$ is an integer and $e < 0$, $y$ lies just below it, and
+goes up to it.) For $\hat y \ge 1$, $\hat y / 2 \le \lfloor \hat y \rfloor \le
+\hat y$, and $\hat f$ is exact (Sterbenz); for $0 \le \hat y < 1$ it is $\hat y$;
+for $\hat y < 0$ either level clamps to 0; and $1 - t$ is exact too. Every
+implementation therefore makes the same level of the same sample; the levels of two
+implementations differ only where their samples do, as the samples' last bits may
 (Arithmetic). A constant $y$ of fraction $f$ goes to the level above at
 $\lfloor 4096 f + \tfrac12 \rfloor$ of the matrix's 4096 thresholds, so that the
 mean of its levels over the matrix is within $1/8192$ of $y$.
@@ -1345,16 +1359,35 @@ file's.
 
 **The intervals.** A file of $b$ bits holds levels $v$ from 0 to $2^b - 1$, and a
 level stands for $v s$ on the scale of 0 to 255, $s = 255 / (2^b - 1)$ (1 for 8
-bits). Sample $k$, of channel $c$ at pixel $(i, j)$, lies within
+bits). A level is what rounding made of the values from half a level below it,
+which round up to it, to half a level above it, which round up to the next (halves
+away from 0, as 10 rounds). Sample $k$, of channel $c$ at pixel $(i, j)$, lies
+within the half-open interval
 
-$$ a_k = \max\bigl(0,\ (v_k - \tfrac12 - \varsigma)\, s\bigr), \qquad
-   b_k = \min\bigl(255,\ (v_k + \tfrac12 + \varsigma)\, s\bigr), $$
+$$ \max\bigl(0,\ (v_k - \tfrac12)\, s\bigr) \le x_k < (v_k + \tfrac12)\, s, $$
 
-with a slack $\varsigma \ge 0$ in levels, 0 by default: the picture that was rounded
-lay within 0 to 255, which it was rounded from. The ends are rationals, computed
-exactly and rounded once to the nearest double (exact for 8 bits without slack).
-The channels are the file's as they are -- grey, or R, G and B -- and are not
-converted; a file's alpha, where it has one, is a picture of its own (below).
+and at the last level, whose upper end lies beyond 255, within its lower end and
+255, both taken: the picture that was rounded lay within 0 to 255. The ends are
+rationals, computed exactly, and the model takes the doubles within the interval:
+the closed interval $[a_k, b_k]$ of the lower end rounded up, to the least double at
+or above it, and the upper end rounded down, to the greatest double below it (255
+at the last level). Of 1, 2, 4 and 8 bits, $s$ is an integer and both ends are
+doubles, so that $a_k$ is the lower end and $b_k$ the double just below the upper
+one; of 16 bits neither end is a double. Rounded to its own bits without a dither,
+the result of a file of 8 or 16 bits therefore gives back the file's levels
+(Output, below).
+
+A slack $\varsigma > 0$, in levels (0 by default), widens each interval beyond what
+rounds to its level, to the closed interval of
+
+$$ a_k = \max\bigl(0,\ ((v_k - \tfrac12) - \varsigma)\, s\bigr), \qquad
+   b_k = \min\bigl(255,\ ((v_k + \tfrac12) + \varsigma)\, s\bigr), $$
+
+computed in floating point, with $s$ the double nearest to it, as the ends of
+coefficients with a slack are (Arithmetic). The centre of a level, $v s$, is the
+double nearest to it. The channels are the file's as they are -- grey, or R, G and
+B -- and are not converted; a file's alpha, where it has one, is a picture of its
+own (below).
 
 **The model.** The unknown is the picture itself, $x \in \mathbb{R}^{C \times H \times W}$,
 on a canvas of the picture's size: nothing is free. With the centres $\hat c_k = v_k s$
@@ -1428,10 +1461,11 @@ the same method and weights; the colours are reconstructed apart from it. The
 colours are not premultiplied: PNG's are not.
 
 **Output.** The result is the picture itself: binary64 samples, to the last bit, or
-8 and 16 bits as 10 makes them. Rounded to 8 bits without a dither, every sample
-gives back the file's level, but for a sample exactly at the upper end of its
-interval, which rounds up; so it is the dither, or 16 bits, that shows what lies
-between the levels.
+8 and 16 bits as 10 makes them. Without slack, a file of 8 or 16 bits rounded to its
+own bits without a dither gives back its levels: each sample lies within its
+interval, which holds the doubles whose level (10, of the exact product $257 x$ of
+16 bits) is the file's. It is the dither, or more bits than the file's, that shows
+what lies between the levels.
 
 ## References
 

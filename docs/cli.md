@@ -78,10 +78,11 @@ The result keeps the alpha: TIFF declares it (`ExtraSamples`, unassociated alpha
 in the units of the other samples) and PNG holds it; PNM holds none, and a picture
 with alpha is not written as PNM (status 3). The file's iCCP profile goes into TIFF
 and PNG as a JPEG file's ICC profile does; a transparent colour of a tRNS chunk is
-not taken, with a warning. Rounded to 8 bits without a dither, the result gives back
-the file's levels; dithered (the default) or of 16 bits, it shows what lies between
-them. The report says `"input_format": "png"`, the file's `bits` and whether it has
-`alpha`, and for alpha its solver's iterations and stop (`alpha_solver`).
+not taken, with a warning. Rounded without a dither to the file's own 8 or 16 bits,
+and without `--slack`, the result gives back the file's levels; dithered (the
+default), or of more bits than the file's, it shows what lies between them. The
+report says `"input_format": "png"`, the file's `bits` and whether it has `alpha`,
+and for alpha its solver's iterations and stop (`alpha_solver`).
 
 ### Dithering
 

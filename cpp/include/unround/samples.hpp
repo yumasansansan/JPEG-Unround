@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Pictures of rounded samples (docs/math.md, 11): each sample of a file of b bits
-// stands for every value within half a level of its own, on the scale of 0 to 255, and
+// stands for every value that rounds to its own level, on the scale of 0 to 255, and
 // the reconstruction is the picture within those intervals that TV or TGV finds most
 // natural, with a data term of weight mu toward the levels (0 by default). The channels
 // are the file's as they are, coupled or apart; a file's alpha is a picture of its own.
@@ -33,9 +33,12 @@ inline constexpr pdhg::Defaults defaults{.tv_ratio = pdhg::tv_ratio,
                                          .tv_iterations = 10000,
                                          .tgv_iterations = 10000};
 
-// The ends of the interval of level v of a file of b bits (1 to 16) with a slack in
-// levels, max(0, (v - 1/2 - slack) s) and min(255, (v + 1/2 + slack) s), s = 255 /
-// (2^b - 1), each the double nearest to its exact value; and its centre v s.
+// The interval of level v of a file of b bits (1 to 16), s = 255 / (2^b - 1). Without
+// slack, the doubles of max(0, (v - 1/2) s) <= x < (v + 1/2) s, or x <= 255 at the last
+// level: its ends, rationals, rounded inward, the lower one up to the least double at or
+// above it and the upper one down to the greatest double below it. With a slack in
+// levels, max(0, ((v - 1/2) - slack) s) and min(255, ((v + 1/2) + slack) s), computed in
+// floating point with s the nearest double. And its centre v s, the nearest double.
 struct Interval {
   double lower = 0.0;
   double upper = 0.0;
