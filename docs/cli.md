@@ -11,10 +11,12 @@ unround [OPTIONS] INPUT [OUTPUT]
 intervals (`docs/math.md`), and writes the result to `OUTPUT`. A PNG file is
 reconstructed alike within the intervals of its rounded samples (below, and
 `docs/math.md`, 11). The options are
-those of the library, under the same names: the Rust crate, the C interface and
-the Python package take every one of them, and every value the model and the
-solvers use can be given. A value not given takes its default, which this
-document states; the defaults of the solvers are those of `docs/math.md`, 6.5.
+those of the library, under the same names: the Rust crate, the C interface, the
+C++ library and the Python package take every one of them, and every value the
+model and the solvers use can be given. A value not given takes its default, which
+this document states; the defaults of the solvers are those of `docs/math.md`, 6.5.
+Both implementations build this program: the Rust crate's (`rust/unround`), which
+is the reference, and the C++ library's (`cpp/cli`); `--version` says which.
 
 ## Input and output
 

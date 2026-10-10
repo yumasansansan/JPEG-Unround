@@ -22,8 +22,8 @@ the order of rows, where several have it. The steps:
    zeros; on the torus the energies of the zeros and of the points add up to the same
    sum everywhere, so that is this.)
 
-It writes rust/unround/src/blue_noise.rs; --check compares what it would write with the
-file, and fails where they differ.
+It writes rust/unround/src/blue_noise.rs and cpp/src/blue_noise.hpp; --check compares what it
+would write with the files, and fails where they differ.
 """
 
 import argparse
@@ -37,6 +37,7 @@ import numpy.typing as npt
 
 ROOT: Final = Path(__file__).resolve().parent.parent
 RUST: Final = ROOT / "rust" / "unround" / "src" / "blue_noise.rs"
+CXX: Final = ROOT / "cpp" / "src" / "blue_noise.hpp"
 SIZE: Final = 64
 INITIAL: Final = 410
 SCALE: Final = 2**40
@@ -142,19 +143,58 @@ def rust_source(ranks: npt.NDArray[np.int64]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def cxx_source(ranks: npt.NDArray[np.int64]) -> str:
+    lines = [
+        "// SPDX-FileCopyrightText: 2026 Yuma Kakei <yumasansansan@gmail.com>",
+        "// SPDX-License-Identifier: GPL-3.0-or-later",
+        "//",
+        "// The ranks of the blue-noise matrix of the ordered dither, 64 x 64, row by row",
+        "// (docs/math.md, 10). Written by scripts/blue_noise.py, which makes them by",
+        "// Ulichney's void-and-cluster method in integers; not to be edited.",
+        "#ifndef UNROUND_BLUE_NOISE_HPP",
+        "#define UNROUND_BLUE_NOISE_HPP",
+        "",
+        "#include <array>",
+        "#include <cstdint>",
+        "",
+        "namespace unround::output {",
+        "",
+        "// Rank 64 i + j is that of row i, column j: each of 0 to 4095 once.",
+        "// clang-format off",
+        "inline constexpr std::array<std::uint16_t, 4096> blue_noise_ranks = {",
+    ]
+    for start in range(0, SIZE * SIZE, 16):
+        values = ", ".join(f"{int(value):4}" for value in ranks[start : start + 16])
+        lines.append(f"    {values},")
+    lines += [
+        "};",
+        "// clang-format on",
+        "",
+        "}  // namespace unround::output",
+        "",
+        "#endif  // UNROUND_BLUE_NOISE_HPP",
+    ]
+    return "\n".join(lines) + "\n"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--check", action="store_true", help="compare with the file instead of writing it")
+    parser.add_argument("--check", action="store_true", help="compare with the files instead of writing them")
     arguments = parser.parse_args()
-    source = rust_source(matrix())
+    ranks = matrix()
+    sources = {RUST: rust_source(ranks), CXX: cxx_source(ranks)}
     if arguments.check:
-        if not RUST.exists() or RUST.read_text(encoding="utf-8") != source:
-            print(f"error: {RUST} is not what scripts/blue_noise.py writes", file=sys.stderr)
-            return 1
-        print(f"{RUST.name}: as written")
-        return 0
-    RUST.write_text(source, encoding="utf-8", newline="\n")
-    print(f"wrote {RUST}")
+        failed = False
+        for path, source in sources.items():
+            if not path.exists() or path.read_text(encoding="utf-8") != source:
+                print(f"error: {path} is not what scripts/blue_noise.py writes", file=sys.stderr)
+                failed = True
+            else:
+                print(f"{path.name}: as written")
+        return 1 if failed else 0
+    for path, source in sources.items():
+        path.write_text(source, encoding="utf-8", newline="\n")
+        print(f"wrote {path}")
     return 0
 
 

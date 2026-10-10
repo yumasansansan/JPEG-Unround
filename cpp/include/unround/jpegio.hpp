@@ -201,6 +201,64 @@ class Planes {
   std::string warning_;
 };
 
+// What unround_jpegio_read_png() returns: the levels of a PNG file, height x width x
+// channels (gray, gray and alpha, RGB, RGB and alpha), each as the file stores it in
+// `bits` bits; its ICC profile; and the first warning of the reading, or an empty
+// string.
+class PngImage {
+ public:
+  PngImage(void) noexcept = default;
+  PngImage(const PngImage&) = delete;
+  PngImage& operator=(const PngImage&) = delete;
+  PngImage(PngImage&& other) noexcept
+      : image_{std::exchange(other.image_, unround_jpegio_png_image{})}, warning_{std::move(other.warning_)} {}
+  PngImage& operator=(PngImage&& other) noexcept {
+    if (this != &other) {
+      unround_jpegio_png_image_free(&image_);
+      image_ = std::exchange(other.image_, unround_jpegio_png_image{});
+      warning_ = std::move(other.warning_);
+    }
+    return *this;
+  }
+  ~PngImage(void) { unround_jpegio_png_image_free(&image_); }
+
+  // Reads a PNG file of at most max_pixels pixels (0: the C layer's limit).
+  [[nodiscard]] static std::expected<PngImage, Error> read(std::span<const std::uint8_t> data,
+                                                           std::uint64_t max_pixels = 0) {
+    PngImage image;
+    detail::Message message{};
+    const unround_jpegio_status status =
+        unround_jpegio_read_png(data.data(), data.size(), max_pixels, &image.image_, message.data(), message.size());
+    if (status != UNROUND_JPEGIO_OK) {
+      return std::unexpected{Error{.code = static_cast<Errc>(status), .message = detail::to_string(message)}};
+    }
+    image.warning_ = detail::to_string(message);
+    return image;
+  }
+
+  [[nodiscard]] std::uint32_t width(void) const noexcept { return image_.width; }
+  [[nodiscard]] std::uint32_t height(void) const noexcept { return image_.height; }
+  [[nodiscard]] std::int32_t channels(void) const noexcept { return image_.channels; }
+  [[nodiscard]] std::int32_t bits(void) const noexcept { return image_.bits; }
+
+  [[nodiscard]] Picture<const std::uint16_t> levels(void) const noexcept {
+    return Picture<const std::uint16_t>(
+        image_.samples, PictureExtents{static_cast<std::size_t>(image_.height), static_cast<std::size_t>(image_.width),
+                                       static_cast<std::size_t>(image_.channels)});
+  }
+
+  [[nodiscard]] std::span<const std::uint8_t> icc_profile(void) const noexcept {
+    if (image_.icc_profile == nullptr) return {};
+    return {image_.icc_profile, static_cast<std::size_t>(image_.icc_profile_size)};
+  }
+
+  [[nodiscard]] const std::string& warning(void) const noexcept { return warning_; }
+
+ private:
+  unround_jpegio_png_image image_{};
+  std::string warning_;
+};
+
 // The versions of the libpng and the zlib the C layer is built with.
 [[nodiscard]] inline std::string_view libpng_version(void) noexcept { return unround_jpegio_libpng_version(); }
 
@@ -284,8 +342,8 @@ template <typename Sample>
 
 }  // namespace detail
 
-// Writes a picture as a PNG file: rows x columns pixels of 1 (gray) or 3 (RGB)
-// samples of 8 bits, [i, j, c], rows from the top.
+// Writes a picture as a PNG file: rows x columns pixels of 1 (gray), 2 (gray and
+// alpha), 3 (RGB) or 4 (RGB and alpha) samples of 8 bits, [i, j, c], rows from the top.
 [[nodiscard]] inline std::expected<PngFile, Error> write_png(Picture<const std::uint8_t> picture,
                                                              const PngOptions& options = {}) {
   return detail::write_png(picture, 8, options);

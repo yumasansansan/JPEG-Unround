@@ -10,6 +10,7 @@
 find_package(Threads REQUIRED)
 
 add_library(unround_cpp STATIC
+  src/cli.cpp
   src/colour.cpp
   src/dct.cpp
   src/decode.cpp
@@ -18,7 +19,9 @@ add_library(unround_cpp STATIC
   src/laplace.cpp
   src/model.cpp
   src/operators.cpp
+  src/output.cpp
   src/pdhg.cpp
+  src/samples.cpp
   src/settings.cpp
   src/subgradient.cpp)
 add_library(unround::cpp ALIAS unround_cpp)
@@ -37,6 +40,13 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(AMD64|x86_64)$")
 endif()
 target_compile_options(unround_cpp PRIVATE ${UNROUND_CPP_TARGET_FLAGS})
 
+# The command line, unround, as the reference implementation's is named.
+add_executable(unround_cpp_cli cli/main.cpp)
+set_target_properties(unround_cpp_cli PROPERTIES OUTPUT_NAME unround)
+target_link_libraries(unround_cpp_cli PRIVATE unround::cpp)
+unround_target_defaults(unround_cpp_cli)
+target_compile_options(unround_cpp_cli PRIVATE ${UNROUND_CPP_TARGET_FLAGS})
+
 if(UNROUND_BUILD_TESTS)
   add_executable(unround_cpp_jpegio_test tests/test_jpegio.cpp)
   target_link_libraries(unround_cpp_jpegio_test PRIVATE unround::cpp unround_test_jpeg unround_test_png)
@@ -54,7 +64,7 @@ if(UNROUND_BUILD_TESTS)
   # The tests of the library; those that compare with the exact references take
   # their directory.
   set(UNROUND_REFERENCES "${PROJECT_SOURCE_DIR}/conformance/references")
-  foreach(name IN ITEMS exact dct laplace model operators frames pdhg settings subgradient colour)
+  foreach(name IN ITEMS exact dct laplace model operators frames pdhg settings subgradient colour output samples)
     add_executable(unround_cpp_${name}_test tests/test_${name}.cpp)
     target_include_directories(unround_cpp_${name}_test PRIVATE tests)
     target_link_libraries(unround_cpp_${name}_test PRIVATE unround::cpp)
@@ -70,6 +80,15 @@ if(UNROUND_BUILD_TESTS)
   unround_target_defaults(unround_cpp_decode_test)
   target_compile_options(unround_cpp_decode_test PRIVATE ${UNROUND_CPP_TARGET_FLAGS})
   unround_add_test(cpp.decode unround_cpp_decode_test)
+
+  # The command line, run in the process on files of the test encoder, which it writes
+  # in its directory.
+  add_executable(unround_cpp_cli_test tests/test_cli.cpp)
+  target_include_directories(unround_cpp_cli_test PRIVATE tests)
+  target_link_libraries(unround_cpp_cli_test PRIVATE unround::cpp unround_test_jpeg)
+  unround_target_defaults(unround_cpp_cli_test)
+  target_compile_options(unround_cpp_cli_test PRIVATE ${UNROUND_CPP_TARGET_FLAGS})
+  unround_add_test(cpp.cli unround_cpp_cli_test "${CMAKE_CURRENT_BINARY_DIR}/cli-test")
 
   # The conformance cases (docs/math.md, 9), reproduced by the C++ library.
   add_executable(unround_cpp_conformance_test tests/test_conformance.cpp)

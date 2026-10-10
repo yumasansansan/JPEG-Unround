@@ -93,10 +93,21 @@ struct Plan {
   std::vector<double> channel_weights;
 };
 
+// The defaults of the ratio of the steps and of the stop, for a weight of 1: those of
+// JPEG files (6.5) unless others are given (those of PNG files, 11).
+struct Defaults {
+  double tv_ratio = pdhg::tv_ratio;
+  double tgv_ratio = pdhg::tgv_ratio;
+  double tv_tolerance = pdhg::tv_tolerance;
+  double tgv_tolerance = pdhg::tgv_tolerance;
+  std::uint64_t tv_iterations = pdhg::tv_iterations;
+  std::uint64_t tgv_iterations = pdhg::tgv_iterations;
+};
+
 // The plan of the options, or why they are refused: values out of their ranges, a
 // partial gap for TV, channel weights not one for each channel.
 [[nodiscard]] std::expected<Plan, Error> plan(Model model, const Regularizer& regularizer, const Options& options,
-                                              std::size_t channels);
+                                              std::size_t channels, const Defaults& defaults = {});
 
 // A record (6) at the tilde point of its iteration (the start at 0), and why the
 // solver stopped: a tolerance met at a record, the most iterations taken, or its

@@ -314,3 +314,24 @@ fn a_profile_that_does_not_go_with_the_picture_is_left_out() {
     assert_eq!(back.icc_profile, None);
     std::fs::remove_dir_all(&place).expect("the directory is removed");
 }
+
+#[test]
+fn the_summary_names_the_stop_as_the_report_does() {
+    let place = directory("summary");
+    let input = place.join("in.jpg");
+    std::fs::write(&input, grey_file()).expect("the file is written");
+    let output = place.join("out.tif");
+    let (status, errors) = unround(&[
+        "--method",
+        "tv",
+        "--iterations",
+        "5",
+        "--tolerance",
+        "0",
+        text(&input),
+        text(&output),
+    ]);
+    assert_eq!(status, 0, "{errors}");
+    assert_eq!(errors, format!("{}: 5 iterations, iterations\n", output.display()));
+    std::fs::remove_dir_all(&place).expect("the directory is removed");
+}

@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <expected>
 #include <span>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -39,6 +40,8 @@ struct Settings {
   pdhg::Options pdhg;
   subgradient::Options subgradient;
   Reading reading;
+  // The names of the options given, without their dashes, in the order given.
+  std::vector<std::string> given;
 };
 
 // The settings of the options given as the command line takes them: each option at
@@ -48,6 +51,17 @@ struct Settings {
 // value, a value out of its range, and an option that the method does not take (a
 // partial gap for TV) are refused, every one of them named at once.
 [[nodiscard]] std::expected<Settings, Error> parse_settings(std::span<const std::string_view> arguments);
+
+// Whether --name is an option of the settings, and whether it takes a value (the
+// others are flags: --no-weight-scaling, --no-momentum, --warnings-are-errors).
+[[nodiscard]] bool is_setting(std::string_view name) noexcept;
+[[nodiscard]] bool setting_takes_value(std::string_view name) noexcept;
+
+// The options of the settings as the command line would give them, each --name=value:
+// the method, the regularizer, the data term (a list where it is one for each
+// component), and the options of the solvers, those not given without their defaults
+// left out.
+[[nodiscard]] std::vector<std::string> options_of(const Settings& settings);
 
 // The data terms of the settings for a picture: those given, with the MMSE centres
 // where the method is the MMSE decoder, which takes them whatever --centres says.

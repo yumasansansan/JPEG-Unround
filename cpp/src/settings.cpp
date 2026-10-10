@@ -121,7 +121,11 @@ class Reader {
       const std::string key(name);
       if (is_flag(name)) {
         if (equals != std::string_view::npos) errors.push_back(std::format("--{} takes no value", name));
-        if (!given_.emplace(key, "").second) errors.push_back(std::format("--{} is given twice", name));
+        if (given_.emplace(key, "").second) {
+          order_.push_back(key);
+        } else {
+          errors.push_back(std::format("--{} is given twice", name));
+        }
         continue;
       }
       if (!is_valued(name)) {
@@ -140,11 +144,18 @@ class Reader {
         errors.push_back(std::format("--{} needs a value", name));
         continue;
       }
-      if (!given_.emplace(key, std::string(value)).second) errors.push_back(std::format("--{} is given twice", name));
+      if (given_.emplace(key, std::string(value)).second) {
+        order_.push_back(key);
+      } else {
+        errors.push_back(std::format("--{} is given twice", name));
+      }
     }
   }
 
   [[nodiscard]] bool flag(std::string_view name) const { return given_.contains(std::string(name)); }
+
+  // The names of the options given, in the order given.
+  [[nodiscard]] const std::vector<std::string>& names(void) const noexcept { return order_; }
 
   [[nodiscard]] std::optional<std::string_view> text(std::string_view name) const {
     const auto found = given_.find(std::string(name));
@@ -214,6 +225,7 @@ class Reader {
 
  private:
   std::map<std::string, std::string, std::less<>> given_;
+  std::vector<std::string> order_;
 };
 
 bool positive(double value) noexcept { return value > 0.0 && std::isfinite(value); }
@@ -406,7 +418,86 @@ std::expected<Settings, Error> parse_settings(std::span<const std::string_view> 
     for (const std::string& error : reader.errors) message += message.empty() ? error : "; " + error;
     return std::unexpected(Error{.code = Errc::options, .message = std::move(message)});
   }
+  settings.given = reader.names();
   return settings;
+}
+
+bool is_setting(std::string_view name) noexcept { return is_valued(name) || is_flag(name); }
+
+bool setting_takes_value(std::string_view name) noexcept { return is_valued(name); }
+
+namespace {
+
+std::string number(double value) { return std::format("{}", value); }
+
+// The values of the data terms' field, joined by commas where they differ.
+template <typename Text>
+std::string joined(const std::vector<DataTerm>& data, const Text& text) {
+  std::string first = text(data.front());
+  bool alike = true;
+  for (const DataTerm& term : data) alike = alike && text(term) == first;
+  if (alike) return first;
+  std::string all;
+  for (const DataTerm& term : data) all += (all.empty() ? "" : ",") + text(term);
+  return all;
+}
+
+}  // namespace
+
+std::vector<std::string> options_of(const Settings& settings) {
+  std::vector<std::string> options;
+  const auto add = [&options](std::string_view name, const std::string& value) {
+    options.push_back(std::format("--{}={}", name, value));
+  };
+  constexpr std::array<std::string_view, 4> methods = {"mmse", "tv", "tgv", "subgradient"};
+  add("method", std::string(methods[static_cast<std::size_t>(settings.method)]));
+  const pdhg::Regularizer& regularizer = settings.regularizer;
+  add("alpha", number(regularizer.alpha));
+  add("alpha1", number(regularizer.alpha1));
+  add("alpha0", number(regularizer.alpha0));
+  if (!regularizer.channel_weights.empty()) {
+    std::string weights;
+    for (const double weight : regularizer.channel_weights) weights += (weights.empty() ? "" : ",") + number(weight);
+    add("channel-weights", weights);
+  }
+  add("channels", regularizer.coupled ? "coupled" : "apart");
+  const std::vector<DataTerm>& data = settings.data;
+  add("mu", joined(data, [](const DataTerm& term) { return term.mu ? number(*term.mu) : std::string("rule"); }));
+  add("mu-scale", joined(data, [](const DataTerm& term) { return number(term.mu_scale); }));
+  add("mu-power", joined(data, [](const DataTerm& term) { return number(term.mu_power); }));
+  add("mu-chroma", joined(data, [](const DataTerm& term) { return number(term.mu_chroma); }));
+  add("weight-power", joined(data, [](const DataTerm& term) { return number(term.power); }));
+  add("dc-weight", joined(data, [](const DataTerm& term) { return number(term.dc_weight); }));
+  add("centres", joined(data, [](const DataTerm& term) {
+        return std::string(term.centres == Centres::mmse ? "mmse" : "midpoint");
+      }));
+  add("slack", joined(data, [](const DataTerm& term) { return number(term.slack); }));
+  add("slack-cost", joined(data, [](const DataTerm& term) { return number(term.slack_cost); }));
+  add("flat-weight", joined(data, [](const DataTerm& term) { return number(term.flat_weight); }));
+  add("flat-levels", joined(data, [](const DataTerm& term) { return std::to_string(term.flat_levels); }));
+  add("flat-dc", joined(data, [](const DataTerm& term) {
+        return term.flat_dc ? std::to_string(*term.flat_dc) : std::string("any");
+      }));
+  const pdhg::Options& pdhg = settings.pdhg;
+  if (pdhg.iterations) add("iterations", std::to_string(*pdhg.iterations));
+  if (pdhg.tolerance) add("tolerance", number(*pdhg.tolerance));
+  add("relative-tolerance", number(pdhg.relative_tolerance));
+  add("partial-tolerance", number(pdhg.partial_tolerance));
+  if (pdhg.partial_radius) add("partial-radius", number(*pdhg.partial_radius));
+  if (pdhg.step_ratio) add("step-ratio", number(*pdhg.step_ratio));
+  add("relaxation", number(pdhg.relaxation));
+  add("step-product", number(pdhg.step_product));
+  if (pdhg.norm_squared) add("norm-squared", number(*pdhg.norm_squared));
+  if (!pdhg.weight_scaling) options.emplace_back("--no-weight-scaling");
+  add("record-every", std::to_string(pdhg.record_every));
+  add("free-radius", number(pdhg.free_radius));
+  const subgradient::Options& sub = settings.subgradient;
+  add("subgradient-iterations", std::to_string(sub.iterations));
+  add("subgradient-step", number(sub.step));
+  add("subgradient-decay", number(sub.decay));
+  if (!sub.momentum) options.emplace_back("--no-momentum");
+  add("subgradient-record-every", std::to_string(sub.record_every));
+  return options;
 }
 
 std::vector<DataTerm> data_of(const Settings& settings) {

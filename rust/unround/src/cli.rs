@@ -866,6 +866,16 @@ fn json_string(text: &str) -> String {
     quoted
 }
 
+/// Why a solver stopped, as the report and the summary on standard error name it.
+fn stop_name(stop: Stop) -> &'static str {
+    match stop {
+        Stop::Converged => "converged",
+        Stop::Iterations => "iterations",
+        Stop::Observer => "observer",
+        Stop::Stationary => "stationary",
+    }
+}
+
 fn json_list(values: &[f64]) -> String {
     let items: Vec<String> = values.iter().map(|&value| json_number(value)).collect();
     format!("[{}]", items.join(", "))
@@ -922,12 +932,6 @@ pub fn report(command: &Command, decoded: &decode::Decoded, outcome: &Outcome) -
         .collect();
     let _ = write!(text, "  \"settings\": [{}]", settings.join(", "));
     if let Some(result) = &decoded.result {
-        let stop = match result.stop {
-            Stop::Converged => "converged",
-            Stop::Iterations => "iterations",
-            Stop::Observer => "observer",
-            Stop::Stationary => "stationary",
-        };
         let History {
             iterations,
             seconds,
@@ -943,7 +947,7 @@ pub fn report(command: &Command, decoded: &decode::Decoded, outcome: &Outcome) -
              \"seconds\": {},\n    \"primal\": {},\n    \"dual\": {},\n    \"scaling\": {},\n    \
              \"partial_gap\": {}\n  }}",
             result.iterations,
-            json_string(stop),
+            json_string(stop_name(result.stop)),
             counts.join(", "),
             json_list(seconds),
             json_list(primal),
@@ -1104,10 +1108,10 @@ pub fn run(command: &Command) -> Result<(), (u8, String)> {
         && let Some(result) = &decoded.result
     {
         eprintln!(
-            "{}: {} iterations, {:?}",
+            "{}: {} iterations, {}",
             command.output.display(),
             result.iterations,
-            result.stop
+            stop_name(result.stop)
         );
     }
     Ok(())
@@ -1171,12 +1175,6 @@ fn write_rounded(command: &Command, reconstructed: &Reconstructed) -> Result<(Wr
 /// The report of a PNG file's reconstruction, as a JSON object (docs/cli.md): that of
 /// a JPEG file's, with the colours' records, and the alpha's iterations and stop.
 fn report_rounded(command: &Command, reconstructed: &Reconstructed, outcome: &Outcome) -> String {
-    let stop_name = |stop: Stop| match stop {
-        Stop::Converged => "converged",
-        Stop::Iterations => "iterations",
-        Stop::Observer => "observer",
-        Stop::Stationary => "stationary",
-    };
     let space = match reconstructed.channels {
         1 | 2 => "grayscale",
         _ => "rgb",
@@ -1280,17 +1278,17 @@ fn run_rounded(
     if command.verbosity != Verbosity::Quiet && command.output != Path::new("-") {
         let colours = &reconstructed.colours;
         eprintln!(
-            "{}: {} iterations, {:?}",
+            "{}: {} iterations, {}",
             command.output.display(),
             colours.iterations,
-            colours.stop
+            stop_name(colours.stop)
         );
         if let Some(alpha) = &reconstructed.alpha {
             eprintln!(
-                "{}: alpha: {} iterations, {:?}",
+                "{}: alpha: {} iterations, {}",
                 command.output.display(),
                 alpha.iterations,
-                alpha.stop
+                stop_name(alpha.stop)
             );
         }
     }

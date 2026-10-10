@@ -958,6 +958,16 @@ data term at the coefficients of the projection, of the start, of every few
 iterates (each by default) and of the last, and no dual value. The scheme has no
 convergence guarantee and no measure of how far it is from the least value.
 
+Nor is its direction continuous. Where $\nabla y = 0$ the term of the total
+variation is 0, and where a rounding leaves a difference in the last bits it is a
+vector of length 1, which the division by $\|g\|$ carries to every sample. Two
+computations that round apart (the two implementations, say) take the same first
+step and part from the second on a picture with flat parts, by grey levels rather
+than by roundings: on a chart of 381 × 509 samples, after the first iteration
+25930 samples had a gradient of 0 in one and not in the other, and after the
+second the two differed by 2.3 levels at the most. The conformance case of the
+method (9) is one where they do not part.
+
 ## 8. Colour
 
 *Implemented in `colour`.*
