@@ -11,7 +11,9 @@
 //!
 //! The three samples of a colour picture are R, G and B, or JFIF's Y, Cb and Cr,
 //! which the file then declares: `PhotometricInterpretation` `YCbCr`, without
-//! subsampling, with JFIF's coefficients and full range (docs/math.md, 8).
+//! subsampling, with JFIF's coefficients and full range (docs/math.md, 8). A gray or
+//! RGB picture may have alpha after its samples, which `ExtraSamples` (338) declares
+//! unassociated (2): not premultiplied, as PNG's is; in the same units as the others.
 //!
 //! An ICC profile is embedded (`InterColorProfile`, 34675) where it goes with the
 //! picture: where the C layer's check, libpng's for the iCCP chunk of PNG, takes it
@@ -43,6 +45,8 @@ const YCBCR: u16 = 6;
 const JFIF_COEFFICIENTS: [u32; 6] = [299, 1000, 587, 1000, 114, 1000]; // K_R, K_G and K_B, as rationals
 const FULL_RANGE: [u32; 12] = [0, 1, 255, 1, 128, 1, 255, 1, 128, 1, 255, 1]; // black and white of Y, Cb and Cr
 const INTER_COLOR_PROFILE: u16 = 34675;
+const EXTRA_SAMPLES: u16 = 338;
+const UNASSOCIATED_ALPHA: u16 = 2;
 
 /// An IFD entry whose value, of at most four bytes, is held in the entry itself.
 fn entry(tag: u16, kind: u16, count: u32, value: &[u8]) -> Vec<u8> {
@@ -89,14 +93,16 @@ fn layout(
     let data_length = height * width * channels * 8;
     // The layout: the header, the image data, the values that do not fit in an entry,
     // and the IFD. Entries are in ascending order of their tags, as TIFF requires.
-    let several = channels > 1;
+    // A value of more than four bytes lies elsewhere, at an offset: the shorts of
+    // three or four samples do; those of one or two lie in the entry itself.
+    let elsewhere = channels > 2;
     let count = u16::try_from(channels).unwrap_or(u16::MAX);
-    let bits = if several {
+    let bits = if elsewhere {
         shorts(&vec![BITS; channels])
     } else {
         Vec::new()
     };
-    let formats = if several {
+    let formats = if elsewhere {
         shorts(&vec![IEEE; channels])
     } else {
         Vec::new()
@@ -116,11 +122,12 @@ fn layout(
     let ifd_offset = values_end + values_end % 2;
     let photometric = if ycbcr {
         YCBCR
-    } else if several {
+    } else if channels >= 3 {
         RGB
     } else {
         BLACK_IS_ZERO
     };
+    let alpha = channels == 2 || channels == 4;
     let one = shorts(&[1]);
     let mut entries = vec![
         entry(256, LONG, 1, &size(width)?.to_le_bytes()),  // ImageWidth
@@ -129,10 +136,10 @@ fn layout(
             258,
             SHORT,
             u32::from(count),
-            &if several {
+            &if elsewhere {
                 offset(bits_offset)?.to_vec()
             } else {
-                shorts(&[BITS])
+                shorts(&vec![BITS; channels])
             },
         ),
         entry(259, SHORT, 1, &one),                             // Compression: none
@@ -145,17 +152,20 @@ fn layout(
         entry(283, RATIONAL, 1, &offset(resolution_offset)?),   // YResolution: 1/1
         entry(284, SHORT, 1, &one),                             // PlanarConfiguration: chunky
         entry(296, SHORT, 1, &one),                             // ResolutionUnit: none
-        entry(
-            339,
-            SHORT,
-            u32::from(count),
-            &if several {
-                offset(format_offset)?.to_vec()
-            } else {
-                shorts(&[IEEE])
-            },
-        ),
     ];
+    if alpha {
+        entries.push(entry(EXTRA_SAMPLES, SHORT, 1, &shorts(&[UNASSOCIATED_ALPHA])));
+    }
+    entries.push(entry(
+        339,
+        SHORT,
+        u32::from(count),
+        &if elsewhere {
+            offset(format_offset)?.to_vec()
+        } else {
+            shorts(&vec![IEEE; channels])
+        },
+    ));
     if ycbcr {
         entries.push(entry(529, RATIONAL, 3, &offset(coefficients_offset)?)); // YCbCrCoefficients: JFIF's
         entries.push(entry(530, SHORT, 2, &shorts(&[1, 1]))); // YCbCrSubSampling: none
@@ -202,9 +212,9 @@ pub fn float64(
     ycbcr: bool,
     icc_profile: Option<&[u8]>,
 ) -> Result<Written, Error> {
-    if height == 0 || width == 0 || !(channels == 1 || channels == 3) || samples.len() != height * width * channels {
+    if height == 0 || width == 0 || !(1..=4).contains(&channels) || samples.len() != height * width * channels {
         return Err(Error::Options(format!(
-            "a picture is height x width x 1 or 3 samples, and not empty: {height} x {width} x {channels}, \
+            "a picture is height x width x 1 to 4 samples, and not empty: {height} x {width} x {channels}, \
              {} samples",
             samples.len()
         )));

@@ -41,6 +41,8 @@ pub enum ErrorKind {
     Memory,
     /// A file that libpng could not write.
     Encode,
+    /// Data that libpng could not read as a PNG file.
+    Png,
 }
 
 impl ErrorKind {
@@ -52,6 +54,7 @@ impl ErrorKind {
             ffi::ERROR_LIMIT => Some(Self::Limit),
             ffi::ERROR_MEMORY => Some(Self::Memory),
             ffi::ERROR_ENCODE => Some(Self::Encode),
+            ffi::ERROR_PNG => Some(Self::Png),
             _ => None,
         }
     }
@@ -64,6 +67,7 @@ impl ErrorKind {
             Self::Limit => "limit",
             Self::Memory => "memory",
             Self::Encode => "encode",
+            Self::Png => "png",
         }
     }
 }
@@ -648,16 +652,16 @@ pub enum Samples<'a> {
     Sixteen(&'a [u16]),
 }
 
-/// A picture to write as a PNG file: `height x width` pixels of 1 (gray) or 3
-/// (RGB) samples, rows from the top, each from the left, the samples of a pixel
-/// together.
+/// A picture to write as a PNG file: `height x width` pixels of 1 (gray), 2 (gray and
+/// alpha), 3 (RGB) or 4 (RGB and alpha) samples, rows from the top, each from the
+/// left, the samples of a pixel together.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Png<'a> {
     /// Pixels across, 1 or more.
     pub width: u32,
     /// Rows, 1 or more.
     pub height: u32,
-    /// Samples to a pixel: 1 or 3.
+    /// Samples to a pixel: 1 to 4.
     pub channels: u32,
     /// `height * width * channels` samples.
     pub samples: Samples<'a>,
@@ -692,7 +696,7 @@ fn refused(message: impl Into<String>) -> Error {
 ///
 /// # Errors
 ///
-/// [`ErrorKind::Argument`] for a picture that is empty, not of 1 or 3 channels, or
+/// [`ErrorKind::Argument`] for a picture that is empty, not of 1 to 4 channels, or
 /// not of as many samples as its size says, or a level above 9; and the errors of
 /// the writing ([`ErrorKind::Memory`], [`ErrorKind::Encode`], [`ErrorKind::Limit`]).
 pub fn write_png(png: &Png<'_>) -> Result<Written, Error> {
@@ -709,7 +713,7 @@ pub fn write_png(png: &Png<'_>) -> Result<Written, Error> {
             png.height, png.width, png.channels
         )));
     }
-    let channels = i32::try_from(png.channels).map_err(|_| refused("a PNG picture here has 1 or 3 channels"))?;
+    let channels = i32::try_from(png.channels).map_err(|_| refused("a PNG picture here has 1 to 4 channels"))?;
     let (icc_profile, icc_profile_size) = match png.icc_profile {
         Some(profile) => (
             profile.as_ptr(),
@@ -755,4 +759,85 @@ pub fn write_png(png: &Png<'_>) -> Result<Written, Error> {
         });
     }
     Ok(Written { bytes, warning: text })
+}
+
+/// A PNG file's picture as it stores it: `height x width` pixels of `channels`
+/// samples (1 gray, 2 gray and alpha, 3 RGB, 4 RGB and alpha), each the level the
+/// file holds, of `bits` bits; and the profile of its iCCP chunk.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PngPicture {
+    /// Pixels across.
+    pub width: u32,
+    /// Rows.
+    pub height: u32,
+    /// Samples to a pixel, 1 to 4.
+    pub channels: u32,
+    /// The bits of a sample: 1, 2, 4, 8 or 16.
+    pub bits: u32,
+    /// `height * width * channels` levels, rows from the top, the samples of a pixel
+    /// together.
+    pub samples: Vec<u16>,
+    /// The profile of the iCCP chunk.
+    pub icc_profile: Option<Vec<u8>>,
+    /// The first warning of the reading, or an empty string.
+    pub warning: String,
+}
+
+/// Reads a PNG file as the levels it stores (`unround_jpegio_read_png`): gray or
+/// RGB, with alpha or without, of 1 to 16 bits, interlaced or not. `max_pixels` is
+/// the most `width x height` the file may declare, 0 for the C layer's default.
+///
+/// # Errors
+///
+/// [`ErrorKind::Png`] for data that is not a PNG file, or that libpng cannot read;
+/// [`ErrorKind::Unsupported`] for a palette file; [`ErrorKind::Limit`] for one larger
+/// than allowed; [`ErrorKind::Memory`].
+pub fn read_png(data: &[u8], max_pixels: u64) -> Result<PngPicture, Error> {
+    let mut image = ffi::PngImage::EMPTY;
+    let mut message: [c_char; MESSAGE_SIZE] = [0; MESSAGE_SIZE];
+    // SAFETY: data is valid for data.len() bytes, and image and message for writes,
+    // message for MESSAGE_SIZE bytes, for the length of the call.
+    let status = unsafe {
+        ffi::unround_jpegio_read_png(
+            data.as_ptr(),
+            data.len(),
+            max_pixels,
+            &raw mut image,
+            message.as_mut_ptr(),
+            MESSAGE_SIZE,
+        )
+    };
+    let text = message_text(&message);
+    if status != ffi::OK {
+        return Err(Error::from_status(status, text));
+    }
+    let count = to_usize(image.width)
+        .checked_mul(to_usize(image.height))
+        .and_then(|pixels| pixels.checked_mul(usize::try_from(image.channels).unwrap_or(0)))
+        .unwrap_or(0);
+    let samples = if image.samples.is_null() || count == 0 {
+        Vec::new()
+    } else {
+        // SAFETY: a successful reading allocates width * height * channels levels.
+        unsafe { slice::from_raw_parts(image.samples, count) }.to_vec()
+    };
+    let icc_profile = match usize::try_from(image.icc_profile_size) {
+        Ok(size) if !image.icc_profile.is_null() && size > 0 => {
+            // SAFETY: a successful reading allocates icc_profile_size bytes of the profile.
+            Some(unsafe { slice::from_raw_parts(image.icc_profile, size) }.to_vec())
+        }
+        _ => None,
+    };
+    let picture = PngPicture {
+        width: image.width,
+        height: image.height,
+        channels: u32::try_from(image.channels).unwrap_or(0),
+        bits: u32::try_from(image.bits).unwrap_or(0),
+        samples,
+        icc_profile,
+        warning: text,
+    };
+    // SAFETY: image is what the successful reading filled in, freed only here.
+    unsafe { ffi::unround_jpegio_png_image_free(&raw mut image) };
+    Ok(picture)
 }

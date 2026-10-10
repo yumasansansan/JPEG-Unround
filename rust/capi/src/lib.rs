@@ -29,7 +29,7 @@ use jpeg_unround::{Error, cli, colour, orientation, output, tiff};
 use jpegio_sys::{ColorSpace, ffi};
 
 /// The version of this interface: `UNROUND_ABI_VERSION` of the header it matches.
-pub const ABI_VERSION: i32 = 2;
+pub const ABI_VERSION: i32 = 3;
 
 /// Success.
 pub const OK: i32 = 0;
@@ -925,10 +925,30 @@ pub unsafe extern "C" fn unround_tiff(
     })
 }
 
+/// How the samples of PNG and PNM are made: [`DITHER_NONE`], [`DITHER_BLUE_NOISE`] or
+/// [`DITHER_BLUE_NOISE_TOGETHER`] (docs/math.md, 10).
+fn dither_of(dither: i32) -> Result<output::Dither, (i32, String)> {
+    match dither {
+        DITHER_NONE => Ok(output::Dither::None),
+        DITHER_BLUE_NOISE => Ok(output::Dither::BlueNoise),
+        DITHER_BLUE_NOISE_TOGETHER => Ok(output::Dither::BlueNoiseTogether),
+        other => Err((ERROR_OPTIONS, format!("the dither is 0, 1 or 2, not {other}"))),
+    }
+}
+
+/// Each sample rounded to the nearest level, halves away from 0.
+pub const DITHER_NONE: i32 = 0;
+/// The ordered dither of the blue-noise matrix, the channels of a pixel apart.
+pub const DITHER_BLUE_NOISE: i32 = 1;
+/// The ordered dither of the blue-noise matrix, the channels of a pixel together.
+pub const DITHER_BLUE_NOISE_TOGETHER: i32 = 2;
+
 /// The bytes of a PNG file of `height x width x channels` samples (1 or 3), of 8
-/// bits, or with `sixteen` nonzero of 16 bits (docs/cli.md), compressed at zlib's
-/// level `compression`, 0 to 9, or -1 for zlib's default; with the ICC profile as
-/// `unround_tiff` takes it. `unround_bytes_free` frees the bytes.
+/// bits, or with `sixteen` nonzero of 16 bits, made as `dither` says
+/// ([`DITHER_NONE`], [`DITHER_BLUE_NOISE`] or [`DITHER_BLUE_NOISE_TOGETHER`];
+/// docs/cli.md), compressed at zlib's level `compression`, 0 to 9, or -1 for zlib's
+/// default; with the ICC profile as `unround_tiff` takes it. `unround_bytes_free` frees
+/// the bytes.
 ///
 /// # Safety
 ///
@@ -940,6 +960,7 @@ pub unsafe extern "C" fn unround_png(
     width: u64,
     channels: u64,
     sixteen: i32,
+    dither: i32,
     compression: i32,
     icc: *const u8,
     icc_size: u64,
@@ -961,6 +982,10 @@ pub unsafe extern "C" fn unround_png(
                     .ok_or_else(|| (ERROR_OPTIONS, format!("zlib's level is 0 to 9, or -1, not {level}")))?,
             ),
         };
+        let depth = output::Depth {
+            sixteen: sixteen != 0,
+            dither: dither_of(dither)?,
+        };
         // SAFETY: the caller promised the samples.
         let values = unsafe { picture(samples, height, width, channels) }?;
         // SAFETY: the caller promised the profile.
@@ -970,7 +995,7 @@ pub unsafe extern "C" fn unround_png(
             narrow(height)?,
             narrow(width)?,
             narrow(channels)?,
-            sixteen != 0,
+            depth,
             level,
             icc_profile,
         )
@@ -982,7 +1007,8 @@ pub unsafe extern "C" fn unround_png(
 }
 
 /// The bytes of a PNM file of `height x width x channels` samples (1 or 3), of 8 bits,
-/// or with `sixteen` nonzero of 16 bits (docs/cli.md). `unround_bytes_free` frees them.
+/// or with `sixteen` nonzero of 16 bits, made as `dither` says, as for `unround_png`
+/// (docs/cli.md). `unround_bytes_free` frees them.
 ///
 /// # Safety
 ///
@@ -994,6 +1020,7 @@ pub unsafe extern "C" fn unround_pnm(
     width: u64,
     channels: u64,
     sixteen: i32,
+    dither: i32,
     bytes: *mut *mut u8,
     size: *mut u64,
     message: *mut c_char,
@@ -1003,9 +1030,13 @@ pub unsafe extern "C" fn unround_pnm(
         if bytes.is_null() || size.is_null() {
             return Err(refuse("the bytes and the size are not null pointers"));
         }
+        let depth = output::Depth {
+            sixteen: sixteen != 0,
+            dither: dither_of(dither)?,
+        };
         // SAFETY: the caller promised the samples.
         let values = unsafe { picture(samples, height, width, channels) }?;
-        let made = output::pnm(values, narrow(height)?, narrow(width)?, narrow(channels)?, sixteen != 0)
+        let made = output::pnm(values, narrow(height)?, narrow(width)?, narrow(channels)?, depth)
             .map_err(|error| (status_of(&error), error.to_string()))?;
         // SAFETY: the caller promised bytes and size valid for writes.
         unsafe { hand_over(made, bytes, size) };

@@ -63,7 +63,7 @@ type Array = npt.NDArray[np.float64]
 type Observer = Callable[["Record"], bool | None]
 type Source = bytes | bytearray | memoryview | str | os.PathLike[str] | jpegio.Image
 
-ABI_VERSION: Final = 2
+ABI_VERSION: Final = 3
 """UNROUND_ABI_VERSION of the interface this module mirrors."""
 
 _MESSAGE_SIZE: Final = 4096
@@ -190,8 +190,8 @@ def _declare_all(library: ctypes.CDLL) -> None:
     written = (bytes_out, u64_out, *message)
     icc = (ctypes.c_char_p, u64)
     _declare(library, "unround_tiff", i32, doubles, u64, u64, u64, i32, *icc, *written)
-    _declare(library, "unround_png", i32, doubles, u64, u64, u64, i32, i32, *icc, *written)
-    _declare(library, "unround_pnm", i32, doubles, u64, u64, u64, i32, *written)
+    _declare(library, "unround_png", i32, doubles, u64, u64, u64, i32, i32, i32, *icc, *written)
+    _declare(library, "unround_pnm", i32, doubles, u64, u64, u64, i32, i32, *written)
     _declare(library, "unround_orient", i32, doubles, u64, u64, u64, i32, doubles, u64_out, u64_out, *message)
     _declare(library, "unround_bytes_free", None, ctypes.POINTER(ctypes.c_uint8), u64)
     _declare(library, "unround_to_rgb", i32, doubles, u64, u64, doubles)
@@ -728,28 +728,54 @@ def tiff_bytes(picture: npt.ArrayLike, *, ycbcr: bool = False, icc_profile: byte
     return _written("unround_tiff", picture, 1 if ycbcr else 0, *_profile(icc_profile))
 
 
-def png_bytes(
+_DITHERS: Final = {
+    ("none", None): 0,
+    ("blue-noise", None): 1,
+    ("blue-noise", "apart"): 1,
+    ("blue-noise", "together"): 2,
+}
+
+
+def _dither(dither: str, channels: str | None) -> int:
+    """The interface's dither of the command line's --dither and --dither-channels (docs/cli.md)."""
+    found = _DITHERS.get((dither, channels))
+    if found is None:
+        message = f"the dither is blue-noise, with the channels apart or together, or none, not {dither}" + (
+            "" if channels is None else f" with the channels {channels}"
+        )
+        raise ValueError(message)
+    return found
+
+
+def png_bytes(  # noqa: PLR0913 -- the picture, its bits and dither, zlib's level and the profile
     picture: npt.ArrayLike,
     *,
     sixteen: bool = False,
+    dither: str = "blue-noise",
+    dither_channels: str | None = None,
     compression: int | None = None,
     icc_profile: bytes | None = None,
 ) -> bytes:
-    """A PNG file of the picture's samples, rounded to 8 bits, or to 16, as a PNM file's (docs/cli.md).
+    """A PNG file of the picture's samples, of 8 bits, or of 16, made as a PNM file's are (docs/cli.md).
 
-    compression is zlib's level, 0 to 9, or None for zlib's default; the ICC profile is written as
-    tiff_bytes embeds it.
+    dither is "blue-noise", the ordered dither of the blue-noise matrix, or "none", each sample rounded
+    to the nearest level; dither_channels, for "blue-noise", is "apart" (None: the default) or
+    "together" (docs/math.md, 10). compression is zlib's level, 0 to 9, or None for zlib's default; the
+    ICC profile is written as tiff_bytes embeds it.
     """
     level = -1 if compression is None else compression
     if not -1 <= level <= 9:  # noqa: PLR2004
         message = f"zlib's level is 0 to 9, or None, not {compression}"
         raise ValueError(message)
-    return _written("unround_png", picture, 1 if sixteen else 0, level, *_profile(icc_profile))
+    made = _dither(dither, dither_channels)
+    return _written("unround_png", picture, 1 if sixteen else 0, made, level, *_profile(icc_profile))
 
 
-def pnm_bytes(picture: npt.ArrayLike, *, sixteen: bool = False) -> bytes:
-    """A PNM file of the picture's samples, rounded to 8 bits, or to 16 (docs/cli.md)."""
-    return _written("unround_pnm", picture, 1 if sixteen else 0)
+def pnm_bytes(
+    picture: npt.ArrayLike, *, sixteen: bool = False, dither: str = "blue-noise", dither_channels: str | None = None
+) -> bytes:
+    """A PNM file of the picture's samples, of 8 bits, or of 16, made as png_bytes says (docs/cli.md)."""
+    return _written("unround_pnm", picture, 1 if sixteen else 0, _dither(dither, dither_channels))
 
 
 def oriented(picture: npt.ArrayLike, orientation: int) -> Array:

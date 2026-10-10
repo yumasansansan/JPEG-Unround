@@ -43,7 +43,7 @@
 extern "C" {
 #endif
 
-#define UNROUND_JPEGIO_ABI_VERSION 2
+#define UNROUND_JPEGIO_ABI_VERSION 3
 #define UNROUND_JPEGIO_MAX_COMPONENTS 4
 #define UNROUND_JPEGIO_BLOCK_SIZE 64
 
@@ -56,6 +56,7 @@ typedef enum unround_jpegio_status : int32_t {
   UNROUND_JPEGIO_ERROR_LIMIT = 4,        // larger than the options allow
   UNROUND_JPEGIO_ERROR_MEMORY = 5,       // an allocation failed
   UNROUND_JPEGIO_ERROR_ENCODE = 6,       // libpng could not write the file
+  UNROUND_JPEGIO_ERROR_PNG = 7,          // libpng could not read the data as a PNG file
 } unround_jpegio_status;
 
 // The color space of the components, as the file declares it.
@@ -131,11 +132,12 @@ typedef struct unround_jpegio_planes {
 } unround_jpegio_planes;
 
 // A picture to write as a PNG file: rows from the top, each from the left, the
-// samples of a pixel together (gray, or red, green and blue).
+// samples of a pixel together (gray, or red, green and blue; then alpha, where it has
+// one, not premultiplied).
 typedef struct unround_jpegio_png {
   uint32_t width;    // 1 or more
   uint32_t height;   // 1 or more
-  int32_t channels;  // 1 (gray) or 3 (RGB)
+  int32_t channels;  // 1 (gray), 2 (gray and alpha), 3 (RGB) or 4 (RGB and alpha)
   int32_t bits;      // 8 or 16
   // zlib's level for the samples and the ICC profile, 0 (none) to 9 (the most);
   // -1 for zlib's default, 6.
@@ -153,6 +155,18 @@ typedef struct unround_jpegio_png {
   const uint8_t* icc_profile;
   uint64_t icc_profile_size;
 } unround_jpegio_png;
+
+// A PNG file's picture as it stores it: rows from the top, each from the left, the
+// samples of a pixel together, each the level the file holds, 0 to 2^bits - 1.
+typedef struct unround_jpegio_png_image {
+  uint32_t width;
+  uint32_t height;
+  int32_t channels;      // 1 (gray), 2 (gray and alpha), 3 (RGB) or 4 (RGB and alpha)
+  int32_t bits;          // 1, 2, 4, 8 or 16, as the file stores its samples
+  uint16_t* samples;     // height * width * channels levels
+  uint8_t* icc_profile;  // the profile of the iCCP chunk, or a null pointer
+  uint64_t icc_profile_size;
+} unround_jpegio_png_image;
 
 // Bytes that this layer allocated.
 typedef struct unround_jpegio_bytes {
@@ -196,7 +210,8 @@ unround_jpegio_decode_planes(const uint8_t* data, size_t size, const unround_jpe
 // empties planes. A null pointer, or empty planes, is accepted.
 UNROUND_JPEGIO_API void unround_jpegio_planes_free(unround_jpegio_planes* planes);
 
-// Whether an ICC profile goes with a picture of the channels (1: gray, 3: RGB):
+// Whether an ICC profile goes with a picture of the channels (1 or 2: gray, 3 or 4:
+// RGB, with or without alpha):
 // what libpng checks of the profile of an iCCP chunk when it reads one, and drops
 // the profile for -- at least 132 bytes, the length its header gives, a multiple
 // of 4 from version 4 on, the signature 'acsp', its tags within it, a rendering
@@ -220,6 +235,23 @@ UNROUND_JPEGIO_API int32_t unround_jpegio_check_icc(const uint8_t* profile, uint
 // Frees what a successful unround_jpegio_write_png() allocated, and empties bytes.
 // A null pointer, or empty bytes, is accepted.
 UNROUND_JPEGIO_API void unround_jpegio_bytes_free(unround_jpegio_bytes* bytes);
+
+// Reads a PNG file in memory as the levels it stores: gray, gray and alpha, RGB, or
+// RGB and alpha, of the file's bits, interlaced or not, with the profile of its iCCP
+// chunk. A palette file is refused (UNROUND_JPEGIO_ERROR_UNSUPPORTED): its colours
+// were chosen, not rounded. max_pixels is the most width * height the file may
+// declare, 0 meaning 1 << 28. On success, image owns what it points to until
+// unround_jpegio_png_image_free(), and message (when message_size > 0) holds the
+// first warning, such as a transparent colour of a tRNS chunk that is not taken, or
+// an empty string. On failure, image is left empty and message says why.
+[[nodiscard]] UNROUND_JPEGIO_API unround_jpegio_status unround_jpegio_read_png(const uint8_t* data, size_t size,
+                                                                               uint64_t max_pixels,
+                                                                               unround_jpegio_png_image* image,
+                                                                               char* message, size_t message_size);
+
+// Frees what a successful unround_jpegio_read_png() allocated, and empties image.
+// A null pointer, or an empty image, is accepted.
+UNROUND_JPEGIO_API void unround_jpegio_png_image_free(unround_jpegio_png_image* image);
 
 #ifdef __cplusplus
 }

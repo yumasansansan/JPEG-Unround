@@ -1,11 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Yuma Kakei <yumasansansan@gmail.com>
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// The fuzz target of the C layer. Whatever the bytes, a read and a decoding of
-// the planes return a status and a terminated message; a failure leaves
-// nothing allocated; and a success describes exactly the memory it hands over:
-// every coefficient and sample it says is there is read here, which the
-// address sanitizer checks, and the sizes it reports agree with one another.
+// The fuzz target of the C layer. Whatever the bytes, a read, a decoding of the
+// planes and a reading as a PNG file return a status and a terminated message; a
+// failure leaves nothing allocated; and a success describes exactly the memory it
+// hands over: every coefficient, sample and level it says is there is read here,
+// which the address sanitizer checks, and the sizes it reports agree with one
+// another.
 //
 // The ICC profile of a file that reads, and the bytes themselves taken as a
 // profile, are written into PNG files of a gray and an RGB pixel: whatever the
@@ -76,6 +77,20 @@ static void check_planes(const unround_jpegio_planes* planes) {
   }
 }
 
+static void check_png_image(const unround_jpegio_png_image* image, uint64_t max_pixels) {
+  require(image->channels >= 1 && image->channels <= 4);
+  require(image->bits == 1 || image->bits == 2 || image->bits == 4 || image->bits == 8 || image->bits == 16);
+  require(image->width > 0 && image->height > 0);
+  require((uint64_t)image->width * (uint64_t)image->height <= max_pixels);
+  require(image->samples != nullptr);
+  const size_t count = (size_t)image->width * image->height * (size_t)image->channels;
+  touch(image->samples, count * sizeof(uint16_t));
+  const uint32_t top = (UINT32_C(1) << image->bits) - 1;
+  for (size_t i = 0; i < count; ++i) require(image->samples[i] <= top);
+  require((image->icc_profile == nullptr) == (image->icc_profile_size == 0));
+  if (image->icc_profile != nullptr) touch(image->icc_profile, (size_t)image->icc_profile_size);
+}
+
 static void check_icc_png(const uint8_t* profile, size_t size) {
   static const uint8_t samples[3] = {1, 2, 3};
   for (int32_t channels = 1; channels <= 3; channels += 2) {
@@ -144,6 +159,17 @@ int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
   }
   require_terminated(message, sizeof message);
   unround_jpegio_planes_free(&planes);
+
+  unround_jpegio_png_image png_image = {};
+  memset(message, 'x', sizeof message);
+  if (unround_jpegio_read_png(data, size, options.max_pixels, &png_image, message, sizeof message) ==
+      UNROUND_JPEGIO_OK) {
+    check_png_image(&png_image, options.max_pixels);
+  } else {
+    require(png_image.samples == nullptr && png_image.icc_profile == nullptr && png_image.width == 0);
+  }
+  require_terminated(message, sizeof message);
+  unround_jpegio_png_image_free(&png_image);
 
   check_icc_png(data, size);
   return 0;

@@ -57,7 +57,8 @@ if(UNROUND_BUILD_TESTS)
   unround_add_test(c.jpegio unround_jpegio_test)
 
   add_executable(unround_png_test tests/test_png.c)
-  target_link_libraries(unround_png_test PRIVATE unround::jpegio unround_test_png)
+  # libpng itself makes the files of kinds the layer does not write.
+  target_link_libraries(unround_png_test PRIVATE unround::jpegio unround_test_png unround::png)
   unround_target_defaults(unround_png_test)
   unround_add_test(c.png unround_png_test)
 

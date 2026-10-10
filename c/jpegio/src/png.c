@@ -133,8 +133,8 @@ static bool icc_refused(const uint8_t* profile, uint64_t size, int32_t channels,
     (void)snprintf(reason, reason_size, "no profile is given");
     return true;
   }
-  if (channels != 1 && channels != 3) {
-    (void)snprintf(reason, reason_size, "a picture here has 1 or 3 channels, not %d", (int)channels);
+  if (channels < 1 || channels > 4) {
+    (void)snprintf(reason, reason_size, "a picture here has 1 to 4 channels, not %d", (int)channels);
     return true;
   }
   if (size < icc_header_size) {
@@ -174,11 +174,12 @@ static bool icc_refused(const uint8_t* profile, uint64_t size, int32_t channels,
     return true;
   }
   const uint32_t space = big_endian_u32(profile + 16);
-  const uint32_t expected = channels == 1 ? signature_of('G', 'R', 'A', 'Y') : signature_of('R', 'G', 'B', ' ');
+  const bool gray = channels <= 2;
+  const uint32_t expected = gray ? signature_of('G', 'R', 'A', 'Y') : signature_of('R', 'G', 'B', ' ');
   if (space != expected) {
     signature_text(profile + 16, text);
     (void)snprintf(reason, reason_size, "its data color space is '%s', not the picture's '%s'", text,
-                   channels == 1 ? "GRAY" : "RGB ");
+                   gray ? "GRAY" : "RGB ");
     return true;
   }
   const uint32_t profile_class = big_endian_u32(profile + 12);
@@ -230,7 +231,7 @@ static bool little_endian(void) {
 static const char* picture_refused(const unround_jpegio_png* png, size_t* row_bytes) {
   if (png->width == 0 || png->height == 0) return "the picture is empty";
   if (png->width > PNG_UINT_31_MAX || png->height > PNG_UINT_31_MAX) return "the picture is larger than PNG allows";
-  if (png->channels != 1 && png->channels != 3) return "a PNG picture here has 1 or 3 channels";
+  if (png->channels < 1 || png->channels > 4) return "a PNG picture here has 1 to 4 channels";
   if (png->bits != 8 && png->bits != 16) return "a PNG picture here has 8 or 16 bits a sample";
   if (png->compression < -1 || png->compression > 9) return "the compression is -1 or 0 to 9";
   if (png->reserved != 0) return "the reserved field is 0";
@@ -261,9 +262,11 @@ static void write_file(writer* w, const unround_jpegio_png* png, size_t row_byte
     png_set_text_compression_level(w->png, png->compression);
   }
   if (w->store_icc) png_set_text_compression_level(w->png, 0);
+  static constexpr int color_types[] = {PNG_COLOR_TYPE_GRAY, PNG_COLOR_TYPE_GRAY_ALPHA, PNG_COLOR_TYPE_RGB,
+                                        PNG_COLOR_TYPE_RGB_ALPHA};
   png_set_IHDR(w->png, w->info, (png_uint_32)png->width, (png_uint_32)png->height, png->bits,
-               png->channels == 1 ? PNG_COLOR_TYPE_GRAY : PNG_COLOR_TYPE_RGB, PNG_INTERLACE_NONE,
-               PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
+               color_types[png->channels - 1], PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT,
+               PNG_FILTER_TYPE_DEFAULT);
   if (with_icc) {
     png_set_iCCP(w->png, w->info, icc_name, PNG_COMPRESSION_TYPE_BASE, png->icc_profile,
                  (png_uint_32)png->icc_profile_size);
@@ -357,4 +360,208 @@ unround_jpegio_status unround_jpegio_write_png(const unround_jpegio_png* png, un
   }
   free(w);
   return status;
+}
+
+// Reading. The data is read from memory; libpng's errors jump back to the setjmp of
+// read_once(), and what must survive the jump lives in the reader, on the heap.
+
+typedef struct reader {
+  jmp_buf jump;
+  png_structp png;
+  png_infop info;
+  unround_jpegio_status failure;
+  const uint8_t* data;
+  size_t size;
+  size_t at;
+  uint64_t max_pixels;
+  uint8_t* rows;
+  png_bytepp pointers;
+  uint16_t* samples;
+  uint8_t* icc;
+  uint64_t icc_size;
+  uint32_t width;
+  uint32_t height;
+  int32_t channels;
+  int32_t bits;
+  char message[256];
+  char warning[256];
+} reader;
+
+[[noreturn]] static void read_failure(reader* r, unround_jpegio_status status, const char* text) {
+  r->failure = status;
+  (void)snprintf(r->message, sizeof r->message, "%s", text);
+  longjmp(r->jump, 1);
+}
+
+[[noreturn]] static void on_read_error(png_structp png, png_const_charp text) {
+  read_failure((reader*)png_get_error_ptr(png), UNROUND_JPEGIO_ERROR_PNG, text);
+}
+
+static void on_read_warning(png_structp png, png_const_charp text) {
+  reader* r = (reader*)png_get_error_ptr(png);
+  if (r->warning[0] == '\0') (void)snprintf(r->warning, sizeof r->warning, "libpng: %s", text);
+}
+
+static void on_read(png_structp png, png_bytep bytes, size_t length) {
+  reader* r = (reader*)png_get_io_ptr(png);
+  if (length > r->size - r->at) png_error(png, "the file ends early");
+  memcpy(bytes, r->data + r->at, length);
+  r->at += length;
+}
+
+static void read_file(reader* r) {
+  r->png = png_create_read_struct(PNG_LIBPNG_VER_STRING, r, on_read_error, on_read_warning);
+  if (r->png == nullptr) read_failure(r, UNROUND_JPEGIO_ERROR_MEMORY, "libpng could not start");
+  r->info = png_create_info_struct(r->png);
+  if (r->info == nullptr) read_failure(r, UNROUND_JPEGIO_ERROR_MEMORY, "libpng could not start");
+  png_set_read_fn(r->png, r, on_read);
+  png_set_user_limits(r->png, PNG_UINT_31_MAX, PNG_UINT_31_MAX);
+  png_read_info(r->png, r->info);
+  png_uint_32 width = 0;
+  png_uint_32 height = 0;
+  int bits = 0;
+  int color_type = 0;
+  int interlace = 0;
+  png_get_IHDR(r->png, r->info, &width, &height, &bits, &color_type, &interlace, nullptr, nullptr);
+  // libpng refuses an empty picture already; the sizes below count on it.
+  if (width == 0 || height == 0) read_failure(r, UNROUND_JPEGIO_ERROR_PNG, "the picture is empty");
+  switch (color_type) {
+    case PNG_COLOR_TYPE_GRAY:
+      r->channels = 1;
+      break;
+    case PNG_COLOR_TYPE_GRAY_ALPHA:
+      r->channels = 2;
+      break;
+    case PNG_COLOR_TYPE_RGB:
+      r->channels = 3;
+      break;
+    case PNG_COLOR_TYPE_RGB_ALPHA:
+      r->channels = 4;
+      break;
+    default:
+      read_failure(r, UNROUND_JPEGIO_ERROR_UNSUPPORTED,
+                   "a palette PNG file is not taken: its colours were chosen, not rounded");
+  }
+  uint64_t pixels = 0;
+  if (ckd_mul(&pixels, (uint64_t)width, (uint64_t)height) || pixels > r->max_pixels) {
+    read_failure(r, UNROUND_JPEGIO_ERROR_LIMIT, "the picture has more pixels than the options allow");
+  }
+  if (png_get_valid(r->png, r->info, PNG_INFO_tRNS) != 0 && r->warning[0] == '\0') {
+    (void)snprintf(r->warning, sizeof r->warning, "the transparent colour of the tRNS chunk is not taken");
+  }
+  png_charp name = nullptr;
+  int compression = 0;
+  png_bytep profile = nullptr;
+  png_uint_32 profile_size = 0;
+  if (png_get_iCCP(r->png, r->info, &name, &compression, &profile, &profile_size) != 0 && profile != nullptr &&
+      profile_size > 0) {
+    r->icc = (uint8_t*)malloc((size_t)profile_size);
+    if (r->icc == nullptr) read_failure(r, UNROUND_JPEGIO_ERROR_MEMORY, "out of memory");
+    memcpy(r->icc, profile, (size_t)profile_size);
+    r->icc_size = (uint64_t)profile_size;
+  }
+  r->bits = bits;
+  r->width = (uint32_t)width;
+  r->height = (uint32_t)height;
+  // One byte to a sample below 8 bits, the levels kept; 16 bits as the file stores
+  // them, most significant byte first.
+  if (bits < 8) png_set_packing(r->png);
+  (void)png_set_interlace_handling(r->png);
+  png_read_update_info(r->png, r->info);
+  const size_t row_bytes = png_get_rowbytes(r->png, r->info);
+  // A row of the file holds a row of the picture's samples, a byte to a sample below
+  // 16 bits and two at 16.
+  size_t per_row = 0;
+  size_t row_least = 0;
+  size_t total = 0;
+  size_t count = 0;
+  size_t sample_bytes = 0;
+  size_t pointer_bytes = 0;
+  if (ckd_mul(&per_row, (size_t)width, (size_t)r->channels) ||
+      ckd_mul(&row_least, per_row, (size_t)(bits == 16 ? 2 : 1)) || ckd_mul(&total, row_bytes, (size_t)height) ||
+      ckd_mul(&count, per_row, (size_t)height) || ckd_mul(&sample_bytes, count, sizeof(uint16_t)) ||
+      ckd_mul(&pointer_bytes, (size_t)height, sizeof(png_bytep))) {
+    read_failure(r, UNROUND_JPEGIO_ERROR_LIMIT, "the picture is too large");
+  }
+  if (row_bytes < row_least) read_failure(r, UNROUND_JPEGIO_ERROR_PNG, "libpng's rows are shorter than the picture's");
+  // None of the sizes is 0. The rows' pointers live in the reader too:
+  // png_read_image() jumps out where the data is broken or ends early.
+  r->rows = (uint8_t*)malloc(total);
+  r->pointers = (png_bytepp)malloc(pointer_bytes);
+  r->samples = (uint16_t*)malloc(sample_bytes);
+  if (r->rows == nullptr || r->pointers == nullptr || r->samples == nullptr) {
+    read_failure(r, UNROUND_JPEGIO_ERROR_MEMORY, "out of memory");
+  }
+  for (size_t y = 0; y < (size_t)height; ++y) r->pointers[y] = r->rows + y * row_bytes;
+  png_read_image(r->png, r->pointers);
+  for (size_t y = 0; y < (size_t)height; ++y) {
+    const uint8_t* row = r->rows + y * row_bytes;
+    uint16_t* out = r->samples + y * per_row;
+    if (bits == 16) {
+      for (size_t i = 0; i < per_row; ++i) out[i] = (uint16_t)(((uint16_t)row[2 * i] << 8) | row[2 * i + 1]);
+    } else {
+      for (size_t i = 0; i < per_row; ++i) out[i] = row[i];
+    }
+  }
+}
+
+static unround_jpegio_status read_once(reader* r) {
+  unround_jpegio_status status = UNROUND_JPEGIO_OK;
+  switch (setjmp(r->jump)) {
+    case 0:
+      read_file(r);
+      status = UNROUND_JPEGIO_OK;
+      break;
+    default:
+      status = r->failure;
+      break;
+  }
+  png_destroy_read_struct(&r->png, &r->info, nullptr);
+  return status;
+}
+
+unround_jpegio_status unround_jpegio_read_png(const uint8_t* data, size_t size, uint64_t max_pixels,
+                                              unround_jpegio_png_image* image, char* message, size_t message_size) {
+  if (image == nullptr || (message == nullptr && message_size > 0)) return UNROUND_JPEGIO_ERROR_ARGUMENT;
+  *image = (unround_jpegio_png_image){};
+  if (data == nullptr || size < 8 || png_sig_cmp(data, 0, 8) != 0) {
+    copy_message(message, message_size, "the data is not a PNG file");
+    return data == nullptr ? UNROUND_JPEGIO_ERROR_ARGUMENT : UNROUND_JPEGIO_ERROR_PNG;
+  }
+  reader* r = (reader*)calloc(1, sizeof *r);
+  if (r == nullptr) {
+    copy_message(message, message_size, "out of memory");
+    return UNROUND_JPEGIO_ERROR_MEMORY;
+  }
+  r->data = data;
+  r->size = size;
+  r->max_pixels = max_pixels > 0 ? max_pixels : (uint64_t)1 << 28;
+  const unround_jpegio_status status = read_once(r);
+  free(r->rows);
+  free((void*)r->pointers);
+  if (status != UNROUND_JPEGIO_OK) {
+    free(r->samples);
+    free(r->icc);
+    copy_message(message, message_size, r->message);
+  } else {
+    *image = (unround_jpegio_png_image){
+        .width = r->width,
+        .height = r->height,
+        .channels = r->channels,
+        .bits = r->bits,
+        .samples = r->samples,
+        .icc_profile = r->icc,
+        .icc_profile_size = r->icc_size,
+    };
+    copy_message(message, message_size, r->warning);
+  }
+  free(r);
+  return status;
+}
+
+void unround_jpegio_png_image_free(unround_jpegio_png_image* image) {
+  if (image == nullptr) return;
+  free(image->samples);
+  free(image->icc_profile);
+  *image = (unround_jpegio_png_image){};
 }

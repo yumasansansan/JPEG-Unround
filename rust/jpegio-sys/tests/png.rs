@@ -192,13 +192,14 @@ fn wrong_pictures_are_refused() {
             ..good
         },
         Png {
-            channels: 2,
-            width: 3,
+            channels: 6,
+            width: 2,
+            height: 1,
             ..good
         },
         Png {
-            channels: 4,
-            width: 3,
+            channels: 12,
+            width: 1,
             height: 1,
             ..good
         },

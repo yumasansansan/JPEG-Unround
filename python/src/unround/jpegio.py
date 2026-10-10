@@ -49,7 +49,7 @@ __all__ = [
     "read",
 ]
 
-ABI_VERSION: Final = 2
+ABI_VERSION: Final = 3
 """UNROUND_JPEGIO_ABI_VERSION of the C layer whose structures this module mirrors."""
 
 _MAX_COMPONENTS: Final = 4

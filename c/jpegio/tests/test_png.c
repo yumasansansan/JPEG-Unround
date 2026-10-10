@@ -1,21 +1,26 @@
 // SPDX-FileCopyrightText: 2026 Yuma Kakei <yumasansansan@gmail.com>
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// Tests of the C layer's writing of PNG files. Pictures of every kind it writes --
-// gray and RGB, 8 and 16 bits, every level of compression, sizes down to a pixel
-// and up to several megabytes -- are read back by libpng (support/test_png.c), and
-// what comes back has to be what went in, exactly, with no warning from libpng. An
-// ICC profile has to come back as it went in where it is well formed and of the
-// picture's color space, however small or large, and be left out, with a warning,
-// where it is not. Then the refusals of wrong arguments.
+// Tests of the C layer's writing and reading of PNG files. Pictures of every kind it
+// writes -- gray and RGB, with alpha and without, 8 and 16 bits, every level of
+// compression, sizes down to a pixel and up to several megabytes -- are read back by
+// libpng (support/test_png.c) and by the layer's own reading, and what comes back
+// has to be what went in, exactly, with no warning from libpng. An ICC profile has
+// to come back as it went in where it is well formed and of the picture's color
+// space, however small or large, and be left out, with a warning, where it is not.
+// Files of fewer bits, interlaced or a palette's, are made by libpng itself. Then the
+// refusals of wrong arguments.
 
 #include "test_png.h"
 #include "unround/jpegio.h"
 
+#include <setjmp.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include <png.h>
 
 static int failures = 0;
 static int checks = 0;
@@ -115,6 +120,33 @@ static void check_same_picture(const unround_jpegio_png* png, const test_png* ba
   CHECK(memcmp(back->samples, png->samples, bytes) == 0);
 }
 
+// The picture read back by the layer's own reading has the levels it was written
+// with, of its bits, and no profile.
+static void check_read_back(const unround_jpegio_png* png, const unround_jpegio_bytes* file) {
+  unround_jpegio_png_image image = {};
+  char message[256] = {};
+  const unround_jpegio_status status =
+      unround_jpegio_read_png(file->data, (size_t)file->size, 0, &image, message, sizeof message);
+  if (!CHECK(status == UNROUND_JPEGIO_OK)) {
+    note(message);
+    return;
+  }
+  CHECK(image.width == png->width && image.height == png->height);
+  CHECK(image.channels == png->channels && image.bits == png->bits);
+  CHECK(message[0] == '\0');
+  const size_t count = (size_t)png->width * (size_t)png->height * (size_t)png->channels;
+  bool same = true;
+  for (size_t i = 0; i < count; ++i) {
+    const uint16_t level =
+        png->bits == 8 ? (uint16_t)((const uint8_t*)png->samples)[i] : ((const uint16_t*)png->samples)[i];
+    same = (bool)(same && image.samples[i] == level);
+  }
+  CHECK(same);
+  CHECK(image.icc_profile == nullptr && image.icc_profile_size == 0);
+  unround_jpegio_png_image_free(&image);
+  CHECK(image.samples == nullptr && image.width == 0);
+}
+
 // No warning from libpng in reading the file back.
 static void check_no_warning(const test_png* back, const char* what) {
   if (!CHECK(back->warning[0] == '\0')) {
@@ -127,7 +159,7 @@ static void test_round_trips(void) {
   static const uint32_t sizes[][2] = {{1, 1}, {7, 5}, {33, 17}, {256, 3}, {3, 256}};
   static const int32_t levels[] = {-1, 0, 1, 6, 9};
   rng g = {.state = 1};
-  for (int32_t channels = 1; channels <= 3; channels += 2) {
+  for (int32_t channels = 1; channels <= 4; ++channels) {
     for (int32_t bits = 8; bits <= 16; bits += 8) {
       for (size_t s = 0; s < sizeof sizes / sizeof sizes[0]; ++s) {
         for (size_t l = 0; l < sizeof levels / sizeof levels[0]; ++l) {
@@ -136,12 +168,15 @@ static void test_round_trips(void) {
           const unround_jpegio_png png = picture_of(sizes[s][0], sizes[s][1], channels, bits, levels[l], samples);
           test_png back = {};
           char message[256] = {};
-          if (write_and_read(&png, &back, message, sizeof message)) {
+          unround_jpegio_bytes file = {};
+          if (write_and_keep(&png, &back, message, sizeof message, &file)) {
             check_same_picture(&png, &back);
             check_no_warning(&back, "a picture");
             CHECK(back.icc_profile == nullptr);
             CHECK(message[0] == '\0');
+            check_read_back(&png, &file);
           }
+          unround_jpegio_bytes_free(&file);
           test_png_free(&back);
           free(samples);
         }
@@ -506,11 +541,11 @@ static void test_arguments(void) {
   png.width = UINT32_C(0x80000000);
   expect_refused(&png, "wider than PNG allows");
   png = good;
-  png.channels = 2;
-  expect_refused(&png, "two channels");
+  png.channels = 0;
+  expect_refused(&png, "no channel");
   png = good;
-  png.channels = 4;
-  expect_refused(&png, "four channels");
+  png.channels = 5;
+  expect_refused(&png, "five channels");
   png = good;
   png.bits = 12;
   expect_refused(&png, "12 bits");
@@ -539,6 +574,137 @@ static void test_arguments(void) {
   unround_jpegio_bytes_free(&written);
 }
 
+// A PNG file that libpng writes itself, of a kind the layer does not write: rows of
+// levels one to a byte (packed by libpng below 8 bits), gray of `bits` bits or a
+// palette's indices, interlaced or not.
+typedef struct made_file {
+  jmp_buf jump;
+  uint8_t* data;
+  size_t size;
+  size_t capacity;
+} made_file;
+
+static void made_write(png_structp png, png_bytep bytes, size_t length) {
+  made_file* f = (made_file*)png_get_io_ptr(png);
+  if (f->size + length > f->capacity) {
+    const size_t capacity = (f->size + length) * 2;
+    uint8_t* grown = (uint8_t*)realloc(f->data, capacity);
+    if (grown == nullptr) longjmp(f->jump, 1);
+    f->data = grown;
+    f->capacity = capacity;
+  }
+  memcpy(f->data + f->size, bytes, length);
+  f->size += length;
+}
+
+static void made_flush(png_structp /* png */) {}
+
+[[noreturn]] static void made_error(png_structp png, png_const_charp /* text */) {
+  longjmp(((made_file*)png_get_error_ptr(png))->jump, 1);
+}
+
+static void make_rows(made_file* f, const uint8_t* levels, uint32_t width, uint32_t height, int bits, bool palette,
+                      bool interlaced) {
+  png_structp png = png_create_write_struct(PNG_LIBPNG_VER_STRING, f, made_error, nullptr);
+  png_infop info = png == nullptr ? nullptr : png_create_info_struct(png);
+  if (info == nullptr) longjmp(f->jump, 1);
+  png_set_write_fn(png, f, made_write, made_flush);
+  png_set_IHDR(png, info, width, height, bits, palette ? PNG_COLOR_TYPE_PALETTE : PNG_COLOR_TYPE_GRAY,
+               interlaced ? PNG_INTERLACE_ADAM7 : PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT,
+               PNG_FILTER_TYPE_DEFAULT);
+  if (palette) {
+    png_color colours[4] = {{0, 0, 0}, {255, 0, 0}, {0, 255, 0}, {0, 0, 255}};
+    png_set_PLTE(png, info, colours, 4);
+  }
+  png_write_info(png, info);
+  if (bits < 8) png_set_packing(png);
+  const int passes = png_set_interlace_handling(png);
+  for (int pass = 0; pass < passes; ++pass) {
+    for (uint32_t y = 0; y < height; ++y) png_write_row(png, levels + (size_t)y * width);
+  }
+  png_write_end(png, info);
+  png_destroy_write_struct(&png, &info);
+}
+
+// Returns 0 with the file in *f, or nonzero.
+static int make_file(made_file* f, const uint8_t* levels, uint32_t width, uint32_t height, int bits, bool palette,
+                     bool interlaced) {
+  switch (setjmp(f->jump)) {
+    case 0:
+      make_rows(f, levels, width, height, bits, palette, interlaced);
+      return 0;
+    default:
+      return 1;
+  }
+}
+
+static void test_reading(void) {
+  // Gray of 1, 2, 4, 8 and 16 bits (16 written as 8-bit pairs by libpng's own
+  // layout is not made here: the layer writes those), interlaced or not.
+  rng g = {.state = 9};
+  for (int bits = 1; bits <= 8; bits *= 2) {
+    for (int interlaced = 0; interlaced <= 1; ++interlaced) {
+      const uint32_t width = 13;
+      const uint32_t height = 9;
+      uint8_t levels[13 * 9];
+      for (size_t i = 0; i < sizeof levels; ++i) levels[i] = (uint8_t)(rng_next(&g) % (1U << bits));
+      made_file file = {};
+      if (!CHECK(make_file(&file, levels, width, height, bits, false, interlaced != 0) == 0)) {
+        free(file.data);
+        continue;
+      }
+      unround_jpegio_png_image image = {};
+      char message[256] = {};
+      if (CHECK(unround_jpegio_read_png(file.data, file.size, 0, &image, message, sizeof message) ==
+                UNROUND_JPEGIO_OK)) {
+        CHECK(image.bits == bits && image.channels == 1 && image.width == width && image.height == height);
+        bool same = true;
+        for (size_t i = 0; i < sizeof levels; ++i) same = (bool)(same && image.samples[i] == levels[i]);
+        CHECK(same);
+      } else {
+        note(message);
+      }
+      unround_jpegio_png_image_free(&image);
+      free(file.data);
+    }
+  }
+  // A palette's file is refused.
+  uint8_t indices[4 * 3] = {0, 1, 2, 3, 3, 2, 1, 0, 0, 0, 1, 1};
+  made_file palette = {};
+  if (CHECK(make_file(&palette, indices, 4, 3, 8, true, false) == 0)) {
+    unround_jpegio_png_image image = {};
+    char message[256] = {};
+    CHECK(unround_jpegio_read_png(palette.data, palette.size, 0, &image, message, sizeof message) ==
+          UNROUND_JPEGIO_ERROR_UNSUPPORTED);
+    CHECK(strstr(message, "palette") != nullptr);
+    CHECK(image.samples == nullptr);
+  }
+  // What is not a PNG file, or ends early, or is larger than allowed, is refused.
+  rng h = {.state = 10};
+  void* samples = random_samples(&h, 20, 10, 3, 8);
+  const unround_jpegio_png picture = picture_of(20, 10, 3, 8, -1, samples);
+  unround_jpegio_bytes written = {};
+  char message[256] = {};
+  if (CHECK(samples != nullptr) &&
+      CHECK(unround_jpegio_write_png(&picture, &written, message, sizeof message) == UNROUND_JPEGIO_OK)) {
+    unround_jpegio_png_image image = {};
+    CHECK(unround_jpegio_read_png(written.data, (size_t)written.size / 2, 0, &image, message, sizeof message) ==
+          UNROUND_JPEGIO_ERROR_PNG);
+    CHECK(unround_jpegio_read_png(written.data, (size_t)written.size, 199, &image, message, sizeof message) ==
+          UNROUND_JPEGIO_ERROR_LIMIT);
+    CHECK(unround_jpegio_read_png(written.data + 1, (size_t)written.size - 1, 0, &image, message, sizeof message) ==
+          UNROUND_JPEGIO_ERROR_PNG);
+    CHECK(unround_jpegio_read_png(written.data, (size_t)written.size, 200, &image, message, sizeof message) ==
+          UNROUND_JPEGIO_OK);
+    unround_jpegio_png_image_free(&image);
+    CHECK(unround_jpegio_read_png(written.data, (size_t)written.size, 0, nullptr, message, sizeof message) ==
+          UNROUND_JPEGIO_ERROR_ARGUMENT);
+  }
+  unround_jpegio_bytes_free(&written);
+  free(samples);
+  free(palette.data);
+}
+
 static void test_version(void) {
   const char* version = unround_jpegio_libpng_version();
   CHECK(strncmp(version, "libpng 1.6.", 11) == 0);
@@ -554,6 +720,7 @@ int main(void) {
   test_icc_stored();
   test_icc_large();
   test_arguments();
+  test_reading();
   test_version();
   (void)fprintf(stderr, "%d checks, %d failed\n", checks, failures);
   return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;

@@ -20,9 +20,10 @@ use crate::decode::{self, Method, Settings};
 use crate::error::Error;
 use crate::model::{Centres, DataTerm};
 use crate::orientation;
-use crate::output::{self, Written};
+use crate::output::{self, Depth, Dither, Written};
 use crate::pdhg::Record;
 use crate::results::{History, Stop};
+use crate::rounded::{self, Reconstructed};
 use crate::tiff;
 
 /// The version of JPEG-Unround and the implementation that runs.
@@ -31,11 +32,13 @@ pub const VERSION: &str = concat!("unround ", env!("CARGO_PKG_VERSION"), " (Rust
 const HELP: &str = "\
 Usage: unround [OPTIONS] INPUT [OUTPUT]
 
-Reconstructs the JPEG file INPUT within its quantization intervals and writes the
-result to OUTPUT (by default next to INPUT). INPUT and OUTPUT may be - for the
-standard input and output. docs/cli.md states every option and its default.
+Reconstructs the JPEG file INPUT within its quantization intervals, or the PNG
+file INPUT within the intervals of its rounded samples, and writes the result to
+OUTPUT (by default next to INPUT). INPUT and OUTPUT may be - for the standard input
+and output. docs/cli.md states every option and its default.
 
-Output:      --format tiff|png|pnm  --bits 8|16  --compression 0-9  --ycbcr
+Output:      --format tiff|png|pnm  --bits 8|16  --dither blue-noise|none
+             --dither-channels apart|together  --compression 0-9  --ycbcr
              --orientation apply|keep  --no-icc  --overwrite
 Method:      --method mmse|tv|tgv|subgradient  --alpha A  --alpha1 A  --alpha0 A
              --channel-weights G,G,G  --channels coupled|apart
@@ -55,6 +58,8 @@ Reports:     -v, --verbose  -q, --quiet  --report PATH  --version  -h, --help
 const VALUED: &[&str] = &[
     "format",
     "bits",
+    "dither",
+    "dither-channels",
     "compression",
     "orientation",
     "method",
@@ -157,6 +162,8 @@ pub struct Command {
     pub format: Format,
     /// The bits of PNG and PNM samples.
     pub bits: Bits,
+    /// How PNG and PNM samples are made.
+    pub dither: Dither,
     /// zlib's level of PNG, 0 to 9, or `None` for zlib's default.
     pub compression: Option<u8>,
     /// Whether TIFF holds the Y, Cb and Cr of the solution.
@@ -513,6 +520,8 @@ fn settings(reader: &mut Reader<'_>) -> Settings {
 const OUTPUT_OPTIONS: &[&str] = &[
     "format",
     "bits",
+    "dither",
+    "dither-channels",
     "compression",
     "ycbcr",
     "orientation",
@@ -683,6 +692,46 @@ fn format_of(path: &Path) -> Option<Format> {
     }
 }
 
+/// The options of integer samples as they are given: their bits, whether they are
+/// dithered, and whether the channels are dithered together.
+struct Integers {
+    bits: Option<Bits>,
+    dithered: Option<bool>,
+    together: Option<bool>,
+}
+
+impl Integers {
+    fn read(reader: &mut Reader<'_>) -> Self {
+        Self {
+            bits: reader.choice("bits", &[("8", Bits::Eight), ("16", Bits::Sixteen)]),
+            dithered: reader.choice("dither", &[("blue-noise", true), ("none", false)]),
+            together: reader.choice("dither-channels", &[("apart", false), ("together", true)]),
+        }
+    }
+
+    /// The errors of options given where a format of binary64 holds no integers, and of
+    /// the channels of no dither.
+    fn check(&self, format: Format, errors: &mut Vec<String>) {
+        if self.bits.is_some() && format == Format::Tiff {
+            errors.push("--bits is for PNG and PNM".into());
+        }
+        if self.dithered.is_some() && format == Format::Tiff {
+            errors.push("--dither is for PNG and PNM".into());
+        }
+        if self.together.is_some() && (format == Format::Tiff || self.dithered == Some(false)) {
+            errors.push("--dither-channels is for PNG and PNM with --dither blue-noise".into());
+        }
+    }
+
+    fn dither(&self) -> Dither {
+        match (self.dithered.unwrap_or(true), self.together.unwrap_or(false)) {
+            (false, _) => Dither::None,
+            (true, false) => Dither::BlueNoise,
+            (true, true) => Dither::BlueNoiseTogether,
+        }
+    }
+}
+
 /// What the arguments (without the program's name) ask for.
 ///
 /// # Errors
@@ -706,7 +755,7 @@ pub fn parse(arguments: Vec<OsString>) -> Result<Request, Vec<String>> {
         "format",
         &[("tiff", Format::Tiff), ("png", Format::Png), ("pnm", Format::Pnm)],
     );
-    let bits = reader.choice("bits", &[("8", Bits::Eight), ("16", Bits::Sixteen)]);
+    let integers = Integers::read(&mut reader);
     let compression = reader.text("compression").map(str::to_owned);
     let compression = compression.and_then(|text| match text.parse::<u8>() {
         Ok(level) if level <= 9 => Some(level),
@@ -745,9 +794,7 @@ pub fn parse(arguments: Vec<OsString>) -> Result<Request, Vec<String>> {
     if ycbcr && format != Format::Tiff {
         errors.push("--ycbcr is for TIFF".into());
     }
-    if bits.is_some() && format == Format::Tiff {
-        errors.push("--bits is for PNG and PNM".into());
-    }
+    integers.check(format, &mut errors);
     if given.values.contains_key("compression") && format != Format::Png {
         errors.push("--compression is for PNG".into());
     }
@@ -770,7 +817,8 @@ pub fn parse(arguments: Vec<OsString>) -> Result<Request, Vec<String>> {
         input,
         output,
         format,
-        bits: bits.unwrap_or(Bits::Eight),
+        bits: integers.bits.unwrap_or(Bits::Eight),
+        dither: integers.dither(),
         compression,
         ycbcr,
         orientation,
@@ -851,6 +899,13 @@ pub fn report(command: &Command, decoded: &decode::Decoded, outcome: &Outcome) -
     let _ = writeln!(text, "  \"exif_orientation\": {},", decoded.exif_orientation);
     let _ = writeln!(text, "  \"oriented\": {},", outcome.oriented);
     let _ = writeln!(text, "  \"icc_profile\": {},", outcome.icc_profile);
+    let dither = match (command.format, command.dither) {
+        (Format::Tiff, _) => "null".to_owned(),
+        (_, Dither::BlueNoise) => json_string("blue-noise"),
+        (_, Dither::BlueNoiseTogether) => json_string("blue-noise-together"),
+        (_, Dither::None) => json_string("none"),
+    };
+    let _ = writeln!(text, "  \"dither\": {dither},");
     let warnings: Vec<String> = outcome.warnings.iter().map(|warning| json_string(warning)).collect();
     let _ = writeln!(text, "  \"warnings\": [{}],", warnings.join(", "));
     let _ = writeln!(text, "  \"method\": {},", json_string(method));
@@ -954,7 +1009,10 @@ fn write(command: &Command, decoded: &decode::Decoded) -> Result<(Written, Outco
         (samples, decoded.height, decoded.width)
     };
     let icc_profile = decoded.icc_profile.as_deref().filter(|_| command.icc);
-    let sixteen = command.bits == Bits::Sixteen;
+    let depth = Depth {
+        sixteen: command.bits == Bits::Sixteen,
+        dither: command.dither,
+    };
     let written = match command.format {
         Format::Tiff => tiff::float64(&samples, height, width, channels, command.ycbcr, icc_profile),
         Format::Png => output::png(
@@ -962,11 +1020,11 @@ fn write(command: &Command, decoded: &decode::Decoded) -> Result<(Written, Outco
             height,
             width,
             channels,
-            sixteen,
+            depth,
             command.compression,
             icc_profile,
         ),
-        Format::Pnm => output::pnm(&samples, height, width, channels, sixteen).map(|bytes| Written {
+        Format::Pnm => output::pnm(&samples, height, width, channels, depth).map(|bytes| Written {
             bytes,
             warning: if icc_profile.is_some() {
                 "PNM holds no ICC profile: the file's is not written".to_owned()
@@ -1012,6 +1070,9 @@ pub fn run(command: &Command) -> Result<(), (u8, String)> {
     } else {
         None
     };
+    if rounded::is_png(&data) {
+        return run_rounded(command, &data, observer);
+    }
     let decoded = decode::decode(&data, &command.settings, observer).map_err(|error| {
         let status = match error {
             Error::Options(_) => 2,
@@ -1041,6 +1102,190 @@ pub fn run(command: &Command) -> Result<(), (u8, String)> {
             result.iterations,
             result.stop
         );
+    }
+    Ok(())
+}
+
+/// The file of a PNG file's result, as the command asks for it, and what its writing
+/// did. Nothing is turned: PNG's orientation is not read.
+fn write_rounded(command: &Command, reconstructed: &Reconstructed) -> Result<(Written, Outcome), (u8, String)> {
+    let failed = |error: Error| (3, error.to_string());
+    let Reconstructed {
+        picture,
+        height,
+        width,
+        channels,
+        ..
+    } = reconstructed;
+    let (height, width, channels) = (*height, *width, *channels);
+    let icc_profile = reconstructed.icc_profile.as_deref().filter(|_| command.icc);
+    let depth = Depth {
+        sixteen: command.bits == Bits::Sixteen,
+        dither: command.dither,
+    };
+    let written = match command.format {
+        Format::Tiff => tiff::float64(picture, height, width, channels, false, icc_profile),
+        Format::Png => output::png(
+            picture,
+            height,
+            width,
+            channels,
+            depth,
+            command.compression,
+            icc_profile,
+        ),
+        Format::Pnm => output::pnm(picture, height, width, channels, depth).map(|bytes| Written {
+            bytes,
+            warning: if icc_profile.is_some() {
+                "PNM holds no ICC profile: the file's is not written".to_owned()
+            } else {
+                String::new()
+            },
+        }),
+    }
+    .map_err(failed)?;
+    let mut warnings = Vec::new();
+    for warning in [&reconstructed.warning, &written.warning] {
+        if !warning.is_empty() {
+            warnings.push(warning.clone());
+        }
+    }
+    let outcome = Outcome {
+        oriented: false,
+        icc_profile: command.format != Format::Pnm
+            && icc_profile.is_some_and(|profile| {
+                jpegio_sys::check_icc(profile, u32::try_from(channels).unwrap_or(u32::MAX)).is_ok()
+            }),
+        warnings,
+    };
+    Ok((written, outcome))
+}
+
+/// The report of a PNG file's reconstruction, as a JSON object (docs/cli.md): that of
+/// a JPEG file's, with the colours' records, and the alpha's iterations and stop.
+fn report_rounded(command: &Command, reconstructed: &Reconstructed, outcome: &Outcome) -> String {
+    let stop_name = |stop: Stop| match stop {
+        Stop::Converged => "converged",
+        Stop::Iterations => "iterations",
+        Stop::Observer => "observer",
+        Stop::Stationary => "stationary",
+    };
+    let space = match reconstructed.channels {
+        1 | 2 => "grayscale",
+        _ => "rgb",
+    };
+    let dither = match (command.format, command.dither) {
+        (Format::Tiff, _) => "null".to_owned(),
+        (_, Dither::BlueNoise) => json_string("blue-noise"),
+        (_, Dither::BlueNoiseTogether) => json_string("blue-noise-together"),
+        (_, Dither::None) => json_string("none"),
+    };
+    let method = match command.settings.method {
+        Method::Tv => "tv",
+        _ => "tgv",
+    };
+    let mut text = String::from("{\n");
+    let _ = writeln!(text, "  \"version\": {},", json_string(VERSION));
+    let _ = writeln!(text, "  \"input\": {},", json_string(&command.input.to_string_lossy()));
+    let _ = writeln!(text, "  \"input_format\": \"png\",");
+    let _ = writeln!(text, "  \"height\": {},", reconstructed.height);
+    let _ = writeln!(text, "  \"width\": {},", reconstructed.width);
+    let _ = writeln!(text, "  \"color_space\": {},", json_string(space));
+    let _ = writeln!(text, "  \"bits\": {},", reconstructed.bits);
+    let _ = writeln!(text, "  \"alpha\": {},", reconstructed.alpha.is_some());
+    let _ = writeln!(text, "  \"exif_orientation\": 0,");
+    let _ = writeln!(text, "  \"oriented\": {},", outcome.oriented);
+    let _ = writeln!(text, "  \"icc_profile\": {},", outcome.icc_profile);
+    let _ = writeln!(text, "  \"dither\": {dither},");
+    let warnings: Vec<String> = outcome.warnings.iter().map(|warning| json_string(warning)).collect();
+    let _ = writeln!(text, "  \"warnings\": [{}],", warnings.join(", "));
+    let _ = writeln!(text, "  \"method\": {},", json_string(method));
+    let settings: Vec<String> = options_of(&command.settings)
+        .iter()
+        .map(|option| json_string(option))
+        .collect();
+    let _ = writeln!(text, "  \"settings\": [{}],", settings.join(", "));
+    if let Some(alpha) = &reconstructed.alpha {
+        let _ = writeln!(
+            text,
+            "  \"alpha_solver\": {{\"iterations\": {}, \"stop\": {}}},",
+            alpha.iterations,
+            json_string(stop_name(alpha.stop))
+        );
+    }
+    let colours = &reconstructed.colours;
+    let History {
+        iterations,
+        seconds,
+        primal,
+        dual,
+        scaling,
+        partial_gap,
+    } = &colours.history;
+    let counts: Vec<String> = iterations.iter().map(u64::to_string).collect();
+    let _ = write!(
+        text,
+        "  \"iterations\": {},\n  \"stop\": {},\n  \"records\": {{\n    \"iterations\": [{}],\n    \
+         \"seconds\": {},\n    \"primal\": {},\n    \"dual\": {},\n    \"scaling\": {},\n    \
+         \"partial_gap\": {}\n  }}",
+        colours.iterations,
+        json_string(stop_name(colours.stop)),
+        counts.join(", "),
+        json_list(seconds),
+        json_list(primal),
+        json_list(dual),
+        json_list(scaling),
+        json_list(partial_gap),
+    );
+    text.push_str("\n}\n");
+    text
+}
+
+/// Runs a command on a PNG file: reads it, reconstructs it within the intervals of its
+/// samples, and writes the result.
+fn run_rounded(
+    command: &Command,
+    data: &[u8],
+    observer: Option<&mut crate::pdhg::Observer<'_>>,
+) -> Result<(), (u8, String)> {
+    if command.ycbcr {
+        return Err((2, "--ycbcr is for JPEG files in YCbCr".into()));
+    }
+    let reconstructed = rounded::reconstruct(data, &command.settings, observer).map_err(|error| {
+        let status = match error {
+            Error::Options(_) => 2,
+            _ => 1,
+        };
+        (status, format!("{}: {error}", command.input.display()))
+    })?;
+    let (written, outcome) = write_rounded(command, &reconstructed)?;
+    write_output(&command.output, &written.bytes, command.overwrite)
+        .map_err(|error| (3, format!("{}: {error}", command.output.display())))?;
+    if command.verbosity != Verbosity::Quiet {
+        for warning in &outcome.warnings {
+            eprintln!("unround: {}: {warning}", command.output.display());
+        }
+    }
+    if let Some(path) = &command.report {
+        write_output(path, report_rounded(command, &reconstructed, &outcome).as_bytes(), true)
+            .map_err(|error| (3, format!("{}: {error}", path.display())))?;
+    }
+    if command.verbosity != Verbosity::Quiet && command.output != Path::new("-") {
+        let colours = &reconstructed.colours;
+        eprintln!(
+            "{}: {} iterations, {:?}",
+            command.output.display(),
+            colours.iterations,
+            colours.stop
+        );
+        if let Some(alpha) = &reconstructed.alpha {
+            eprintln!(
+                "{}: alpha: {} iterations, {:?}",
+                command.output.display(),
+                alpha.iterations,
+                alpha.stop
+            );
+        }
     }
     Ok(())
 }
@@ -1281,5 +1526,47 @@ mod tests {
         ] {
             assert!(all.contains(fragment), "{fragment} in {all}");
         }
+    }
+
+    #[test]
+    fn the_samples_are_dithered_unless_asked_otherwise() {
+        let dither_of = |text: &str| match parse(arguments(text)) {
+            Ok(Request::Run(command)) => command.dither,
+            other => panic!("{text}: {other:?}"),
+        };
+        assert_eq!(dither_of("in.jpg out.png"), Dither::BlueNoise);
+        assert_eq!(dither_of("in.jpg out.tif"), Dither::BlueNoise);
+        assert_eq!(dither_of("--dither blue-noise in.jpg out.ppm"), Dither::BlueNoise);
+        assert_eq!(
+            dither_of("--dither-channels together in.jpg out.png"),
+            Dither::BlueNoiseTogether
+        );
+        assert_eq!(dither_of("--dither none --bits 16 in.jpg out.png"), Dither::None);
+        let Err(errors) = parse(arguments(
+            "--dither ordered --dither-channels together --dither-channels apart in.jpg out.png",
+        )) else {
+            panic!("the arguments are refused");
+        };
+        let all = errors.join("\n");
+        assert!(
+            all.contains("--dither is one of blue-noise, none, not ordered"),
+            "{all}"
+        );
+        let misplaced = "--dither-channels is for PNG and PNM";
+        for (text, fragment) in [
+            ("--dither none in.jpg out.tif", "--dither is for PNG and PNM"),
+            ("--dither none --dither-channels apart in.jpg out.png", misplaced),
+            ("--dither-channels apart in.jpg out.tif", misplaced),
+        ] {
+            let Err(errors) = parse(arguments(text)) else {
+                panic!("{text} is refused");
+            };
+            assert!(errors.join("\n").contains(fragment), "{fragment} in {errors:?}");
+        }
+        // They are options of the command line, not settings.
+        let Err(errors) = settings_of(arguments("--dither none")) else {
+            panic!("--dither is not a setting");
+        };
+        assert!(errors[0].contains("an option of the command line"), "{errors:?}");
     }
 }

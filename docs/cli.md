@@ -8,7 +8,9 @@ unround [OPTIONS] INPUT [OUTPUT]
 ```
 
 `unround` reads the JPEG file `INPUT`, reconstructs it within its quantization
-intervals (`docs/math.md`), and writes the result to `OUTPUT`. The options are
+intervals (`docs/math.md`), and writes the result to `OUTPUT`. A PNG file is
+reconstructed alike within the intervals of its rounded samples (below, and
+`docs/math.md`, 11). The options are
 those of the library, under the same names: the Rust crate, the C interface and
 the Python package take every one of them, and every value the model and the
 solvers use can be given. A value not given takes its default, which this
@@ -31,7 +33,7 @@ and without either, TIFF.
   and Cr of the solution, which the file declares (`PhotometricInterpretation`
   YCbCr, JFIF's coefficients, full range, no subsampling). The ICC profile is
   embedded as `InterColorProfile` (34675).
-- `png`: 8-bit or 16-bit samples, greyscale or RGB, not interlaced, rounded as
+- `png`: 8-bit or 16-bit samples, greyscale or RGB, not interlaced, made as
   PNM's are (below), with the ICC profile in an `iCCP` chunk named `ICC profile`.
   `--compression N` is zlib's level of the samples and of the profile, 0 (none)
   to 9 (the most); without it, zlib's default, 6. The file is written by libpng
@@ -39,14 +41,58 @@ and without either, TIFF.
   libpng's reading takes (92 bytes) is stored uncompressed instead, and a profile
   of more than 8000000 bytes, which libpng's readers leave out unless they allow
   more, is written with a warning.
-- `pnm`: 8-bit or 16-bit samples, `P5` (greyscale) or `P6` (colour). `--bits 8`
-  (the default) rounds each sample to the nearest integer, halves away from 0, and
-  clamps it to 0–255; `--bits 16` scales it by 257 first and clamps it to 0–65535,
-  so that 255 is white in both. PNM holds no ICC profile: where the file has one,
-  a warning says that it is not written.
+- `pnm`: 8-bit or 16-bit samples, `P5` (greyscale) or `P6` (colour). With
+  `--bits 8` (the default) the level of a sample is the sample itself, and with
+  `--bits 16` it is 257 times the sample, so that 255 is white in both. The levels
+  are dithered, or rounded, as `--dither` says, and clamped to 0–255 or 0–65535
+  (docs/math.md, 10). PNM holds no ICC profile: where the file has one, a warning
+  says that it is not written.
 
 `--bits` is for PNG and PNM, `--compression` for PNG, and `--ycbcr` for TIFF and
 colour files in YCbCr.
+
+### PNG files as input
+
+A PNG file (known by its signature) is read as the levels it stores -- gray or RGB,
+with alpha or without, of 1 to 16 bits, interlaced or not -- and each sample is taken
+as standing for every value within half a level of its own, within 0 to 255
+(docs/math.md, 11). Its colours are reconstructed as they are, not converted, by TGV
+(by default) or TV with the options of the method and of the primal-dual method,
+`--channel-weights` and `--channels` among them; its alpha, where it has one, alone,
+with the same method and weights. TGV is the method for smooth pictures: TV's least
+value within the intervals is terraced. A palette file is refused: its colours were
+chosen, not rounded.
+
+Of the data term, a PNG file takes `--mu`, a number (by default 0: the least TGV or
+TV within the intervals; `rule` is JPEG's), and `--slack`, in levels (0 by default);
+the other options of the data term are refused. `--method` is `tv` or `tgv`, and
+`--ycbcr` is refused. By default the solvers stop at a gap per sample of 1e-4
+(times the first-order weight, as with JPEG files), within 10000 iterations, and
+TGV's ratio of the steps is 0.3 over `alpha1` squared (docs/math.md, 11);
+`--tolerance`, `--iterations` and `--step-ratio` set them, and the other options of
+the primal-dual method are taken as for JPEG files.
+
+The result keeps the alpha: TIFF declares it (`ExtraSamples`, unassociated alpha,
+in the units of the other samples) and PNG holds it; PNM holds none, and a picture
+with alpha is not written as PNM (status 3). The file's iCCP profile goes into TIFF
+and PNG as a JPEG file's ICC profile does; a transparent colour of a tRNS chunk is
+not taken, with a warning. Rounded to 8 bits without a dither, the result gives back
+the file's levels; dithered (the default) or of 16 bits, it shows what lies between
+them. The report says `"input_format": "png"`, the file's `bits` and whether it has
+`alpha`, and for alpha its solver's iterations and stop (`alpha_solver`).
+
+### Dithering
+
+The binary64 result loses what lies between the levels of 8 or 16 bits, and by
+default PNG and PNM samples are dithered: each goes to the level below or the level
+above, in proportions that keep the mean (docs/math.md, 10).
+
+| Option | Values | Default | |
+|---|---|---|---|
+| `--dither` | `blue-noise`, `none` | `blue-noise` | An ordered dither by a blue-noise matrix, or each sample rounded to the nearest level, halves away from 0 |
+| `--dither-channels` | `apart`, `together` | `apart` | Whether the channels of a pixel take thresholds of the matrix shifted apart, or the same |
+
+Both are for PNG and PNM, and `--dither-channels` for `--dither blue-noise`.
 
 ### Orientation
 
@@ -120,12 +166,12 @@ one value for each (4.1, 4.4).
 
 | Option | Values | Default | |
 |---|---|---|---|
-| `--iterations` | ≥ 0 | TV 2000, TGV 5000 | The most iterations |
-| `--tolerance` | ≥ 0 | TV `5e-4` times `alpha`, TGV `5e-3` times `alpha1` | Stops where the duality gap per sample is at most this; 0 turns it off (6.4) |
+| `--iterations` | ≥ 0 | TV 2000, TGV 5000; of a PNG file 10000 | The most iterations |
+| `--tolerance` | ≥ 0 | TV `5e-4` times `alpha`, TGV `5e-3` times `alpha1`; of a PNG file `1e-4` times either | Stops where the duality gap per sample is at most this; 0 turns it off (6.4) |
 | `--relative-tolerance` | ≥ 0 | 0 | Stops where the gap is at most this times the primal value; 0 turns it off |
 | `--partial-tolerance` | ≥ 0 | 0 | TGV: stops where the partial gap per sample is at most this; needs `--partial-radius` |
 | `--partial-radius` | ≥ 0 | none | TGV: the radius of the partial gap (6.3), which is then recorded |
-| `--step-ratio` | > 0 | TV 10 over `alpha` squared, TGV 3 over `alpha1` squared | `tau / sigma` (5) |
+| `--step-ratio` | > 0 | TV 10 over `alpha` squared, TGV 3 over `alpha1` squared; of a PNG file TGV 0.3 over `alpha1` squared | `tau / sigma` (5) |
 | `--relaxation` | in (0, 2) | 1.9 | `rho` |
 | `--step-product` | in (0, 1) | 0.99 | `sigma tau L^2` |
 | `--norm-squared` | > 0 | TV 8, TGV `(17 + sqrt 33) / 2`, times the largest channel weight squared | `L^2`, a bound of the operator's norm squared |
@@ -159,8 +205,9 @@ one value for each (4.1, 4.4).
 - `--report PATH`: a JSON object with what was done: the version, the input, the
   size as the file stores it, the colour space, the file's EXIF orientation
   (`exif_orientation`, 0 where it has none), whether the result was turned
-  (`oriented`), whether the output holds the ICC profile (`icc_profile`), the
-  warnings of the writing (`warnings`), the method, the settings, the solver's
+  (`oriented`), whether the output holds the ICC profile (`icc_profile`), how its
+  samples were made (`dither`: `blue-noise` or `blue-noise-together`, `none` for
+  rounding, or `null` for TIFF), the warnings of the writing (`warnings`), the method, the settings, the solver's
   iterations, why it stopped (`converged`, `iterations`, `observer`,
   `stationary`), and every record (`iterations`, `seconds`, `primal`, `dual`,
   `scaling`, `partial_gap`, the last two `null` where not taken). `-` writes it to

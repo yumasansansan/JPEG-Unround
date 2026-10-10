@@ -21,15 +21,18 @@
 //! - [`records`]: the values of the records, in the layout of the solvers.
 //! - [`subgradient`]: a subgradient method of jpeg2png's kind, to compare with.
 //! - [`results`]: what the solvers return.
+//! - [`samples`]: pictures of rounded samples (8-bit PNG files) within their intervals.
+//! - [`rounded`]: a PNG file, its colours and its alpha, reconstructed by [`samples`].
 //! - [`colour`]: the YCbCr of JFIF, and its inverse.
 //! - [`decode`]: a file, reconstructed by one of the methods.
 //! - [`tiff`]: the result in binary64, written bit for bit.
 //! - [`exact`]: what is rational, computed exactly, and sums in a fixed order.
-//! - [`output`]: pictures of 8 or 16 bits, and PNG and PNM files.
+//! - [`output`]: pictures of 8 or 16 bits, dithered or rounded, and PNG and PNM files.
 //! - [`orientation`]: a picture turned upright as its EXIF orientation says.
 //! - [`cli`]: the command line, `unround` (docs/cli.md).
 #![forbid(unsafe_code)]
 
+mod blue_noise;
 pub mod cli;
 pub mod colour;
 pub mod dct;
@@ -47,6 +50,8 @@ pub mod pdhg;
 pub mod planar;
 pub mod records;
 pub mod results;
+pub mod rounded;
+pub mod samples;
 pub mod subgradient;
 pub mod sweep;
 pub mod tiff;

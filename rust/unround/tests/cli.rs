@@ -181,7 +181,7 @@ fn the_picture_is_turned_upright_with_its_icc_profile() {
     let (upright, height, width) = turned(&decoded.picture, &decoded, 3, 6);
     assert_eq!((back.height, back.width, back.channels, back.bits), (30, 20, 3, 8));
     assert_eq!((height, width), (30, 20));
-    let eight: Vec<u16> = output::eight_bits(&upright)
+    let eight: Vec<u16> = output::eight_bits(&upright, 30, 20, 3, output::Dither::BlueNoise)
         .expect("finite")
         .into_iter()
         .map(u16::from)
@@ -193,6 +193,7 @@ fn the_picture_is_turned_upright_with_its_icc_profile() {
         "\"exif_orientation\": 6",
         "\"oriented\": true",
         "\"icc_profile\": true",
+        "\"dither\": \"blue-noise\"",
         "\"warnings\": []",
     ] {
         assert!(report.contains(fragment), "{fragment} in {report}");
@@ -216,7 +217,8 @@ fn the_picture_is_turned_upright_with_its_icc_profile() {
     assert_eq!((status, errors.as_str()), (0, ""));
     let back = read_png(&std::fs::read(&kept).expect("the result")).expect("a PNG file");
     assert_eq!((back.height, back.width, back.bits), (20, 30, 16));
-    assert_eq!(back.samples, output::sixteen_bits(&decoded.picture).expect("finite"));
+    let sixteen = output::sixteen_bits(&decoded.picture, 20, 30, 3, output::Dither::BlueNoise).expect("finite");
+    assert_eq!(back.samples, sixteen);
     assert_eq!(back.icc_profile, None);
 
     // TIFF, upright, bit for bit, with the profile; and Y, Cb and Cr turned alike.
@@ -241,7 +243,7 @@ fn the_picture_is_turned_upright_with_its_icc_profile() {
     let (status, errors) = unround(&["--method", "mmse", text(&input), text(&ppm)]);
     assert_eq!(status, 0, "{errors}");
     assert!(errors.contains("PNM holds no ICC profile"), "{errors}");
-    let expected = output::pnm(&upright, 30, 20, 3, false).expect("a file");
+    let expected = output::pnm(&upright, 30, 20, 3, output::Depth::default()).expect("a file");
     assert_eq!(std::fs::read(&ppm).expect("the result"), expected);
     for quiet in ["--no-icc", "--quiet"] {
         let (status, errors) = unround(&["--method", "mmse", "--overwrite", quiet, text(&input), text(&ppm)]);

@@ -329,9 +329,9 @@ void test_png_files(void) {
     CHECK(read_back(*without, 7, 5, 1, unround::entries(gray)).empty());
   }
 
-  // Wrong pictures: two channels, none at all, and a level of compression beyond 9.
-  const auto two = jpegio::write_png(unround::Picture<const std::uint8_t>(eight.data(), 7, 5, 2));
-  CHECK(!two.has_value() && two.error().code == jpegio::Errc::argument && !two.error().message.empty());
+  // Wrong pictures: five channels, none at all, and a level of compression beyond 9.
+  const auto five = jpegio::write_png(unround::Picture<const std::uint8_t>(eight.data(), 3, 2, 5));
+  CHECK(!five.has_value() && five.error().code == jpegio::Errc::argument && !five.error().message.empty());
   const auto empty = jpegio::write_png(unround::Picture<const std::uint8_t>(eight.data(), 0, 7, 3));
   CHECK(!empty.has_value() && empty.error().code == jpegio::Errc::argument);
   const auto level = jpegio::write_png(small, {.compression = 10, .icc_profile = {}});

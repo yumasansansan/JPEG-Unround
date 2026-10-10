@@ -14,6 +14,7 @@
 
 #include "fuzz_jpegio.h"
 #include "test_jpeg.h"
+#include "unround/jpegio.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -204,6 +205,50 @@ static bool write_file(const char* directory, const char* name, int32_t kind, co
 
 static constexpr int32_t kinds = 24;
 static constexpr int32_t profiles = 4;
+static constexpr int32_t pngs = 8;
+
+// A PNG file of the kind: 1 to 4 channels, 8 or 16 bits, every other one with a
+// well-formed profile of its color space; written by the C layer.
+static bool seed_png(rng* g, int32_t kind, uint8_t** data, size_t* size) {
+  const int32_t channels = 1 + kind % 4;
+  const int32_t bits = kind < 4 ? 8 : 16;
+  const uint32_t width = 3 + (uint32_t)rng_below(g, 20);
+  const uint32_t height = 2 + (uint32_t)rng_below(g, 20);
+  const size_t count = (size_t)width * height * (size_t)channels;
+  uint16_t* samples = (uint16_t*)malloc(count * sizeof(uint16_t));
+  if (samples == nullptr) abort();
+  for (size_t i = 0; i < count; ++i) samples[i] = (uint16_t)rng_below(g, bits == 8 ? 256 : 65536);
+  uint8_t* bytes = (uint8_t*)malloc(count);
+  if (bytes == nullptr) abort();
+  for (size_t i = 0; i < count; ++i) bytes[i] = (uint8_t)samples[i];
+  uint8_t icc[300];
+  well_formed_profile(g, icc, sizeof icc, channels <= 2 ? "GRAY" : "RGB ");
+  const unround_jpegio_png png = {
+      .width = width,
+      .height = height,
+      .channels = channels,
+      .bits = bits,
+      .compression = -1,
+      .samples = bits == 8 ? (const void*)bytes : (const void*)samples,
+      .icc_profile = kind % 2 == 0 ? icc : nullptr,
+      .icc_profile_size = kind % 2 == 0 ? (uint64_t)sizeof icc : 0,
+  };
+  unround_jpegio_bytes file = {};
+  char message[256];
+  const bool written = unround_jpegio_write_png(&png, &file, message, sizeof message) == UNROUND_JPEGIO_OK;
+  free(samples);
+  free(bytes);
+  if (!written) {
+    (void)fprintf(stderr, "the PNG writer failed: %s\n", message);
+    return false;
+  }
+  *data = (uint8_t*)malloc((size_t)file.size);
+  if (*data == nullptr) abort();
+  memcpy(*data, file.data, (size_t)file.size);
+  *size = (size_t)file.size;
+  unround_jpegio_bytes_free(&file);
+  return true;
+}
 
 // Tries the input and mutations of it; returns how many inputs it tried.
 static size_t try_mutations(rng* g, const uint8_t* seed, size_t seed_size, int mutations) {
@@ -265,8 +310,25 @@ int main(int argc, char** argv) {
     }
     inputs += try_mutations(&g, profile, size, mutations);
   }
+  // PNG files of every kind the layer writes, which its reading of PNG takes.
+  for (int32_t kind = 0; kind < pngs; ++kind) {
+    uint8_t* seed = nullptr;
+    size_t seed_size = 0;
+    if (!seed_png(&g, kind, &seed, &seed_size)) return EXIT_FAILURE;
+    if (seeds_only) {
+      const bool written = write_file(argv[2], "png", kind, seed, seed_size);
+      free(seed);
+      if (!written) {
+        (void)fprintf(stderr, "cannot write a seed into %s\n", argv[2]);
+        return EXIT_FAILURE;
+      }
+      continue;
+    }
+    inputs += try_mutations(&g, seed, seed_size, mutations);
+    free(seed);
+  }
   if (seeds_only) {
-    (void)fprintf(stderr, "%d seeds written into %s\n", (int)(kinds + profiles), argv[2]);
+    (void)fprintf(stderr, "%d seeds written into %s\n", (int)(kinds + profiles + pngs), argv[2]);
   } else {
     (void)fprintf(stderr, "%zu inputs tried\n", inputs);
   }

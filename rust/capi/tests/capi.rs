@@ -118,11 +118,11 @@ fn picture_of(result: *const UnroundResult) -> (Vec<f64>, u64, u64, u64) {
 
 #[test]
 fn the_versions_are_those_of_the_header() {
-    assert_eq!(capi::unround_abi_version(), 2);
+    assert_eq!(capi::unround_abi_version(), 3);
     // SAFETY: the version is a NUL-terminated string of static storage.
     let version = unsafe { CStr::from_ptr(capi::unround_version()) };
     assert!(version.to_string_lossy().starts_with("unround "));
-    assert_eq!(capi::unround_jpeg_abi_version(), 2);
+    assert_eq!(capi::unround_jpeg_abi_version(), 3);
     // SAFETY: as above.
     let libpng = unsafe { CStr::from_ptr(capi::unround_jpeg_libpng_version()) };
     assert_eq!(libpng.to_string_lossy(), jpegio_sys::libpng_version());
@@ -384,6 +384,39 @@ fn the_writers_and_the_conversion_are_the_library_s() {
         // SAFETY: the bytes are freed once, with their size.
         unsafe { capi::unround_bytes_free(bytes, size) };
     }
+    for (dither, made) in [
+        (capi::DITHER_NONE, output::Dither::None),
+        (capi::DITHER_BLUE_NOISE, output::Dither::BlueNoise),
+        (capi::DITHER_BLUE_NOISE_TOGETHER, output::Dither::BlueNoiseTogether),
+    ] {
+        let (mut bytes, mut size) = (ptr::null_mut::<u8>(), 0u64);
+        // SAFETY: as above.
+        let status = unsafe {
+            capi::unround_pnm(
+                samples.as_ptr(),
+                2,
+                3,
+                3,
+                1,
+                dither,
+                &raw mut bytes,
+                &raw mut size,
+                ptr::null_mut(),
+                0,
+            )
+        };
+        assert_eq!(status, capi::OK);
+        // SAFETY: as above.
+        let written = unsafe { slice::from_raw_parts(bytes, usize::try_from(size).expect("fits")) }.to_vec();
+        let depth = output::Depth {
+            sixteen: true,
+            dither: made,
+        };
+        assert_eq!(written, output::pnm(&samples, 2, 3, 3, depth).expect("a file"));
+        // SAFETY: as above.
+        unsafe { capi::unround_bytes_free(bytes, size) };
+    }
+    // A dither that is none of them is refused.
     let (mut bytes, mut size) = (ptr::null_mut::<u8>(), 0u64);
     // SAFETY: as above.
     let status = unsafe {
@@ -392,19 +425,16 @@ fn the_writers_and_the_conversion_are_the_library_s() {
             2,
             3,
             3,
-            1,
+            0,
+            3,
             &raw mut bytes,
             &raw mut size,
             ptr::null_mut(),
             0,
         )
     };
-    assert_eq!(status, capi::OK);
-    // SAFETY: as above.
-    let written = unsafe { slice::from_raw_parts(bytes, usize::try_from(size).expect("fits")) }.to_vec();
-    assert_eq!(written, output::pnm(&samples, 2, 3, 3, true).expect("a file"));
-    // SAFETY: as above.
-    unsafe { capi::unround_bytes_free(bytes, size) };
+    assert_eq!(status, capi::ERROR_OPTIONS);
+    assert!(bytes.is_null());
     let mut rgb = vec![0.0; samples.len()];
     // SAFETY: both arrays have 3 x 2 x 3 doubles.
     let status = unsafe { capi::unround_to_rgb(samples.as_ptr(), 2, 3, rgb.as_mut_ptr()) };
@@ -470,7 +500,11 @@ fn png_and_the_icc_profile_are_the_library_s() {
     let samples: Vec<f64> = (0..4 * 5 * 3).map(|index| f64::from(index) * 4.5 - 7.0).collect();
     let rgb = profile(420, *b"RGB ");
     let gray = profile(420, *b"GRAY");
-    for (icc, sixteen, compression) in [(None, 0, -1), (Some(&rgb), 1, 9), (Some(&gray), 0, 0)] {
+    for (icc, sixteen, dither, compression) in [
+        (None, 0, capi::DITHER_BLUE_NOISE, -1),
+        (Some(&rgb), 1, capi::DITHER_NONE, 9),
+        (Some(&gray), 0, capi::DITHER_BLUE_NOISE_TOGETHER, 0),
+    ] {
         let (mut bytes, mut size) = (ptr::null_mut::<u8>(), 0u64);
         let mut message: [c_char; 256] = [1; 256];
         let (pointer, length) = icc.map_or((ptr::null(), 0), |icc| (icc.as_ptr(), icc.len()));
@@ -483,6 +517,7 @@ fn png_and_the_icc_profile_are_the_library_s() {
                 5,
                 3,
                 sixteen,
+                dither,
                 compression,
                 pointer,
                 u64::try_from(length).expect("fits"),
@@ -494,12 +529,20 @@ fn png_and_the_icc_profile_are_the_library_s() {
         };
         assert_eq!(status, capi::OK);
         let (file, warning) = taken(bytes, size, &message);
+        let depth = output::Depth {
+            sixteen: sixteen == 1,
+            dither: match dither {
+                capi::DITHER_NONE => output::Dither::None,
+                capi::DITHER_BLUE_NOISE => output::Dither::BlueNoise,
+                _ => output::Dither::BlueNoiseTogether,
+            },
+        };
         let expected = output::png(
             &samples,
             4,
             5,
             3,
-            sixteen == 1,
+            depth,
             u8::try_from(compression).ok(),
             icc.map(Vec::as_slice),
         )
@@ -542,6 +585,7 @@ fn png_and_the_icc_profile_are_the_library_s() {
             5,
             3,
             0,
+            capi::DITHER_BLUE_NOISE,
             10,
             ptr::null(),
             0,
@@ -558,8 +602,11 @@ fn png_and_the_icc_profile_are_the_library_s() {
         .to_string_lossy()
         .into_owned();
     assert!(text.contains("0 to 9"), "{text}");
+}
 
-    // The check of the C layer, through the interface.
+#[test]
+fn the_check_of_a_profile_is_the_c_layer_s() {
+    let gray = profile(420, *b"GRAY");
     let mut reason: [c_char; 256] = [0; 256];
     // SAFETY: the profile has its length, and reason 256 writable bytes.
     let accepted = unsafe {

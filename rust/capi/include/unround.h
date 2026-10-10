@@ -35,7 +35,7 @@
 extern "C" {
 #endif
 
-#define UNROUND_ABI_VERSION 2
+#define UNROUND_ABI_VERSION 3
 
 // What a function of the interface reports.
 typedef enum unround_status : int32_t {
@@ -192,17 +192,27 @@ unround_status unround_tiff(const double* samples, uint64_t height, uint64_t wid
                             const uint8_t* icc, uint64_t icc_size, uint8_t** bytes, uint64_t* size, char* message,
                             size_t message_size);
 
-// The bytes of a PNG file of 8 bits, or with sixteen nonzero 16 bits
-// (docs/cli.md), compressed at zlib's level compression, 0 to 9, or -1 for
-// zlib's default; with the ICC profile as unround_tiff takes it.
-unround_status unround_png(const double* samples, uint64_t height, uint64_t width, uint64_t channels, int32_t sixteen,
-                           int32_t compression, const uint8_t* icc, uint64_t icc_size, uint8_t** bytes, uint64_t* size,
-                           char* message, size_t message_size);
+// How the samples of PNG and PNM are made (docs/math.md, 10): each rounded to the
+// nearest level, halves away from 0; or by the ordered dither of the blue-noise
+// matrix, the channels of a pixel shifted apart (the command line's default), or
+// together.
+typedef enum unround_dither : int32_t {
+  UNROUND_DITHER_NONE = 0,
+  UNROUND_DITHER_BLUE_NOISE = 1,
+  UNROUND_DITHER_BLUE_NOISE_TOGETHER = 2,
+} unround_dither;
 
-// The bytes of a PNM file of 8 bits, or with sixteen nonzero 16 bits
-// (docs/cli.md).
+// The bytes of a PNG file of 8 bits, or with sixteen nonzero 16 bits, made as
+// dither says (docs/cli.md), compressed at zlib's level compression, 0 to 9, or -1
+// for zlib's default; with the ICC profile as unround_tiff takes it.
+unround_status unround_png(const double* samples, uint64_t height, uint64_t width, uint64_t channels, int32_t sixteen,
+                           int32_t dither, int32_t compression, const uint8_t* icc, uint64_t icc_size, uint8_t** bytes,
+                           uint64_t* size, char* message, size_t message_size);
+
+// The bytes of a PNM file of 8 bits, or with sixteen nonzero 16 bits, made as
+// dither says (docs/cli.md).
 unround_status unround_pnm(const double* samples, uint64_t height, uint64_t width, uint64_t channels, int32_t sixteen,
-                           uint8_t** bytes, uint64_t* size, char* message, size_t message_size);
+                           int32_t dither, uint8_t** bytes, uint64_t* size, char* message, size_t message_size);
 
 void unround_bytes_free(uint8_t* bytes, uint64_t size);
 

@@ -60,7 +60,7 @@ itself, cut to the picture, to the last bit: no operation stands between the
 computation and the file. The canvas holds the samples in their own units (0 to
 255 for 8-bit files), not level-shifted (1.1) and not normalized, and the file
 is a TIFF with 64-bit IEEE floating-point samples. Output of 8 or 16 bits is
-rounded from it.
+made from it by an ordered dither, or rounded (10).
 
 ## 1. What a JPEG file says about a component
 
@@ -927,8 +927,8 @@ where $c_R$, $c_B$, $c_{GB}$ and $c_{GR}$ are the doubles nearest to the four
 rationals, from the solution's canvas cut to the picture. Each product may be
 fused with the sum or difference that takes it (Arithmetic). The result is these
 values themselves: it is neither rounded nor clamped, and a file of binary64
-samples holds them to the last bit. Output of 8 or 16 bits rounds them to the
-nearest, halves away from 0, and clamps them. The YCbCr of the solution can be
+samples holds them to the last bit. Output of 8 or 16 bits dithers them, or
+rounds them to the nearest, halves away from 0, and clamps them (10). The YCbCr of the solution can be
 written instead, in binary64: the canvas itself, cut to the picture.
 
 libjpeg's decoder clamps Y, Cb and Cr to 0–255 before it converts them; here
@@ -1191,6 +1191,173 @@ The subgradient method divides by the norms of the gradient and of its direction
 bound of their rounding follows. Its case is a regression check, with tolerances
 more than two hundred times the distances measured between the Rust and the
 Python implementations on Windows (x86-64).
+
+## 10. Samples of 8 and 16 bits
+
+*Implemented in `output`; the matrix in `blue_noise`, which `scripts/blue_noise.py`
+writes.*
+
+A file of integer samples holds levels $n$ from 0 to $T$. Of 8 bits, $T = 255$ and
+the level of a sample $x$ is $y = x$; of 16 bits, $T = 65535$ and $y = 257 x$, one
+product rounded once, so that 255 is $T$ in both. Either way the binary64 result
+loses what lies between the levels. By default that loss is dithered: each sample
+goes to the level below or the level above, in proportions that keep the mean, so
+that a smooth gradient keeps its slope between the levels instead of breaking into
+bands, and what is lost becomes a fine-grained noise.
+
+**Rounding.** Without a dither, $n = \mathrm{clamp}(\mathrm{round}(y), 0, T)$, halves
+rounded away from 0.
+
+**The ordered dither.** With a threshold $t$ in $(0, 1)$ for the sample,
+
+$$ n = \mathrm{clamp}\bigl(\lfloor y \rfloor + [\, y - \lfloor y \rfloor \ge 1 - t \,],\ 0,\ T\bigr): $$
+
+$\lfloor y \rfloor$, or the level above where the fraction reaches $1 - t$. This is
+computed exactly. For $y \ge 1$, $y / 2 \le \lfloor y \rfloor \le y$, and the
+difference is exact (Sterbenz); for $0 \le y < 1$ it is $y$; for $y < 0$ either
+level clamps to 0. The thresholds below have 13 bits, so that $1 - t$ is exact too.
+Every implementation therefore makes the same level of the same $y$; the levels of
+two implementations differ only where their $y$ do, as the samples' last bits may
+(Arithmetic). A constant $y$ of fraction $f$ goes to the level above at
+$\lfloor 4096 f + \tfrac12 \rfloor$ of the matrix's 4096 thresholds, so that the
+mean of its levels over the matrix is within $1/8192$ of $y$.
+
+**The thresholds.** Sample $c$ of pixel $(i, j)$ of the file, row $i$ and column
+$j$ of the picture as it is written (after its orientation), takes
+
+$$ t = \frac{2\, R_{(i + a_c) \bmod 64,\ (j + b_c) \bmod 64} + 1}{8192}, $$
+
+where $R$ is a 64 × 64 matrix of the ranks 0 to 4095, each once. The channels of a
+pixel are dithered apart by default: the shifts $(a_c, b_c)$ of channels 0 to 3 are
+$(0, 0)$, $(0, 32)$, $(32, 0)$ and $(32, 32)$, so that the errors of a pixel's
+channels are nearly independent and its luminance, which the eye sees most, takes
+less of them than of one threshold for all. Together, every shift is $(0, 0)$.
+
+$R$ is a blue-noise matrix: the places of the ranks below any level are spread
+evenly, with nearly nothing at low frequencies, so that the error of the dither is
+fine-grained and the matrix's tiling shows no pattern. It is made by Ulichney's
+void-and-cluster method, in integers, so that it is the same everywhere. Points lie
+on the torus of 64 × 64 places, and the energy of a place is the sum, over the
+points, of $\mathrm{round}\bigl(2^{40} e^{-d^2 / (2 \sigma^2)}\bigr)$, with
+$\sigma = 3/2$ and $d$ the distance on the torus from the point (each value from
+50 digits); a least or greatest energy is taken at the first place in the order of
+rows where several have it.
+
+1. The initial pattern: 410 points, each put where the energy of those before it is
+   least (the first at $(0, 0)$); then, as long as it changes, the point of greatest
+   energy taken out and a point put where the energy is then least.
+2. Ranks 409 down to 0: from the initial pattern, the point of greatest energy is
+   taken out, and has the rank.
+3. Ranks 410 to 4095: from the initial pattern, a point is put where the energy is
+   least, and has the rank. (Ulichney's third phase takes, among the places without a
+   point, the greatest energy of those places themselves; on the torus that energy
+   and the points' add up to the same at every place, so that is this.)
+
+Of the power of its thresholds (less their mean), $10^{-5}$ lies below 0.1 cycles per
+sample and $3 \cdot 10^{-4}$ below 0.2, where white noise has 3 and 12 per cent.
+
+PNG and PNM samples are dithered by default, the channels apart (docs/cli.md).
+TIFF holds the binary64 result, which nothing rounds.
+
+## 11. Pictures of rounded samples
+
+*Implemented in `samples`.*
+
+A picture whose samples were rounded to levels, as an 8-bit PNG file's are, shows
+bands where it is smooth: each level stands for every value within half a level of
+it. The same reconstruction applies, with the intervals of the samples themselves in
+place of those of DCT coefficients: of the pictures whose samples lie within their
+intervals, the one that TV or TGV finds most natural. Its samples round back to the
+file's.
+
+**The intervals.** A file of $b$ bits holds levels $v$ from 0 to $2^b - 1$, and a
+level stands for $v s$ on the scale of 0 to 255, $s = 255 / (2^b - 1)$ (1 for 8
+bits). Sample $k$, of channel $c$ at pixel $(i, j)$, lies within
+
+$$ a_k = \max\bigl(0,\ (v_k - \tfrac12 - \varsigma)\, s\bigr), \qquad
+   b_k = \min\bigl(255,\ (v_k + \tfrac12 + \varsigma)\, s\bigr), $$
+
+with a slack $\varsigma \ge 0$ in levels, 0 by default: the picture that was rounded
+lay within 0 to 255, which it was rounded from. The ends are rationals, computed
+exactly and rounded once to the nearest double (exact for 8 bits without slack).
+The channels are the file's as they are -- grey, or R, G and B -- and are not
+converted; a file's alpha, where it has one, is a picture of its own (below).
+
+**The model.** The unknown is the picture itself, $x \in \mathbb{R}^{C \times H \times W}$,
+on a canvas of the picture's size: nothing is free. With the centres $\hat c_k = v_k s$
+and a weight $\mu \ge 0$ of the data term,
+
+$$ G(x) = \frac{\mu}{2} \sum_k (x_k - \hat c_k)^2 + \iota_{[a, b]}(x), $$
+
+and the model is TV (4.2) or TGV (4.3) of the channels (4.4), with this $G$ and
+$K$ of 4.2 and 4.3 on the picture. $\mu$ is 0 by default: the reconstruction is the
+least TV or TGV within the intervals, and $\alpha$ only scales the objective. TGV is
+the method by default, and the one for smooth pictures: within the intervals of a
+ramp's levels, TGV's least value is the ramp, where TV's is terraced, flat within
+each level and steep between them. On a smooth picture of 3 x 24 x 40 samples
+rounded to 8 bits, TGV's result lay 0.07 levels (RMS) from the picture drawn, and
+TV's 0.37, farther than the levels themselves (0.29).
+$G$ is separable in the samples, as that of 4.1 is in the coefficients, with the
+same proximal map and conjugate, sample by sample and with $m_k = \mu$:
+
+$$ \mathrm{prox}_{\tau G}(v)_k = \mathrm{clip}\!\left(\frac{v_k + \tau \mu \hat c_k}{1 + \tau \mu},\ a_k,\ b_k\right), $$
+
+and $g_k^\ast(s) = s c^\ast - \frac{\mu}{2} (c^\ast - \hat c_k)^2$ with
+$c^\ast = \mathrm{clip}(\hat c_k + s / \mu, a_k, b_k)$ where $\mu > 0$,
+$\max(s a_k, s b_k)$ where $\mu = 0$. The proximal map is computed as
+$\mathrm{clip}\bigl((v_k + t \hat c_k)\, r, a_k, b_k\bigr)$ with $t = \tau\mu$ and
+$r = 1 / (1 + t)$ divided once, which is $\mathrm{clip}(v_k, a_k, b_k)$ at
+$\mu = 0$.
+
+**The solvers.** The method of 5, with the steps, the relaxation and the defaults
+of 5 and 6.5, and the same records and stops (6.4): every value is computed on the
+picture in its natural layout, row by row, channel after channel. The start is the
+centres, $x^0 = \hat c$, with $w^0 = \nabla x^0$ and the dual variables 0, as in 5.
+The gap of TV is that of 6.1; that of TGV the feasible dual of 6.2, with
+$\xi_c = -\gamma_c\, \mathrm{div}\, \mathrm{div}_2 \tilde r_c$, and its partial gap that of
+6.3. Nothing is free, so no gap is partial over a box of free samples (6.6). Each
+value is summed as the records of 5.1 are: each row's terms in lanes, the rows'
+sums in a sum of a fixed order, channel after channel. The defaults of the steps are
+those of 6.5, which were chosen on JPEG files, but for TGV's ratio, below.
+
+**When the solvers stop.** By default at a gap per sample of $10^{-4}$, times
+$\alpha$ of TV or $\alpha_1$ of TGV as in 6.5, within 10000 iterations: a fifth of
+TV's tolerance on JPEG files and a fiftieth of TGV's. The intervals of a smooth
+picture's samples are narrow and its bands wide; within a dim gradient's, tens of
+samples wide, the methods smooth slowly, and a stop at JPEG's tolerance leaves much
+of the work undone. On synthetic pictures of 8 bits (`experiments/rounded_stops.py`,
+`experiments/results/rounded-stops.md`), reconstructed by TGV at the ratio of the
+steps of JPEG files, 3, a gap per sample of $5 \cdot 10^{-3}$ stopped the dim ones a
+median RMS of 0.045 levels from a run of 20000 iterations, at an RMS error against
+the pictures drawn 0.012 above that run's;
+$10^{-4}$ stopped them a median of 0.004 levels from it (at most 0.008), each within
+0.001 of its error, after a median of 2200 iterations (at most 3410), and the lively
+ones after 605. A stop by the gap relative to the primal value came as close to the
+long run only later: at $10^{-3}$ of it, the dim pictures stopped 0.003 levels from
+it after a median of 3035 iterations.
+
+**TGV's ratio of the steps.** By default $\tau / \sigma = 0.3 / \alpha_1^2$, a tenth
+of the ratio on JPEG files; TV's is that of 6.5. Within the narrow intervals of the
+samples the primal steps move little, and it is the dual steps that carry the
+smoothing across a band. On the same pictures, stopped at the default gap
+(`experiments/rounded_ratios.py`, `experiments/results/rounded-ratios.md`), the dim
+ones took a median of 2200 iterations at the ratio of JPEG files, 3, 1620 at 1, 1165
+at 0.3 and 890 at 0.1, and the lively ones 605, 540, 500 and 500; at each of these
+ratios the median error against the pictures drawn was within 0.0001 of the long
+run's. At 0.3 no picture stopped further than 0.004 levels from the long run (at 3,
+0.008); at 0.1 a lively one stopped 0.005 from it, and 0.1 is the end of the ratios
+measured.
+
+**Alpha.** Where the file has an alpha channel, it is rounded as the colours are and
+is reconstructed alike, within its own intervals, as a picture of one channel with
+the same method and weights; the colours are reconstructed apart from it. The
+colours are not premultiplied: PNG's are not.
+
+**Output.** The result is the picture itself: binary64 samples, to the last bit, or
+8 and 16 bits as 10 makes them. Rounded to 8 bits without a dither, every sample
+gives back the file's level, but for a sample exactly at the upper end of its
+interval, which rounds up; so it is the dither, or 16 bits, that shows what lies
+between the levels.
 
 ## References
 

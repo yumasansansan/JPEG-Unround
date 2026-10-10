@@ -132,7 +132,7 @@ fn awkward(count: usize) -> Vec<f64> {
 
 #[test]
 fn the_samples_are_written_bit_for_bit() {
-    for (height, width, channels) in [(1, 1, 1), (7, 13, 1), (21, 30, 1), (5, 6, 3)] {
+    for (height, width, channels) in [(1, 1, 1), (7, 13, 1), (21, 30, 1), (5, 6, 3), (4, 3, 2), (6, 5, 4)] {
         let picture = awkward(height * width * channels);
         let written = tiff::float64(&picture, height, width, channels, false, None).expect("a file");
         assert_eq!(written.warning, "");
@@ -145,7 +145,13 @@ fn the_samples_are_written_bit_for_bit() {
         assert_eq!(file.numbers(257), [heights]);
         assert_eq!(file.numbers(258), vec![64; channels]);
         assert_eq!(file.numbers(259), [1]);
-        assert_eq!(file.numbers(262), [if channels == 3 { 2 } else { 1 }]);
+        assert_eq!(file.numbers(262), [if channels >= 3 { 2 } else { 1 }]);
+        // Alpha, after gray or RGB, unassociated; nothing extra otherwise.
+        if channels == 2 || channels == 4 {
+            assert_eq!(file.numbers(338), [2]);
+        } else {
+            assert!(!file.entries.contains_key(&338));
+        }
         assert_eq!(file.numbers(277), [samples]);
         assert_eq!(file.numbers(278), [heights]);
         assert_eq!(file.numbers(284), [1]);
@@ -172,7 +178,7 @@ fn ycbcr_is_declared_as_it_is() {
 
 #[test]
 fn other_shapes_are_refused() {
-    for (samples, height, width, channels) in [(8, 2, 2, 2), (0, 0, 3, 1), (5, 2, 2, 1)] {
+    for (samples, height, width, channels) in [(20, 2, 2, 5), (0, 0, 3, 1), (5, 2, 2, 1)] {
         let error = tiff::float64(&vec![0.0; samples], height, width, channels, false, None).expect_err("refused");
         assert!(error.to_string().contains("height x width"), "{error}");
     }

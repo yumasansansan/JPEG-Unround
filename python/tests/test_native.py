@@ -518,9 +518,15 @@ def test_ycbcr_is_declared_as_it_is() -> None:
     with pytest.raises(native.UnroundError):
         native.tiff_bytes(planes[:, :, 0], ycbcr=True)
     with pytest.raises(native.UnroundError):
-        native.tiff_bytes(np.zeros((2, 2, 2)))
+        native.tiff_bytes(np.zeros((2, 2, 5)))
     with pytest.raises(ValueError, match="height, width"):
         native.tiff_bytes(np.zeros(4))
+    # Gray or RGB with alpha: the alpha is declared, unassociated, and every sample comes back bit for bit.
+    for channels in (2, 4):
+        picture = np.random.default_rng(75).uniform(-1.0, 256.0, size=(3, 5, channels))
+        read, page = tiff_page(native.tiff_bytes(picture))
+        assert page.tags["ExtraSamples"].value in (2, (2,))
+        np.testing.assert_array_equal(bits(read.reshape(picture.shape)), bits(picture))
 
 
 def rounded(value: float, scale: int, top: int) -> int:
@@ -534,11 +540,11 @@ def test_the_pnm_rounds_halves_away_from_zero() -> None:
     samples = np.array(
         [[0.5, 1.5, 2.5, 254.5, 0.49999999999999994, -0.5], [255.4, 255.5, 300.0, -7.0, 128.0, 1.0 / 257.0]]
     )
-    eight = native.pnm_bytes(samples)
+    eight = native.pnm_bytes(samples, dither="none")
     header = b"P5\n6 2\n255\n"
     assert eight[: len(header)] == header
     assert list(eight[len(header) :]) == [rounded(float(value), 1, 255) for value in samples.ravel()]
-    sixteen = native.pnm_bytes(samples[:, :, np.newaxis].repeat(3, axis=2), sixteen=True)
+    sixteen = native.pnm_bytes(samples[:, :, np.newaxis].repeat(3, axis=2), sixteen=True, dither="none")
     header = b"P6\n6 2\n65535\n"
     assert sixteen[: len(header)] == header
     values = np.frombuffer(sixteen[len(header) :], dtype=">u2")
@@ -546,6 +552,55 @@ def test_the_pnm_rounds_halves_away_from_zero() -> None:
     assert values.tolist() == expected
     with pytest.raises(native.UnroundError, match="not finite"):
         native.pnm_bytes(np.array([[np.nan]]))
+
+
+BLUE_NOISE = Path(__file__).resolve().parents[2] / "rust" / "unround" / "src" / "blue_noise.rs"
+SHIFTS = {"apart": [(0, 0), (0, 32), (32, 0), (32, 32)], "together": [(0, 0)] * 4}
+
+
+def blue_noise() -> npt.NDArray[np.int64]:
+    """The ranks of the blue-noise matrix, as scripts/blue_noise.py writes them: 64 x 64, each of 0 to 4095 once."""
+    source = BLUE_NOISE.read_text(encoding="utf-8")
+    body = source[source.index("= [") + 3 : source.rindex("];")]
+    ranks = np.array(body.replace(",", " ").split(), dtype=np.int64)
+    assert sorted(ranks.tolist()) == list(range(4096))
+    return ranks.reshape(64, 64)
+
+
+def dithered(value: float, rank: int, scale: int, top: int) -> int:
+    """The level of docs/math.md, 10, in rationals: of y, value times scale as a double, floor(y), or the
+    level above where the fraction of y reaches 1 - (2 rank + 1) / 8192; clamped to 0..top."""
+    y = Fraction(value * scale)
+    whole = math.floor(y)
+    above = y - whole >= 1 - Fraction(2 * rank + 1, 8192)
+    return min(max(whole + int(above), 0), top)
+
+
+@pytest.mark.parametrize("channels", ["apart", "together"])
+@pytest.mark.parametrize("sixteen", [False, True])
+@pytest.mark.parametrize("shape", [(5, 7), (70, 66, 3)])
+def test_the_dither_is_that_of_the_matrix(shape: tuple[int, ...], channels: str, *, sixteen: bool) -> None:
+    ranks = blue_noise()
+    picture = np.random.default_rng(74).uniform(-3.0, 258.0, size=shape)
+    picture.flat[:4] = [0.0, 255.0, 9.25, 254.75]
+    samples = pnm_samples(picture, sixteen=sixteen, dither="blue-noise", dither_channels=channels)
+    scale, top = (257, 65535) if sixteen else (1, 255)
+    stacked = picture.reshape(shape[0], shape[1], -1)
+    for (row, column, channel), value in np.ndenumerate(stacked):
+        down, across = SHIFTS[channels][channel]
+        rank = int(ranks[(row + down) % 64, (column + across) % 64])
+        assert samples[row, column, channel] == dithered(float(value), rank, scale, top), (row, column, channel)
+
+
+def test_a_dither_is_one_of_those_of_the_command_line() -> None:
+    picture = np.full((2, 3), 7.5)
+    flat = native.pnm_bytes(picture, dither="none")
+    assert native.pnm_bytes(picture, dither="blue-noise", dither_channels="together") != flat
+    for dither, channels in [("ordered", None), ("none", "apart"), ("blue-noise", "mixed")]:
+        with pytest.raises(ValueError, match="the dither is blue-noise"):
+            native.pnm_bytes(picture, dither=dither, dither_channels=channels)
+        with pytest.raises(ValueError, match="the dither is blue-noise"):
+            native.png_bytes(picture, dither=dither, dither_channels=channels)
 
 
 def icc_profile(size: int, space: bytes, seed: int = 0) -> bytes:
@@ -575,24 +630,34 @@ def tiff_profile(data: bytes) -> bytes | None:
     return None
 
 
-def pnm_samples(picture: npt.NDArray[np.float64], *, sixteen: bool) -> npt.NDArray[np.int64]:
+def pnm_samples(
+    picture: npt.NDArray[np.float64], *, sixteen: bool, dither: str = "blue-noise", dither_channels: str | None = None
+) -> npt.NDArray[np.int64]:
     """The samples of the PNM file of the picture: those that PNG has to hold too."""
-    data = native.pnm_bytes(picture, sixteen=sixteen)
+    data = native.pnm_bytes(picture, sixteen=sixteen, dither=dither, dither_channels=dither_channels)
     body = data.split(b"\n", 3)[3]
     values = np.frombuffer(body, dtype=">u2" if sixteen else np.uint8).astype(np.int64)
     return values.reshape(picture.shape[0], picture.shape[1], -1)
 
 
+@pytest.mark.parametrize("dither", [("blue-noise", None), ("blue-noise", "together"), ("none", None)])
 @pytest.mark.parametrize("sixteen", [False, True])
 @pytest.mark.parametrize("shape", [(1, 1), (6, 9), (5, 7, 3)])
-def test_the_png_holds_the_pnm_s_samples(shape: tuple[int, ...], *, sixteen: bool) -> None:
+def test_the_png_holds_the_pnm_s_samples(
+    shape: tuple[int, ...], dither: tuple[str, str | None], *, sixteen: bool
+) -> None:
     picture = np.random.default_rng(72).uniform(-20.0, 280.0, size=shape)
     picture.flat[:3] = [0.5, 254.5, 0.49999999999999994][: picture.size]
+    made, channels = dither
+    expected = pnm_samples(picture, sixteen=sixteen, dither=made, dither_channels=channels)
     for compression in [None, 0, 9]:
-        read = pngfile.read(native.png_bytes(picture, sixteen=sixteen, compression=compression))
+        data = native.png_bytes(
+            picture, sixteen=sixteen, dither=made, dither_channels=channels, compression=compression
+        )
+        read = pngfile.read(data)
         assert read.bits == (16 if sixteen else 8)
         assert read.icc_profile is None
-        np.testing.assert_array_equal(read.samples, pnm_samples(picture, sixteen=sixteen))
+        np.testing.assert_array_equal(read.samples, expected)
     with pytest.raises(ValueError, match="0 to 9"):
         native.png_bytes(picture, compression=10)
     with pytest.raises(native.UnroundError, match="not finite"):

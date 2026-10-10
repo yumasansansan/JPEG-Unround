@@ -20,3 +20,4 @@
 "jpeg_unround::records::" = "the sums of the rows added in a Sum, and the totals of the channels in their order"
 "jpeg_unround::model::Problem::" = "the sums of the block rows added in a Sum"
 "jpeg_unround::subgradient::solve_tv" = "the sums of the rows of the step's length and of the objective added in a Sum"
+"jpeg_unround::samples::" = "the sums of the rows of a record added in a Sum, and the totals of the channels in their order"

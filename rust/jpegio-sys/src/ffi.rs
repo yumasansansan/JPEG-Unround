@@ -14,7 +14,7 @@ use std::mem::{offset_of, size_of};
 use std::ptr;
 
 /// `UNROUND_JPEGIO_ABI_VERSION` of the header these declarations follow.
-pub const ABI_VERSION: i32 = 2;
+pub const ABI_VERSION: i32 = 3;
 /// `UNROUND_JPEGIO_MAX_COMPONENTS`.
 pub const MAX_COMPONENTS: usize = 4;
 /// `UNROUND_JPEGIO_BLOCK_SIZE`: the coefficients of a block.
@@ -36,6 +36,8 @@ pub const ERROR_LIMIT: Status = 4;
 pub const ERROR_MEMORY: Status = 5;
 /// `UNROUND_JPEGIO_ERROR_ENCODE`: libpng could not write the file.
 pub const ERROR_ENCODE: Status = 6;
+/// libpng could not read the data as a PNG file.
+pub const ERROR_PNG: Status = 7;
 
 /// `UNROUND_JPEGIO_GRAYSCALE`.
 pub const GRAYSCALE: i32 = 1;
@@ -151,7 +153,7 @@ pub struct Png {
     pub width: u32,
     /// 1 or more.
     pub height: u32,
-    /// 1 (gray) or 3 (RGB).
+    /// 1 (gray), 2 (gray and alpha), 3 (RGB) or 4 (RGB and alpha).
     pub channels: i32,
     /// 8 or 16.
     pub bits: i32,
@@ -166,6 +168,40 @@ pub struct Png {
     pub icc_profile: *const u8,
     /// The bytes of the ICC profile.
     pub icc_profile_size: u64,
+}
+
+/// `unround_jpegio_png_image`: a PNG file's picture as it stores it, the levels of
+/// its samples.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct PngImage {
+    /// Pixels across.
+    pub width: u32,
+    /// Rows.
+    pub height: u32,
+    /// 1 (gray), 2 (gray and alpha), 3 (RGB) or 4 (RGB and alpha).
+    pub channels: i32,
+    /// 1, 2, 4, 8 or 16.
+    pub bits: i32,
+    /// `height * width * channels` levels.
+    pub samples: *mut u16,
+    /// The profile of the iCCP chunk, or a null pointer.
+    pub icc_profile: *mut u8,
+    /// The bytes of the profile.
+    pub icc_profile_size: u64,
+}
+
+impl PngImage {
+    /// An empty image, for the C layer to fill in.
+    pub const EMPTY: Self = Self {
+        width: 0,
+        height: 0,
+        channels: 0,
+        bits: 0,
+        samples: ptr::null_mut(),
+        icc_profile: ptr::null_mut(),
+        icc_profile_size: 0,
+    };
 }
 
 /// `unround_jpegio_bytes`: bytes that the C layer allocated.
@@ -255,6 +291,9 @@ const _: () = assert!(size_of::<Png>() == 48);
 const _: () = assert!(offset_of!(Png, samples) == 24);
 const _: () = assert!(offset_of!(Png, icc_profile_size) == 40);
 const _: () = assert!(size_of::<Bytes>() == 16);
+const _: () = assert!(size_of::<PngImage>() == 40);
+const _: () = assert!(offset_of!(PngImage, samples) == 16);
+const _: () = assert!(offset_of!(PngImage, icc_profile_size) == 32);
 
 unsafe extern "C" {
     /// `UNROUND_JPEGIO_ABI_VERSION` of the library that is linked.
@@ -350,4 +389,27 @@ unsafe extern "C" {
     ///
     /// `bytes` is null, or bytes that a writing filled in or that are empty.
     pub fn unround_jpegio_bytes_free(bytes: *mut Bytes);
+
+    /// Reads a PNG file in memory as the levels it stores.
+    ///
+    /// # Safety
+    ///
+    /// `data` is valid for reads of `size` bytes, `image` for writes, and `message`
+    /// for writes of `message_size` bytes (or null when that is 0). On success,
+    /// `image` owns memory that only `unround_jpegio_png_image_free` may free.
+    pub fn unround_jpegio_read_png(
+        data: *const u8,
+        size: usize,
+        max_pixels: u64,
+        image: *mut PngImage,
+        message: *mut c_char,
+        message_size: usize,
+    ) -> Status;
+
+    /// Frees what a successful reading allocated, and empties the image.
+    ///
+    /// # Safety
+    ///
+    /// `image` is null, or an image that a reading filled in or that is empty.
+    pub fn unround_jpegio_png_image_free(image: *mut PngImage);
 }

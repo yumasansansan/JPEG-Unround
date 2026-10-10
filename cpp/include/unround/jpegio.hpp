@@ -204,8 +204,9 @@ class Planes {
 // The versions of the libpng and the zlib the C layer is built with.
 [[nodiscard]] inline std::string_view libpng_version(void) noexcept { return unround_jpegio_libpng_version(); }
 
-// Whether an ICC profile goes with a picture of the channels (1: gray, 3: RGB),
-// as libpng takes the profile of an iCCP chunk; why not, where it does not.
+// Whether an ICC profile goes with a picture of the channels (1 or 2: gray, 3 or 4:
+// RGB, with alpha or without), as libpng takes the profile of an iCCP chunk; why
+// not, where it does not.
 [[nodiscard]] inline std::expected<void, std::string> check_icc(std::span<const std::uint8_t> profile,
                                                                 std::int32_t channels) {
   detail::Message reason{};
