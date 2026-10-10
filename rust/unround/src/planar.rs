@@ -255,14 +255,16 @@ impl Layout {
 /// block in column `c` of a block row at `(c mod h) M + c div h`, 0 elsewhere.
 fn flat_to_planes(part: &Part, across: usize, flat: &[bool]) -> Vec<f64> {
     let length = part.sets * across;
-    let mut result = vec![0.0; part.rows * length];
-    for (source, target) in flat.chunks_exact(part.columns).zip(result.chunks_exact_mut(length)) {
+    // The marks as bytes where they go, and then as doubles: a double chosen for each
+    // block where it goes would be scalar arithmetic on NEON.
+    let mut marks = vec![0_u8; part.rows * length];
+    for (source, target) in flat.chunks_exact(part.columns).zip(marks.chunks_exact_mut(length)) {
         for (column, &mark) in source.iter().enumerate() {
             let (mcu, set) = (column / part.sets, column % part.sets);
-            target[set * across + mcu] = if mark { 1.0 } else { 0.0 };
+            target[set * across + mcu] = u8::from(mark);
         }
     }
-    result
+    marks.into_iter().map(f64::from).collect()
 }
 
 /// A component's values in natural order in the planes of `across` MCUs, block by

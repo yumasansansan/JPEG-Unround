@@ -10,12 +10,12 @@
 //! ([`crate::exact::lanes`]), and the rows' sums in a [`Sum`]. The order differs from
 //! that of the natural layout, and so do the last bits.
 
-use crate::dct::BLOCK;
+use crate::dct::{BLOCK, multiply_add};
 use crate::exact::{Sum, added, lanes, nearest_from_usize};
 use crate::frames::{FREE_CENTRE, Frame};
 use crate::kernels::{
     self, at_least, backward_across, backward_down, beyond, centre, conjugate_term, forward_across, forward_down,
-    interval_end, squared_term,
+    interval_end, most, squared_term,
 };
 use crate::model::{LEVEL_SHIFT_DC, Tgv, Tv};
 use crate::operators::{tensor_square, vector_square};
@@ -35,10 +35,14 @@ struct Frequency {
 }
 
 impl Frequency {
-    /// The weight in a block, flat where `mark` is 1.
+    /// The weight in a block, flat where `mark` is 1: `flat mark + own (1 - mark)`,
+    /// exact for a mark of 1 or 0. A choice between the two fields would be compiled as
+    /// a choice between their places and a read from it, in vectors a read from a place
+    /// of each value's own, which NEON has no instruction for: the rows that take the
+    /// weight would be scalar there.
     #[inline]
     fn weight_of(&self, mark: f64) -> f64 {
-        if mark > 0.0 { self.flat_weight } else { self.weight }
+        multiply_add(self.flat_weight, mark, self.weight * (1.0 - mark))
     }
 }
 
@@ -631,24 +635,4 @@ fn roots(squares: &[f64], out: &mut [f64]) {
     for (value, &square) in out.iter_mut().zip(squares) {
         *value = square.sqrt();
     }
-}
-
-/// The largest value of a row, in eight lanes.
-#[inline]
-fn most(values: &[f64]) -> f64 {
-    let mut lanes = [0.0f64; 8];
-    let (chunks, rest) = values.as_chunks::<8>();
-    for chunk in chunks {
-        for (lane, &value) in lanes.iter_mut().zip(chunk) {
-            *lane = at_least(*lane, value);
-        }
-    }
-    let mut largest = lanes[0];
-    for &lane in &lanes[1..] {
-        largest = at_least(largest, lane);
-    }
-    for &value in rest {
-        largest = at_least(largest, value);
-    }
-    largest
 }

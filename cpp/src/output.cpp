@@ -168,6 +168,12 @@ LevelsArray levels_of(Picture<const double> picture, std::int32_t bits, Dither d
 
 bool turns(std::int32_t orientation) noexcept { return orientation >= 2 && orientation <= 8; }
 
+std::int32_t inverse(std::int32_t orientation) noexcept {
+  if (orientation == 6) return 8;
+  if (orientation == 8) return 6;
+  return orientation;
+}
+
 std::vector<std::uint8_t> tiff_bytes(Picture<const double> picture, Photometric photometric, bool alpha,
                                      std::span<const std::uint8_t> icc_profile) {
   const std::size_t rows = picture.extent(0);

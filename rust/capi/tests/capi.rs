@@ -2,15 +2,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The C interface, called as C calls it: its results are the library's to the last
-//! bit, a JPEG file's and a PNG file's, its observer stops the solver, and what it
-//! refuses it says.
+//! bit, a JPEG file's, a PNG file's and a projection's, its observer stops the solver,
+//! and what it refuses it says.
 
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::ptr;
 use std::slice;
 
-use jpeg_unround::decode::{self, Method, Settings};
-use jpeg_unround::{colour, orientation, output, pdhg, rounded, tiff};
+use jpeg_unround::decode::{self, Input, Method, Settings};
+use jpeg_unround::{colour, orientation, output, pdhg, picture, rounded, tiff};
 use jpegio_sys::testing::{File, Layout, read_png};
 use jpegio_sys::{Png, Samples, ffi};
 use unround_capi as capi;
@@ -120,7 +120,7 @@ fn picture_of(result: *const UnroundResult) -> (Vec<f64>, u64, u64, u64) {
 
 #[test]
 fn the_versions_are_those_of_the_header() {
-    assert_eq!(capi::unround_abi_version(), 4);
+    assert_eq!(capi::unround_abi_version(), 5);
     // SAFETY: the version is a NUL-terminated string of static storage.
     let version = unsafe { CStr::from_ptr(capi::unround_version()) };
     assert!(version.to_string_lossy().starts_with("unround "));
@@ -486,6 +486,84 @@ fn a_png_file_reconstructs_as_the_library_reconstructs_it() {
     assert_eq!(file_of(ptr::null()), (0, 0, 0, 0, 0));
     // SAFETY: null is what is asked about; nothing is read.
     assert!(unsafe { capi::unround_result_warning(ptr::null()) }.is_null());
+}
+
+/// A projection through the interface: its status, its result, and its message.
+fn project_with(
+    data: &[u8],
+    made: *const UnroundSettings,
+    samples: &[f64],
+    size: (u64, u64, u64),
+) -> (i32, *mut UnroundResult, String) {
+    let mut result: *mut UnroundResult = ptr::null_mut();
+    let mut message = [c_char::default(); 512];
+    // SAFETY: data and samples are valid for their lengths, which the sizes do not
+    // exceed where the call is to succeed; made are live settings; result and message
+    // are valid for writes.
+    let status = unsafe {
+        capi::unround_project(
+            data.as_ptr(),
+            data.len(),
+            made,
+            samples.as_ptr(),
+            size.0,
+            size.1,
+            size.2,
+            &raw mut result,
+            message.as_mut_ptr(),
+            512,
+        )
+    };
+    // SAFETY: the interface wrote a NUL-terminated message, or left the buffer zeroed.
+    let text = unsafe { CStr::from_ptr(message.as_ptr()) };
+    (status, result, text.to_string_lossy().into_owned())
+}
+
+#[test]
+fn a_picture_is_measured_and_projected_as_the_library_does_it() {
+    let (data, _, _) = grey_file();
+    let made = settings(&[]).expect("settings");
+    let mmse = Settings {
+        method: Method::Mmse,
+        ..Settings::default()
+    };
+    let mut given = decode::decode(&data, &mmse, None).expect("the file decodes").picture;
+    given[7 * 30 + 11] += 1500.0;
+    let (status, result, message) = project_with(&data, made, &given, (20, 30, 1));
+    assert_eq!(status, capi::OK, "{message}");
+    let input = Input::read(&data, &jpegio_sys::Options::default()).expect("the file is read");
+    let expected = picture::project(&input, &Settings::default(), &given, 1).expect("a projection");
+    let (projected, height, width, channels) = picture_of(result);
+    assert_eq!((height, width, channels), (20, 30, 1));
+    assert_eq!(projected, expected.decoded.picture);
+    let mut count = 0u64;
+    // SAFETY: result is a live result, and count is valid for a write.
+    let excess = values(unsafe { capi::unround_result_excess(result, 0, &raw mut count) }, count);
+    assert_eq!(excess, expected.excess[0]);
+    assert!(excess.iter().any(|&value| value > 0.0));
+    // SAFETY: as above; a component that is not there gives null.
+    assert!(unsafe { capi::unround_result_excess(result, 1, &raw mut count) }.is_null());
+    assert_eq!(file_of(result), (capi::FORMAT_JPEG, 8, ffi::GRAYSCALE, 0, 1));
+    assert_eq!(solver_of(result, false).0, 0);
+    free_result(result);
+    // A reconstruction's result has no excess.
+    let (status, decoded, message) = decode_with(&data, made, None, ptr::null_mut());
+    assert_eq!(status, capi::OK, "{message}");
+    // SAFETY: decoded is a live result, and count is valid for a write.
+    assert!(unsafe { capi::unround_result_excess(decoded, 0, &raw mut count) }.is_null());
+    free_result(decoded);
+    // What is refused: a picture of another size or of other channels, and a PNG file.
+    for size in [(19, 30, 1), (20, 30, 3)] {
+        let samples = vec![0.0; 20 * 30 * 3];
+        let (status, result, message) = project_with(&data, made, &samples, size);
+        assert_eq!(status, capi::ERROR_OPTIONS, "{message}");
+        assert!(result.is_null() && !message.is_empty());
+    }
+    let (png, _) = rgba_file();
+    let (status, result, message) = project_with(&png, made, &given, (20, 30, 1));
+    assert_eq!(status, capi::ERROR_OPTIONS, "{message}");
+    assert!(result.is_null());
+    free_settings(made);
 }
 
 /// Counts the records of the colours (3 channels) and of the alpha (1).

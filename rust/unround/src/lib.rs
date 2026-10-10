@@ -25,6 +25,8 @@
 //! - [`rounded`]: a PNG file, its colours and its alpha, reconstructed by [`samples`].
 //! - [`colour`]: the YCbCr of JFIF, and its inverse.
 //! - [`decode`]: a file, reconstructed by one of the methods.
+//! - [`picture`]: a picture made elsewhere, measured against a file's intervals and
+//!   projected onto them.
 //! - [`tiff`]: the result in binary64, written bit for bit.
 //! - [`exact`]: what is rational, computed exactly, and sums in a fixed order.
 //! - [`output`]: pictures of 8 or 16 bits, dithered or rounded, and PNG and PNM files.
@@ -47,6 +49,7 @@ pub mod operators;
 pub mod orientation;
 pub mod output;
 pub mod pdhg;
+pub mod picture;
 pub mod planar;
 pub mod records;
 pub mod results;

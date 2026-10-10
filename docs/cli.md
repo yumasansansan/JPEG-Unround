@@ -5,12 +5,14 @@
 
 ```
 unround [OPTIONS] INPUT [OUTPUT]
+unround [OPTIONS] --project-only PICTURE INPUT [OUTPUT]
 ```
 
 `unround` reads the JPEG file `INPUT`, reconstructs it within its quantization
 intervals (`docs/math.md`), and writes the result to `OUTPUT`. A PNG file is
 reconstructed alike within the intervals of its rounded samples (below, and
-`docs/math.md`, 11). The options are
+`docs/math.md`, 11). With `--project-only`, a picture of `INPUT` made elsewhere is
+projected onto its intervals instead (below, and `docs/math.md`, 12). The options are
 those of the library, under the same names: the Rust crate, the C interface, the
 C++ library and the Python package take every one of them, and every value the
 model and the solvers use can be given. A value not given takes its default, which
@@ -83,6 +85,42 @@ and without `--slack`, the result gives back the file's levels; dithered (the
 default), or of more bits than the file's, it shows what lies between them. The
 report says `"input_format": "png"`, the file's `bits` and whether it has `alpha`,
 and for alpha its solver's iterations and stop (`alpha_solver`).
+
+### A picture made elsewhere
+
+With `--project-only PICTURE`, nothing is solved: `PICTURE`, a picture of the JPEG
+file `INPUT` made elsewhere -- by another decoder, say -- is measured against
+`INPUT`'s intervals, and its projection onto them is the result: of the pictures
+whose coefficients lie within their intervals, the nearest to it (docs/math.md, 12).
+`PICTURE` is a path, or `-` for standard input where `INPUT` is not.
+
+`PICTURE` is a PNG file of `INPUT`'s size and channels: grey of a greyscale file (or
+RGB whose three channels are alike at every pixel), and RGB of a file in colour,
+without alpha; of 1 to 16 bits, level `v` of `b` bits the double nearest to
+`v 255 / (2^b - 1)`. Its own ICC profile and the like are not read: its samples are
+taken as the file's colours. It is taken as turned as the result is (Orientation,
+below): upright by default, as `INPUT`'s EXIF orientation says, and as the file
+stores it with `--orientation keep`. A picture that `unround` wrote of the same file
+is taken as it was written; that of a decoder that writes the picture as stored, as
+most do, needs `--orientation keep`. A picture that is not read, or that is of
+another size or other channels, or with alpha, is not taken (status 1).
+
+Of the settings, the projection takes `--slack`, whose intervals it projects onto,
+and the options of reading, of which `--max-pixels` holds for `PICTURE` too; the
+others are refused. The result is written as a reconstruction is: in the format,
+bits and dither asked for, turned as `--orientation` says, with `INPUT`'s ICC
+profile, and with `--ycbcr` as the Y, Cb and Cr of the projected canvas. The
+projection moves the samples beyond the picture as well, so that the result,
+extended again by its edges as an encoder extends it, need not lie within the
+intervals at the blocks that the picture covers in part (docs/math.md, 12); and
+rounded to 8 or 16 bits, it holds the rounding's error.
+
+Standard error says for each component (but with `--quiet`, or where the result
+goes to standard output) how many of its coefficients lay outside their intervals,
+and by how many steps at most. The report says `"method": "projection"`, the
+`picture`, the settings taken (`--slack` and those of reading), and for each
+component its `excess`: its `coefficients`, how many of them lay `outside` their
+intervals, and the `largest` excess, in steps (0 where none did).
 
 ### Dithering
 
@@ -216,7 +254,8 @@ one value for each (4.1, 4.4).
   rounding, or `null` for TIFF), the warnings of the writing (`warnings`), the method, the settings, the solver's
   iterations, why it stopped (`converged`, `iterations`, `observer`,
   `stationary`), and every record (`iterations`, `seconds`, `primal`, `dual`,
-  `scaling`, `partial_gap`, the last two `null` where not taken). `-` writes it to
+  `scaling`, `partial_gap`, the last two `null` where not taken); of a projection,
+  in place of the solver's, the picture and its excess (above). `-` writes it to
   standard output.
 - `--version`: the version and the implementation, and nothing else.
 - `-h`, `--help`: the options.
@@ -240,6 +279,6 @@ gap for TV, say) is refused, with every such error named at once.
 | Status | |
 |---|---|
 | 0 | The result is written. |
-| 1 | The file is not read, or its layout is not taken (sampling factors that are not whole multiples, say). |
+| 1 | The file is not read, or its layout is not taken (sampling factors that are not whole multiples, say); or `PICTURE` is not read, or not taken. |
 | 2 | The command line is refused. |
 | 3 | The result could not be written. |

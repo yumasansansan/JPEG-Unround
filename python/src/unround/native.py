@@ -52,6 +52,7 @@ __all__ = [
     "oriented",
     "png_bytes",
     "pnm_bytes",
+    "project",
     "solve",
     "tiff_bytes",
     "to_rgb",
@@ -63,7 +64,7 @@ type Array = npt.NDArray[np.float64]
 type Observer = Callable[["Record"], bool | None]
 type Source = bytes | bytearray | memoryview | str | os.PathLike[str] | jpegio.Image
 
-ABI_VERSION: Final = 4
+ABI_VERSION: Final = 5
 """UNROUND_ABI_VERSION of the interface this module mirrors."""
 
 _MESSAGE_SIZE: Final = 4096
@@ -174,6 +175,7 @@ def _declare_all(library: ctypes.CDLL) -> None:
     _declare(library, "unround_settings_options", size, handle, ctypes.c_char_p, size)
     _declare(library, "unround_decode", i32, ctypes.c_char_p, size, handle, *made)
     _declare(library, "unround_solve", i32, ctypes.POINTER(_Input), handle, *made)
+    _declare(library, "unround_project", i32, ctypes.c_char_p, size, handle, doubles, u64, u64, u64, *made[2:])
     _declare(library, "unround_result_free", None, handle)
     _declare(library, "unround_result_picture", doubles, handle, u64_out, u64_out, u64_out)
     _declare(library, "unround_result_planes", doubles, handle, u64_out)
@@ -194,6 +196,7 @@ def _declare_all(library: ctypes.CDLL) -> None:
     _declare(library, "unround_result_format", i32, handle)
     _declare(library, "unround_result_bits", i32, handle)
     _declare(library, "unround_result_warning", ctypes.c_char_p, handle)
+    _declare(library, "unround_result_excess", doubles, handle, u64, u64_out)
     written = (bytes_out, u64_out, *message)
     icc = (ctypes.c_char_p, u64)
     _declare(library, "unround_tiff", i32, doubles, u64, u64, u64, i32, *icc, *written)
@@ -474,7 +477,9 @@ class Decoded:
     intervals, and problems their models; a PNG file has none. result is the solver's,
     None for the decoder of the centres; of a PNG file, its colours' solver, and
     alpha_result its alpha's, reconstructed alone. input_format is "jpeg" or "png", and
-    bits the bits of the file's samples (8 of a JPEG file).
+    bits the bits of the file's samples (8 of a JPEG file). Of a projection (project),
+    excess holds how far each coefficient of the picture given lay outside its interval,
+    in steps, component by component, as the coefficients are laid out; None otherwise.
     """
 
     picture: Array
@@ -489,6 +494,7 @@ class Decoded:
     input_format: str = "jpeg"
     bits: int = 8
     alpha_result: Solution | None = None
+    excess: tuple[Array, ...] | None = None
 
 
 def _copy(pointer: object, shape: tuple[int, ...]) -> Array:
@@ -563,6 +569,18 @@ def _solution(library: ctypes.CDLL, result: ctypes.c_void_p, *, alpha: bool = Fa
     return Solution(int(iterations.value), Stop(int(stop.value)), history)
 
 
+def _excess(library: ctypes.CDLL, result: ctypes.c_void_p, shapes: list[tuple[int, ...]]) -> tuple[Array, ...] | None:
+    """A projection's excess, component by component; None for a reconstruction."""
+    count = ctypes.c_uint64()
+    measured = []
+    for index, shape in enumerate(shapes):
+        pointer = library.unround_result_excess(result, index, ctypes.byref(count))
+        if not pointer:
+            return None
+        measured.append(_checked(pointer, count, shape))
+    return tuple(measured) if measured else None
+
+
 def _decoded(library: ctypes.CDLL, result: ctypes.c_void_p) -> Decoded:
     height, width, channels = _sizes(0, 1, 2)
     samples = library.unround_result_picture(result, ctypes.byref(height), ctypes.byref(width), ctypes.byref(channels))
@@ -577,6 +595,7 @@ def _decoded(library: ctypes.CDLL, result: ctypes.c_void_p) -> Decoded:
     planes = _checked(planes_pointer, planes_count, (count, rows, columns))
     canvas = _copy(canvas_pointer, (count, int(canvas_height.value), int(canvas_width.value)))
     components = [_problem(library, result, index) for index in range(int(library.unround_result_components(result)))]
+    excess = _excess(library, result, [coefficients.shape for coefficients, _ in components])
     profile_size = ctypes.c_uint64()
     profile = library.unround_result_icc_profile(result, ctypes.byref(profile_size))
     warning = (library.unround_result_warning(result) or b"").decode("utf-8", "replace")
@@ -596,6 +615,7 @@ def _decoded(library: ctypes.CDLL, result: ctypes.c_void_p) -> Decoded:
         input_format="png" if int(library.unround_result_format(result)) == _FORMAT_PNG else "jpeg",
         bits=int(library.unround_result_bits(result)),
         alpha_result=_solution(library, result, alpha=True),
+        excess=excess,
     )
 
 
@@ -687,6 +707,46 @@ def decode(  # noqa: PLR0913 -- the file, the settings, the observer, and the li
         return int(library.unround_decode(buffer, size, handle.handle, callback, None, result, message, _MESSAGE_SIZE))
 
     return _reconstruct(call, observer)
+
+
+def project(  # noqa: PLR0913 -- the picture, the file, the settings, and the limits of jpegio.read
+    picture: npt.ArrayLike,
+    source: bytes | bytearray | memoryview | str | os.PathLike[str],
+    settings: Settings | None = None,
+    *,
+    max_pixels: int = 0,
+    max_scans: int = 0,
+    warnings_are_errors: bool = False,
+) -> Decoded:
+    """Measures a picture against a JPEG file's intervals, and projects it onto them (docs/math.md, 12).
+
+    picture is of the file's size as the file stores it, before its EXIF orientation:
+    (height, width) of a greyscale file, or (height, width, 3) of RGB of a file in colour,
+    made elsewhere, by another decoder, say. Its canvas is made as an encoder makes a
+    file's, and the settings' slack widens the intervals. The result is the projection, as
+    a reconstruction without a solver (result is None), and its excess holds the picture's:
+    how far each coefficient lay outside its interval, in steps. A picture of another size
+    or of other channels, and options out of their ranges, raise UnroundError.
+    """
+    library = _library()
+    samples, height, width, channels = _samples(picture)
+    handle = _Settings(
+        options(settings, max_pixels=max_pixels, max_scans=max_scans, warnings_are_errors=warnings_are_errors)
+    )
+    buffer = Path(source).read_bytes() if isinstance(source, (str, os.PathLike)) else bytes(source)
+    pointer = samples.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
+
+    def call(_callback: object, result: ctypes._CArgObject, message: ctypes.Array[ctypes.c_char]) -> int:
+        size = len(buffer)
+        return int(
+            library.unround_project(
+                buffer, size, handle.handle, pointer, height, width, channels, result, message, _MESSAGE_SIZE
+            )
+        )
+
+    projected = _reconstruct(call, None)
+    del samples  # kept alive until the library has read them
+    return projected
 
 
 def solve(image: jpegio.Image, settings: Settings | None = None, *, observer: Observer | None = None) -> Decoded:

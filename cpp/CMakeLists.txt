@@ -21,6 +21,7 @@ add_library(unround_cpp STATIC
   src/operators.cpp
   src/output.cpp
   src/pdhg.cpp
+  src/picture.cpp
   src/samples.cpp
   src/settings.cpp
   src/subgradient.cpp)
@@ -80,6 +81,15 @@ if(UNROUND_BUILD_TESTS)
   unround_target_defaults(unround_cpp_decode_test)
   target_compile_options(unround_cpp_decode_test PRIVATE ${UNROUND_CPP_TARGET_FLAGS})
   unround_add_test(cpp.decode unround_cpp_decode_test)
+
+  # A picture made elsewhere, measured against the intervals of files that the test
+  # encoder writes, and projected onto them.
+  add_executable(unround_cpp_picture_test tests/test_picture.cpp)
+  target_include_directories(unround_cpp_picture_test PRIVATE tests)
+  target_link_libraries(unround_cpp_picture_test PRIVATE unround::cpp unround_test_jpeg)
+  unround_target_defaults(unround_cpp_picture_test)
+  target_compile_options(unround_cpp_picture_test PRIVATE ${UNROUND_CPP_TARGET_FLAGS})
+  unround_add_test(cpp.picture unround_cpp_picture_test)
 
   # The command line, run in the process on files of the test encoder, which it writes
   # in its directory.

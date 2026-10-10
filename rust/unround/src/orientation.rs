@@ -41,6 +41,17 @@ pub fn transposes(orientation: i32) -> bool {
     (5..=8).contains(&orientation)
 }
 
+/// The orientation that turns back what `orientation` turns, from the picture shown to
+/// the picture stored: each is its own but 6 and 8, the quarter turns, each the other's.
+#[must_use]
+pub fn inverse(orientation: i32) -> i32 {
+    match orientation {
+        6 => 8,
+        8 => 6,
+        other => other,
+    }
+}
+
 /// The side of the square tiles that a picture whose rows become columns is turned
 /// in, so that what is read and what is written stay in the caches.
 const TILE: usize = 64;
@@ -208,6 +219,29 @@ mod tests {
         assert_eq!(turned(6), [4, 1, 5, 2, 6, 3]);
         assert_eq!(turned(7), [6, 3, 5, 2, 4, 1]);
         assert_eq!(turned(8), [3, 6, 2, 5, 1, 4]);
+    }
+
+    #[test]
+    fn the_inverse_turns_the_picture_back() {
+        for (height, width) in [(1, 1), (2, 3), (70, 130)] {
+            let channels = 3;
+            let samples: Vec<u32> = (0..height * width * channels)
+                .map(|index| u32::try_from(index).expect("fits"))
+                .collect();
+            for orientation in 0..=8 {
+                let turned = oriented(&samples, height, width, channels, orientation).expect("a picture");
+                let back = oriented(
+                    &turned.samples,
+                    turned.height,
+                    turned.width,
+                    channels,
+                    inverse(orientation),
+                )
+                .expect("a picture");
+                assert_eq!((back.height, back.width), (height, width), "orientation {orientation}");
+                assert_eq!(back.samples, samples, "orientation {orientation}, {height} x {width}");
+            }
+        }
     }
 
     #[test]

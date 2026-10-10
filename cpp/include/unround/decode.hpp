@@ -52,9 +52,21 @@ struct Decoded {
 // Called at each record with the canvas of its point; returning true stops the solver.
 using Observer = pdhg::Observer;
 
-// The reconstruction of a JPEG file with the settings. A file that is not read is
+// A JPEG file as a reconstruction takes it: what the result says of the file, its
+// size, colour space, EXIF orientation, ICC profile and warning (decoded, of no canvas
+// or picture yet), and the frame of its components with the settings' data terms.
+struct Source {
+  Decoded decoded;
+  Frame frame;
+};
+
+// A JPEG file read for a reconstruction with the settings. A file that is not read is
 // refused (Errc::read), one of a layout that is not taken (Errc::unsupported), and
 // settings that the file's components do not take (Errc::options).
+[[nodiscard]] std::expected<Source, Error> read_source(std::span<const std::uint8_t> file, const Settings& settings);
+
+// The reconstruction of a JPEG file with the settings, refused as read_source refuses
+// it.
 [[nodiscard]] std::expected<Decoded, Error> decode(std::span<const std::uint8_t> file, const Settings& settings,
                                                    const Observer& observer = {});
 

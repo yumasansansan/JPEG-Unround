@@ -294,11 +294,34 @@ pub fn solve(input: &Input, settings: &Settings, observer: Option<&mut Observer<
         Some(solved) => solved.primal.clone(),
         None => frames::start(&frame, None)?,
     };
+    decoded_of(input, frame, point.canvas, point.coefficients, result)
+}
+
+/// A reconstruction of an input from its canvas and its coefficients on the frame:
+/// the canvas cut to the picture, and of a file in YCbCr JFIF's RGB of it.
+///
+/// # Errors
+///
+/// [`Error::Options`] for a canvas that is not of the frame's size.
+pub(crate) fn decoded_of(
+    input: &Input,
+    frame: Frame,
+    canvas: Vec<f64>,
+    coefficients: Vec<Vec<f64>>,
+    result: Option<FrameResult>,
+) -> Result<Decoded, Error> {
     let (height, width) = (input.height, input.width);
     let count = frame.channels().len();
+    if canvas.len() != count * frame.plane() {
+        return Err(Error::Options(format!(
+            "a canvas of {} samples, not {}",
+            count * frame.plane(),
+            canvas.len()
+        )));
+    }
     let mut planes = Vec::with_capacity(count * height * width);
     for channel in 0..count {
-        let plane = &point.canvas[channel * frame.plane()..(channel + 1) * frame.plane()];
+        let plane = &canvas[channel * frame.plane()..(channel + 1) * frame.plane()];
         for row in plane.chunks_exact(frame.width()).take(height) {
             planes.extend_from_slice(&row[..width]);
         }
@@ -324,8 +347,8 @@ pub fn solve(input: &Input, settings: &Settings, observer: Option<&mut Observer<
         channels,
         planes,
         color_space: input.color_space,
-        coefficients: point.coefficients,
-        canvas: point.canvas,
+        coefficients,
+        canvas,
         frame,
         result,
         icc_profile: input.icc_profile.clone(),

@@ -406,8 +406,16 @@ pub fn prox(frame: &Frame, steps: &[Step], canvas: &[f64], coefficients: &mut [V
 /// (docs/math.md, 4.4): the proximal map with `G` the constraint alone.
 #[must_use]
 pub fn project(frame: &Frame, canvas: &[f64]) -> Vec<f64> {
+    project_with_coefficients(frame, canvas).0
+}
+
+/// [`project`], and each component's coefficients of the projection: those of the
+/// canvas, clipped to their intervals.
+#[must_use]
+pub fn project_with_coefficients(frame: &Frame, canvas: &[f64]) -> (Vec<f64>, Vec<Vec<f64>>) {
     let plane = frame.plane();
     let mut out = vec![0.0; canvas.len()];
+    let mut clipped = Vec::with_capacity(frame.channels.len());
     for (index, channel) in frame.channels.iter().enumerate() {
         let source = &canvas[index * plane..(index + 1) * plane];
         let target = &mut out[index * plane..(index + 1) * plane];
@@ -418,8 +426,9 @@ pub fn project(frame: &Frame, canvas: &[f64]) -> Vec<f64> {
                 *value = channel.problem.clip_one(start + offset, *value);
             }
         });
+        clipped.push(coefficients);
     }
-    out
+    (out, clipped)
 }
 
 /// `v + nu^-1 A^T (zeta - A v)` for one channel, where `zeta` is what `map` makes of

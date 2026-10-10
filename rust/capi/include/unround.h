@@ -9,7 +9,9 @@
 // (docs/cli.md), as strings. A file in memory -- a JPEG file, or a PNG file within
 // the intervals of its rounded samples (docs/math.md, 11) -- or components given as
 // arrays, are reconstructed into a result, whose arrays stay valid until the
-// result is freed; an observer can follow the solver's records and stop it.
+// result is freed; an observer can follow the solver's records and stop it. A
+// picture made elsewhere is measured against a JPEG file's intervals and projected
+// onto them.
 // The writers of TIFF, PNG and PNM, the turning of a picture upright, JFIF's
 // conversion, the command line itself, and the C layer's reading of JPEG files
 // (unround/jpegio.h) are here too.
@@ -36,7 +38,7 @@
 extern "C" {
 #endif
 
-#define UNROUND_ABI_VERSION 4
+#define UNROUND_ABI_VERSION 5
 
 // What a function of the interface reports.
 typedef enum unround_status : int32_t {
@@ -137,6 +139,16 @@ unround_status unround_decode(const uint8_t* data, size_t size, const unround_se
 unround_status unround_solve(const unround_input* input, const unround_settings* settings, unround_observer observer,
                              void* user, unround_result** result, char* message, size_t message_size);
 
+// Measures a picture against a JPEG file's intervals, with the settings' slack, and
+// projects it onto them (docs/math.md, 12), into *result, which unround_result_free
+// frees. The picture, height x width x channels binary64 samples interleaved, is of
+// the file's size as the file stores it, before its EXIF orientation: greyscale, or of
+// a file in colour RGB. The result is the projection, as a reconstruction without a
+// solver, and holds the picture's excess (unround_result_excess).
+unround_status unround_project(const uint8_t* data, size_t size, const unround_settings* settings,
+                               const double* picture, uint64_t height, uint64_t width, uint64_t channels,
+                               unround_result** result, char* message, size_t message_size);
+
 void unround_result_free(unround_result* result);
 
 // The picture: height x width x channels binary64 samples, interleaved,
@@ -210,6 +222,12 @@ int32_t unround_result_bits(const unround_result* result);
 // lives: a corrupt-data warning of a JPEG file, or a PNG file's transparent colour
 // that is not taken; an empty string where there was none. Null for a null result.
 const char* unround_result_warning(const unround_result* result);
+
+// How far each coefficient of a component of the picture given to unround_project lay
+// outside its interval, in steps (0 within it), count of them, 64 to a block in
+// natural order; null for the result of a reconstruction, or a component that is not
+// there.
+const double* unround_result_excess(const unround_result* result, uint64_t component, uint64_t* count);
 
 // ---------------------------------------------------------------------------
 // Output and conversion

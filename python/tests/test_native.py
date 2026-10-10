@@ -927,6 +927,35 @@ def test_a_warning_of_the_reading_is_said() -> None:
     assert strict.value.status is native.Status.READ
 
 
+def test_a_picture_made_elsewhere_is_measured_and_projected() -> None:
+    data = colour_file("4:2:0")
+    decoded = native.decode(data, Settings(method="mmse"))
+    assert decoded.excess is None
+    spiked = decoded.picture.copy()
+    spiked[5, 7, :] += 900.0
+    projected = native.project(spiked, data)
+    assert projected.result is None
+    assert projected.excess is not None
+    assert [excess.shape for excess in projected.excess] == [values.shape for values in projected.coefficients]
+    assert max(float(excess.max()) for excess in projected.excess) > 0.0
+    # The projection's coefficients lie within their intervals.
+    for coefficients, problem in zip(projected.coefficients, projected.problems, strict=True):
+        assert np.all(problem.lower <= coefficients)
+        assert np.all(coefficients <= problem.upper)
+    assert projected.picture.shape == spiked.shape
+    # A file of whole blocks: the MMSE decoder's picture lies within its intervals.
+    grey = grey_file(height=24, width=32)
+    picture = native.decode(grey, Settings(method="mmse")).picture
+    within = unround.project(picture, grey)
+    assert within.excess is not None
+    assert all(float(excess.max()) == 0.0 for excess in within.excess)
+    # A picture of other channels, or of another size, is refused.
+    for wrong in (spiked[:, :, 0], spiked[1:]):
+        with pytest.raises(native.UnroundError) as refused:
+            native.project(wrong, data)
+        assert refused.value.status is native.Status.OPTIONS
+
+
 def test_the_package_decodes_a_path_bytes_or_an_image(tmp_path: Path) -> None:
     data = colour_file("4:2:0")
     source = tmp_path / "in.jpg"

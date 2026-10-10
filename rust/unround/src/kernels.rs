@@ -60,6 +60,41 @@ pub fn at_most(value: f64, bound: f64) -> f64 {
     if value > bound { bound } else { value }
 }
 
+/// The largest of 0 and the values, in eight lanes: vector code, where a largest
+/// taken one value after another would not be, its order kept for NaNs.
+#[inline]
+#[must_use]
+pub fn most(values: &[f64]) -> f64 {
+    let mut lanes = [0.0f64; 8];
+    let (chunks, rest) = values.as_chunks::<8>();
+    for chunk in chunks {
+        for (lane, &value) in lanes.iter_mut().zip(chunk) {
+            *lane = at_least(*lane, value);
+        }
+    }
+    let mut largest = lanes[0];
+    for &lane in &lanes[1..] {
+        largest = at_least(largest, lane);
+    }
+    for &value in rest {
+        largest = at_least(largest, value);
+    }
+    largest
+}
+
+/// 1 for a value above 0, and 0 for one that is not, to count them: the comparison
+/// and the count on one line, of the vector loop and of its remainder alike, which
+/// the check of vector code pairs by their lines.
+#[inline]
+#[must_use]
+#[expect(
+    clippy::bool_to_int_with_if,
+    reason = "usize::from is a line of the core library's, which the vector loop takes and its remainder not"
+)]
+pub fn above_zero(value: f64) -> usize {
+    if value > 0.0 { 1 } else { 0 }
+}
+
 /// What a vector or tensor of the squared norm `square` is multiplied by to project
 /// it onto the ball of the radius: `radius / |v|` beyond the ball, and 1 exactly within
 /// it; one square root and one division.
@@ -330,8 +365,11 @@ pub fn prox_row<const CHARGED: bool>(
 
 /// [`prox_row`] with flat blocks: the value at place `m` of each stream takes the
 /// factors of `flat[u]` where `marks[m]` is 1 (its block is flat) and those of
-/// `frequencies[u]` where it is 0. The factors are chosen, not computed, so that each
-/// value is that of its block's own map to the last bit.
+/// `frequencies[u]` where it is 0. Each factor is `flat mark + own (1 - mark)`, which is
+/// one of the two to the last bit -- a product by 1 or 0 and a sum with 0 are exact --
+/// so that each value is that of its block's own map; and sums of products, where a
+/// choice between the two would be made in the scalar remainder by a blend of 128 bits,
+/// keep the arithmetic of the full width.
 #[inline]
 #[expect(
     clippy::too_many_arguments,
@@ -349,18 +387,20 @@ pub fn prox_row_flat<const CHARGED: bool>(
     count: usize,
 ) {
     let marks = &marks[..count];
-    for (u, (frequency, flat)) in frequencies.iter().zip(flat).enumerate() {
+    // Both kinds of factors are taken as values before the row, so that nothing in the
+    // loop reads from a place that depends on the mark, which NEON has no vector load for.
+    for (u, (&own, &flat)) in frequencies.iter().zip(flat).enumerate() {
         let values = &mut values[u * stride..u * stride + count];
         let levels = &levels[u * level_stride..u * level_stride + count];
         for ((value, &level), &mark) in values.iter_mut().zip(levels).zip(marks) {
-            let flat_block = mark > 0.0;
-            let chosen = Frequency {
-                scaled: if flat_block { flat.scaled } else { frequency.scaled },
-                inverse: if flat_block { flat.inverse } else { frequency.inverse },
-                shrink: if flat_block { flat.shrink } else { frequency.shrink },
-                ..*frequency
+            let other = 1.0 - mark;
+            let taken = Frequency {
+                scaled: multiply_add(flat.scaled, mark, own.scaled * other),
+                inverse: multiply_add(flat.inverse, mark, own.inverse * other),
+                shrink: multiply_add(flat.shrink, mark, own.shrink * other),
+                ..own
             };
-            *value = prox_one::<CHARGED>(*value, f64::from(level), &chosen, slack);
+            *value = prox_one::<CHARGED>(*value, f64::from(level), &taken, slack);
         }
     }
 }

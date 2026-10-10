@@ -7,8 +7,10 @@
 // --ycbcr; the name of the output next to the input; a file that exists, written over
 // only with --overwrite; a PNG file with alpha, refused as PNM; the report; the
 // verbose records; an ICC profile left out with a warning; a file cut short, with the
-// warning of its reading; --version and --help; and the exit statuses of what is
-// refused and of what is not read.
+// warning of its reading; --version and --help; the exit statuses of what is refused
+// and of what is not read; and with --project-only, the library's projection of the
+// picture given, taken as turned as the result is, its excess said and reported, and
+// the pictures and options that a projection does not take.
 
 #include "unround/cli.hpp"
 
@@ -16,6 +18,7 @@
 #include "unround/decode.hpp"
 #include "unround/jpegio.hpp"
 #include "unround/output.hpp"
+#include "unround/picture.hpp"
 #include "unround/settings.hpp"
 
 #include "support/check.hpp"
@@ -336,6 +339,216 @@ void refusals(const fs::path& directory) {
   CHECK(help.status == 0 && contains(help.out, "unround [OPTIONS] INPUT [OUTPUT]"));
 }
 
+unround::Source source_of(std::span<const std::uint8_t> file, const Arguments& arguments) {
+  auto settings = unround::parse_settings(arguments);
+  if (!settings) std::abort();
+  auto source = unround::read_source(file, *settings);
+  if (!source) std::abort();
+  return std::move(*source);
+}
+
+// The picture of 8-bit levels as doubles, which are the levels themselves.
+unround::output::PictureArray values_of(const unround::MdArray<std::uint8_t, unround::PictureExtents>& levels) {
+  unround::output::PictureArray values(levels.extents());
+  std::ranges::transform(levels.entries(), values.entries().begin(),
+                         [](std::uint8_t level) { return static_cast<double>(level); });
+  return values;
+}
+
+// What standard error says of each component's excess begins with the counts that the
+// library's summary gives.
+bool says_excess(std::string_view err, std::string_view target, std::span<const std::string_view> names,
+                 const unround::picture::Projection& projection) {
+  bool said = true;
+  for (std::size_t c = 0; c < names.size(); ++c) {
+    const unround::picture::Summary summary = unround::picture::summary(projection.excess[c].view());
+    const std::string named = names[c].empty() ? std::string() : std::format("{}: ", names[c]);
+    const std::string line =
+        std::format("{}: {}{} of {} coefficients of the picture lay outside their intervals{}", target, named,
+                    summary.outside, summary.coefficients, summary.outside > 0u ? ", by at most " : "\n");
+    said = said && contains(err, line);
+  }
+  return said;
+}
+
+void projection(const fs::path& directory) {
+  const Runner run(directory);
+  const std::vector<std::uint8_t> colour = jpeg_of(21, 13, TEST_JPEG_YCBCR, 2, true);
+  const fs::path input = directory / "projected.jpg";
+  write_file(input, colour);
+  const std::string in = input.string();
+  // A picture made elsewhere: the MMSE decoder's in 8 bits, as the file stores it, three
+  // samples moved far.
+  const unround::Decoded decoded = decoded_of(colour, {"--method", "mmse"});
+  const unround::output::LevelsArray rounded =
+      unround::output::levels_of(std::as_const(decoded.picture).view(), 8, unround::output::Dither::none, true);
+  unround::MdArray<std::uint8_t, unround::PictureExtents> stored(rounded.extents());
+  std::ranges::transform(rounded.entries(), stored.entries().begin(),
+                         [](std::uint16_t level) { return static_cast<std::uint8_t>(level); });
+  stored.view()[4, 6, 0] = 255;
+  stored.view()[4, 6, 2] = 0;
+  stored.view()[9, 15, 1] = 0;
+  const unround::Source source = source_of(colour, {});
+  const unround::output::PictureArray values = values_of(stored);
+  const auto projected = unround::picture::project(source, values.view());
+  if (!CHECK(projected.has_value())) return;
+  const unround::output::PictureArray upright =
+      unround::output::oriented(std::as_const(projected->decoded.picture).view(), 6);
+  // Upright, as the result is: TIFF, to the last bit, with the excess said and reported.
+  const unround::MdArray<std::uint8_t, unround::PictureExtents> shown =
+      unround::output::oriented(std::as_const(stored).view(), 6);
+  const fs::path upright_png = directory / "upright.png";
+  const fs::path stored_png = directory / "stored.png";
+  {
+    const auto shown_file = unround::jpegio::write_png(shown.view());
+    const auto stored_file = unround::jpegio::write_png(std::as_const(stored).view());
+    if (!CHECK(shown_file.has_value() && stored_file.has_value())) return;
+    write_file(upright_png, shown_file->bytes);
+    write_file(stored_png, stored_file->bytes);
+  }
+  {
+    const std::string target = (directory / "projected.tif").string();
+    const std::string report = (directory / "projected.json").string();
+    const Ran ran = run({"--project-only", upright_png.string(), "--report", report, in, target});
+    CHECK(ran.status == 0);
+    const std::array<std::string_view, 3> names = {"Y", "Cb", "Cr"};
+    CHECK(says_excess(ran.err, target, names, *projected));
+    CHECK(contains(ran.err, "the ICC profile is not written"));
+    CHECK(read_file(target) ==
+          unround::output::tiff_bytes(upright.view(), unround::output::Photometric::rgb, false, {}));
+    std::ifstream file(report);
+    const std::string text{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+    const unround::picture::Summary luma = unround::picture::summary(projected->excess[0].view());
+    for (const std::string& key :
+         {std::string("\"method\": \"projection\""), std::format("\"picture\": \"{}\"", upright_png.string()),
+          std::string("\"oriented\": true"), std::string("\"settings\": [\"--slack=0\"]"),
+          std::format("\"excess\": [{{\"coefficients\": {}, \"outside\": {}, \"largest\": {}}}", luma.coefficients,
+                      luma.outside, luma.largest)}) {
+      if (!CHECK(contains(text, key))) std::println(stderr, "not in the report: {}", key);
+    }
+    CHECK(luma.outside > 0u && !contains(text, "\"records\""));
+  }
+  // As stored, with --orientation keep: the Y, Cb and Cr of the projected canvas.
+  {
+    const std::string target = (directory / "projected-kept.tif").string();
+    const Ran ran =
+        run({"--project-only", stored_png.string(), "--orientation", "keep", "--ycbcr", "--quiet", in, target});
+    CHECK(ran.status == 0 && ran.err.empty());
+    const unround::output::PictureArray cut =
+        unround::picture_of(projected->decoded.canvas, 13, 21, unround::ColourSpace::rgb);
+    CHECK(read_file(target) == unround::output::tiff_bytes(cut.view(), unround::output::Photometric::ycbcr, false, {}));
+  }
+  // The picture stored is not the upright one, nor the upright one the stored.
+  {
+    const Ran stored_run = run({"--project-only", stored_png.string(), in, (directory / "x.tif").string()});
+    CHECK(stored_run.status == unround::cli::not_read &&
+          contains(stored_run.err, "a picture of the file is 21 x 13 pixels, not 13 x 21, as the file stores it"));
+    const Ran upright_run =
+        run({"--project-only", upright_png.string(), "--orientation=keep", in, (directory / "x.tif").string()});
+    CHECK(upright_run.status == unround::cli::not_read &&
+          contains(upright_run.err, "turned upright, which --orientation apply takes"));
+  }
+  // PNG of 16 bits, rounded, of the projection with a slack.
+  {
+    const unround::Source widened = source_of(colour, {"--slack", "0.5"});
+    const auto loose = unround::picture::project(widened, values.view());
+    if (!CHECK(loose.has_value())) return;
+    const std::string target = (directory / "slack.png").string();
+    const Ran ran = run({"--project-only", upright_png.string(), "--slack", "0.5", "--bits", "16", "--dither", "none",
+                         "--quiet", in, target});
+    CHECK(ran.status == 0);
+    const unround::output::PictureArray turned =
+        unround::output::oriented(std::as_const(loose->decoded.picture).view(), 6);
+    const unround::output::LevelsArray levels =
+        unround::output::levels_of(turned.view(), 16, unround::output::Dither::none, true);
+    const auto image = unround::jpegio::PngImage::read(read_file(target));
+    CHECK(image.has_value() && image->bits() == 16 &&
+          std::ranges::equal(std::span<const std::uint16_t>(image->levels().data_handle(), image->levels().size()),
+                             levels.entries()));
+  }
+}
+
+void grey_projection(const fs::path& directory) {
+  const Runner run(directory);
+  const std::vector<std::uint8_t> grey = jpeg_of(30, 21, TEST_JPEG_GRAYSCALE, 1, false);
+  const fs::path input = directory / "grey-projected.jpg";
+  write_file(input, grey);
+  const std::string in = input.string();
+  // 16 bits, level v standing for v / 257.
+  unround::MdArray<std::uint16_t, unround::PictureExtents> levels(unround::PictureExtents{21, 30, 1});
+  unround::MdArray<std::uint16_t, unround::PictureExtents> rgb(unround::PictureExtents{21, 30, 3});
+  unround::output::PictureArray values(unround::PictureExtents{21, 30, 1});
+  for (std::size_t k = 0; k < levels.size(); ++k) {
+    const auto level = static_cast<std::uint16_t>((k * 2654435761u) >> 16u);
+    levels.entries()[k] = level;
+    for (std::size_t c = 0; c < 3u; ++c) rgb.entries()[3u * k + c] = level;
+    values.entries()[k] = static_cast<double>(level) / 257.0;
+  }
+  const auto projected = unround::picture::project(source_of(grey, {}), std::as_const(values).view());
+  if (!CHECK(projected.has_value())) return;
+  const std::vector<std::uint8_t> expected = unround::output::tiff_bytes(
+      std::as_const(projected->decoded.picture).view(), unround::output::Photometric::grey, false, {});
+  const auto grey_file = unround::jpegio::write_png(std::as_const(levels).view());
+  const auto rgb_file = unround::jpegio::write_png(std::as_const(rgb).view());
+  if (!CHECK(grey_file.has_value() && rgb_file.has_value())) return;
+  const fs::path grey_png = directory / "grey16.png";
+  const fs::path rgb_png = directory / "rgb16.png";
+  write_file(grey_png, grey_file->bytes);
+  write_file(rgb_png, rgb_file->bytes);
+  for (const fs::path& picture_path : {grey_png, rgb_png}) {
+    const std::string target = (directory / (picture_path.stem().string() + ".tif")).string();
+    const Ran ran = run({"--project-only", picture_path.string(), in, target});
+    const std::array<std::string_view, 1> names = {""};
+    CHECK(ran.status == 0 && says_excess(ran.err, target, names, *projected));
+    CHECK(read_file(target) == expected);
+  }
+  // Pictures that are not taken.
+  unround::MdArray<std::uint16_t, unround::PictureExtents> unlike = rgb;
+  unlike.entries()[4] ^= 1u;
+  unround::MdArray<std::uint8_t, unround::PictureExtents> alpha(unround::PictureExtents{21, 30, 2});
+  const unround::MdArray<std::uint8_t, unround::PictureExtents> small(unround::PictureExtents{20, 30, 1});
+  const auto unlike_file = unround::jpegio::write_png(std::as_const(unlike).view());
+  const auto alpha_file = unround::jpegio::write_png(std::as_const(alpha).view());
+  const auto small_file = unround::jpegio::write_png(small.view());
+  if (!CHECK(unlike_file.has_value() && alpha_file.has_value() && small_file.has_value())) return;
+  struct Case {
+    std::string_view name;
+    std::span<const std::uint8_t> bytes;
+    std::string_view said;
+  };
+  const std::array<Case, 4> cases = {
+      Case{.name = "unlike.png",
+           .bytes = unlike_file->bytes,
+           .said = "a greyscale file's picture is grey, or RGB of three channels alike"},
+      Case{.name = "alpha.png", .bytes = alpha_file->bytes, .said = "a picture with alpha is not a JPEG file's"},
+      Case{.name = "small.png",
+           .bytes = small_file->bytes,
+           .said = "a picture of the file is 21 x 30 pixels, not 20 x 30"},
+      Case{.name = "not.png", .bytes = grey, .said = "the picture to project is a PNG file"},
+  };
+  for (const Case& refused_case : cases) {
+    const fs::path picture_path = directory / refused_case.name;
+    write_file(picture_path, refused_case.bytes);
+    const Ran ran = run({"--project-only", picture_path.string(), in, (directory / "x.tif").string()});
+    if (!CHECK(ran.status == unround::cli::not_read && contains(ran.err, refused_case.said))) {
+      std::println(stderr, "{}: status {}: {}", refused_case.name, ran.status, ran.err);
+    }
+  }
+  // A colour file's picture is RGB.
+  const fs::path colour = directory / "colour-projected.jpg";
+  write_file(colour, jpeg_of(21, 13, TEST_JPEG_YCBCR, 2, false));
+  const Ran colour_run = run({"--project-only", grey_png.string(), colour.string(), (directory / "x.tif").string()});
+  CHECK(colour_run.status == unround::cli::not_read && contains(colour_run.err, "a colour file's picture is RGB"));
+  // What a projection does not take.
+  const Ran method = run({"--project-only", grey_png.string(), "--method", "tv", "--iterations", "3", in, "-"});
+  CHECK(method.status == unround::cli::refused && contains(method.err, "--method is not taken with --project-only") &&
+        contains(method.err, "--iterations is not taken with --project-only"));
+  const Ran both = run({"--project-only", "-", "-"});
+  CHECK(both.status == unround::cli::refused && contains(both.err, "not both the standard input"));
+  const Ran png = run({"--project-only", grey_png.string(), grey_png.string(), (directory / "x.tif").string()});
+  CHECK(png.status == unround::cli::refused && contains(png.err, "not of a PNG file"));
+}
+
 int run_tests(std::span<char* const> arguments) {
   if (arguments.size() < 2u) return 2;
   const fs::path directory = arguments[1];
@@ -345,6 +558,8 @@ int run_tests(std::span<char* const> arguments) {
   outputs(directory);
   png_input(directory);
   refusals(directory);
+  projection(directory);
+  grey_projection(directory);
   return unround::test::finish("cli");
 }
 

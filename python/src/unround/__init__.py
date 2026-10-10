@@ -8,6 +8,7 @@ docs/math.md's, and the options are the command line's (docs/cli.md). A PNG file
 reconstructed alike, within the intervals of its rounded samples.
 
   decode    a JPEG or PNG file, its bytes, or its components as read, reconstructed (unround.native.decode)
+  project   a picture made elsewhere, measured against a JPEG file's intervals and projected onto them
   read      a file's quantized coefficients, tables and sampling factors (unround.jpegio.read)
   settings  the method, the model and the solvers' options
   native    the reference implementation: reconstruction, its writers (TIFF in binary64, PNG,
@@ -28,6 +29,7 @@ from unround.native import (
     oriented,
     png_bytes,
     pnm_bytes,
+    project,
     solve,
     tiff_bytes,
     to_rgb,
@@ -52,6 +54,7 @@ __all__ = [
     "oriented",
     "png_bytes",
     "pnm_bytes",
+    "project",
     "read",
     "settings",
     "solve",

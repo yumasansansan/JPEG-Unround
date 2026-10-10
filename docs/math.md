@@ -1467,6 +1467,37 @@ interval, which holds the doubles whose level (10, of the exact product $257 x$ 
 16 bits) is the file's. It is the dither, or more bits than the file's, that shows
 what lies between the levels.
 
+## 12. A picture made elsewhere
+
+*Implemented in `picture`.*
+
+A picture of a file's size, made by another decoder, say, is measured against the
+file's intervals, and projected onto them. Its canvas is made as an encoder makes the
+file's: of a file in YCbCr, the Y, Cb and Cr of JFIF's conversion of its RGB (8); of a
+greyscale or RGB file, its own channels. Each channel is extended over the canvas's
+whole MCUs by repeating its last column and then its last row, as an encoder pads a
+picture, and the picture is taken as the file stores it, before its EXIF orientation.
+
+**Its excess.** With the canvas $x$, coefficient $k$ of a component lies
+
+$$ e_k = \frac{\max\bigl(0,\ a_k - (A x)_k,\ (A x)_k - b_k\bigr)}{Q_k} $$
+
+steps outside its interval (1.2, with the settings' slack), 0 within it, where $A x$
+is the DCT of the means of $x$'s cells over the component's blocks (1.3, 4.4). Where
+every $e_k$ is 0, a file that encoded the picture with the file's tables, as the
+canvas is made, would hold the file's levels but where a coefficient lies at the end
+of its interval, which the encoder's rounding decides.
+
+**Its projection.** $P_{\mathcal C}(x)$ of 4.4: each block's coefficients clipped to
+their intervals, $\zeta = \mathrm{clip}(A x, a, b)$, each cell's samples moved alike by
+the change of its mean, and the samples beyond the blocks as they are: of the
+canvases within the intervals, the nearest to $x$, its coefficients $\zeta$ to the
+rounding of the DCTs (1.1). The result is the projected canvas cut to the picture,
+and of a file in YCbCr JFIF's RGB of its planes, as with the reconstructions of 4. The
+projection moves the samples beyond the picture too, so that the picture cut from it,
+extended again by repeating its edges, need not lie within the intervals at the
+blocks that the picture covers in part.
+
 ## References
 
 - K. Bredies, K. Kunisch, T. Pock. Total generalized variation. SIAM Journal on

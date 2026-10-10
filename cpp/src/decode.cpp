@@ -89,8 +89,7 @@ PictureArray picture_of(std::span<const GridArray<double>> canvas, std::size_t h
   return picture;
 }
 
-std::expected<Decoded, Error> decode(std::span<const std::uint8_t> file, const Settings& settings,
-                                     const Observer& observer) {
+std::expected<Source, Error> read_source(std::span<const std::uint8_t> file, const Settings& settings) {
   const jpegio::Options reading{.max_pixels = settings.reading.max_pixels,
                                 .max_scans = settings.reading.max_scans,
                                 .warnings_are_errors = settings.reading.warnings_are_errors};
@@ -115,12 +114,21 @@ std::expected<Decoded, Error> decode(std::span<const std::uint8_t> file, const S
   const std::vector<DataTerm> data = data_of(settings);
   std::expected<Frame, Error> frame = Frame::make(decoded.height, decoded.width, decoded.space, inputs, data);
   if (!frame) return std::unexpected(frame.error());
+  return Source{.decoded = std::move(decoded), .frame = std::move(*frame)};
+}
+
+std::expected<Decoded, Error> decode(std::span<const std::uint8_t> file, const Settings& settings,
+                                     const Observer& observer) {
+  std::expected<Source, Error> source = read_source(file, settings);
+  if (!source) return std::unexpected(source.error());
+  Decoded& decoded = source->decoded;
+  const Frame& frame = source->frame;
   switch (settings.method) {
     case Method::mmse:
-      for (std::size_t c = 0; c < frame->channels(); ++c) {
-        GridArray<double> x(frame->canvas_extents());
-        BlocksArray<double> kept(frame->component(c).problem.extents());
-        frame->start(c, x.view(), kept.view());
+      for (std::size_t c = 0; c < frame.channels(); ++c) {
+        GridArray<double> x(frame.canvas_extents());
+        BlocksArray<double> kept(frame.component(c).problem.extents());
+        frame.start(c, x.view(), kept.view());
         decoded.canvas.push_back(std::move(x));
       }
       break;
@@ -128,7 +136,7 @@ std::expected<Decoded, Error> decode(std::span<const std::uint8_t> file, const S
     case Method::tgv: {
       const pdhg::Model model = settings.method == Method::tv ? pdhg::Model::tv : pdhg::Model::tgv;
       std::expected<pdhg::Result, Error> result =
-          pdhg::solve(*frame, model, settings.regularizer, settings.pdhg, nullptr, observer);
+          pdhg::solve(frame, model, settings.regularizer, settings.pdhg, nullptr, observer);
       if (!result) return std::unexpected(result.error());
       decoded.canvas = std::move(result->canvas);
       decoded.records = std::move(result->records);
@@ -139,7 +147,7 @@ std::expected<Decoded, Error> decode(std::span<const std::uint8_t> file, const S
     }
     case Method::subgradient: {
       std::expected<subgradient::Result, Error> result =
-          subgradient::solve(*frame, settings.regularizer.alpha, settings.subgradient, observer);
+          subgradient::solve(frame, settings.regularizer.alpha, settings.subgradient, observer);
       if (!result) return std::unexpected(result.error());
       decoded.canvas = std::move(result->canvas);
       decoded.records = std::move(result->records);
@@ -149,7 +157,7 @@ std::expected<Decoded, Error> decode(std::span<const std::uint8_t> file, const S
     }
   }
   decoded.picture = picture_of(decoded.canvas, decoded.height, decoded.width, decoded.space);
-  return decoded;
+  return std::move(decoded);
 }
 
 }  // namespace unround

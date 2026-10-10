@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // The command line of docs/cli.md: the arguments read, the file reconstructed (a JPEG
-// file by decode, a PNG file by samples::reconstruct), turned upright, written as TIFF,
-// PNG or PNM, and what was done said and reported.
+// file by decode, a PNG file by samples::reconstruct) or a picture made elsewhere
+// projected onto a JPEG file's intervals (picture::project), turned upright, written as
+// TIFF, PNG or PNM, and what was done said and reported.
 
 #include "unround/cli.hpp"
 
@@ -14,6 +15,7 @@
 #include "unround/jpegio.hpp"
 #include "unround/output.hpp"
 #include "unround/pdhg.hpp"
+#include "unround/picture.hpp"
 #include "unround/results.hpp"
 #include "unround/samples.hpp"
 #include "unround/settings.hpp"
@@ -50,10 +52,13 @@ namespace {
 constexpr std::string_view version_text = "unround 0.1.0 (C++)";
 
 constexpr std::string_view help_text = R"(unround [OPTIONS] INPUT [OUTPUT]
+unround [OPTIONS] --project-only PICTURE INPUT [OUTPUT]
 
 Reconstructs the JPEG file INPUT within its quantization intervals (a PNG file within
 the intervals of its rounded samples) and writes the result to OUTPUT: TIFF of binary64
-samples by default, PNG or PNM of 8 or 16 bits. '-' is standard input or output.
+samples by default, PNG or PNM of 8 or 16 bits. With --project-only, projects the PNG
+file PICTURE, a picture of the JPEG file INPUT made elsewhere, onto INPUT's intervals
+instead. '-' is standard input or output.
 
 Input and output:
   --format tiff|png|pnm     the format (default: OUTPUT's extension, else TIFF)
@@ -66,6 +71,9 @@ Input and output:
   --orientation apply|keep  turn the result upright as the EXIF orientation says
   --no-icc                  write no ICC profile
   --max-pixels N  --max-scans N  --warnings-are-errors
+
+Projection:
+  --project-only PICTURE    with --slack and the options of reading alone
 
 The method and the model:
   --method mmse|tv|tgv|subgradient  --alpha A  --alpha1 A  --alpha0 A
@@ -106,6 +114,8 @@ struct Command {
   bool verbose = false;
   bool quiet = false;
   std::optional<std::string> report;
+  // The picture made elsewhere that --project-only projects, where it is given.
+  std::optional<std::string> picture;
   bool version = false;
   bool help = false;
   // The settings' options, each --name or --name=value.
@@ -114,8 +124,8 @@ struct Command {
   std::vector<std::string> given;
 };
 
-constexpr std::array<std::string_view, 7> own_valued = {"format",          "bits",        "compression", "dither",
-                                                        "dither-channels", "orientation", "report"};
+constexpr std::array<std::string_view, 8> own_valued = {
+    "format", "bits", "compression", "dither", "dither-channels", "orientation", "report", "project-only"};
 constexpr std::array<std::string_view, 7> own_flags = {"overwrite", "ycbcr",   "no-icc", "verbose",
                                                        "quiet",     "version", "help"};
 
@@ -175,6 +185,8 @@ void set_value(Command& command, std::string_view name, std::string_view value) 
     }
   } else if (name == "report") {
     command.report = std::string(value);
+  } else if (name == "project-only") {
+    command.picture = std::string(value);
   }
 }
 
@@ -431,6 +443,9 @@ struct Made {
   std::uint64_t alpha_iterations = 0;
   Stop alpha_stop = Stop::iterations;
   std::vector<std::string> warnings;
+  // Of a projection: the picture's excess, component by component.
+  bool projection = false;
+  std::vector<picture::Summary> excess;
 };
 
 int status_of(Errc code) noexcept {
@@ -445,6 +460,168 @@ int status_of(Errc code) noexcept {
       return not_read;
   }
   return not_read;
+}
+
+// What a reconstruction of a JPEG file made, or a projection onto its intervals: its
+// picture, or with --ycbcr its canvas cut to the picture (Y, Cb and Cr, which a picture
+// of RGB's space is not converted from), and what the file says.
+void take(Made& made, Decoded decoded, bool ycbcr) {
+  made.height = decoded.height;
+  made.width = decoded.width;
+  made.space = decoded.space;
+  made.exif_orientation = decoded.exif_orientation;
+  made.icc_profile = std::move(decoded.icc_profile);
+  made.records = std::move(decoded.records);
+  made.iterations = decoded.iterations;
+  made.stop = decoded.stop;
+  if (!decoded.warning.empty()) made.warnings.push_back(decoded.warning);
+  if (ycbcr) {
+    made.picture = picture_of(decoded.canvas, decoded.height, decoded.width, ColourSpace::rgb);
+    made.photometric = output::Photometric::ycbcr;
+  } else {
+    made.picture = std::move(decoded.picture);
+    made.photometric = decoded.space == ColourSpace::grayscale ? output::Photometric::grey : output::Photometric::rgb;
+  }
+}
+
+// The settings that a projection takes besides the options of the output.
+constexpr std::array<std::string_view, 4> projection_settings = {"slack", "max-pixels", "max-scans",
+                                                                 "warnings-are-errors"};
+
+// What went wrong: the exit status, and what is said.
+struct Failure {
+  int status = not_read;
+  std::string message;
+};
+
+// The picture that --project-only gives: its samples as the file stores the picture,
+// and the first warning of its reading.
+struct Given {
+  MdArray<double, PictureExtents> samples;
+  std::string warning;
+};
+
+// The samples of a PNG file's levels on the scale of 0 to 255: level v of `bits` bits is
+// the double nearest to v 255 / (2^bits - 1), a quotient of integers that doubles hold,
+// which the division rounds once.
+void scale(std::span<const std::uint16_t> levels, std::int32_t bits, std::span<double> samples) noexcept {
+  const double top = static_cast<double>((1u << static_cast<unsigned>(bits)) - 1u);
+  const std::size_t count = levels.size();
+  for (std::size_t k = 0; k < count; ++k) samples[k] = static_cast<double>(255u * levels[k]) / top;
+}
+
+// PICTURE as a projection takes it (docs/cli.md): a PNG file of the file's size and
+// channels (or RGB of three channels alike, of a greyscale file), without alpha, turned
+// as the result is; status 1 where it is not read, or not taken.
+std::expected<Given, Failure> picture_given(const std::string& path, const Source& source, bool keep,
+                                            std::uint64_t max_pixels) {
+  const auto not_taken = [&path](std::string_view message) {
+    return std::unexpected(Failure{.status = not_read, .message = std::format("{}: {}", path, message)});
+  };
+  const std::expected<std::vector<std::uint8_t>, std::string> bytes = read_all(path);
+  if (!bytes) return std::unexpected(Failure{.status = not_read, .message = bytes.error()});
+  if (!samples::is_png(*bytes)) return not_taken("the picture to project is a PNG file");
+  const std::expected<jpegio::PngImage, jpegio::Error> png = jpegio::PngImage::read(*bytes, max_pixels);
+  if (!png) return not_taken(std::format("the picture is not read: {}", png.error().message));
+  const Frame& frame = source.frame;
+  const std::size_t channels = picture::channels_of(frame);
+  const Picture<const std::uint16_t> stored = png->levels();
+  const std::size_t height = stored.extent(0);
+  const std::size_t width = stored.extent(1);
+  const std::size_t own = stored.extent(2);
+  const std::span<const std::uint16_t> all(stored.data_handle(), stored.size());
+  constexpr std::string_view grey = "a greyscale file's picture is grey, or RGB of three channels alike";
+  if (own == 2u || own == 4u) return not_taken("a picture with alpha is not a JPEG file's");
+  std::vector<std::uint16_t> levels;
+  if (own == channels) {
+    levels.assign(all.begin(), all.end());
+  } else if (own == 3u && channels == 1u) {
+    bool alike = true;
+    for (std::size_t k = 0; k < all.size(); k += 3u) alike = alike && all[k] == all[k + 1u] && all[k] == all[k + 2u];
+    if (!alike) return not_taken(grey);
+    levels.reserve(all.size() / 3u);
+    for (std::size_t k = 0; k < all.size(); k += 3u) levels.push_back(all[k]);
+  } else {
+    return not_taken(channels == 1u ? grey : std::string_view("a colour file's picture is RGB"));
+  }
+  // Turned as the result is.
+  const std::int32_t orientation = source.decoded.exif_orientation;
+  const bool turn = !keep && output::turns(orientation);
+  const bool transposed = orientation >= 5 && orientation <= 8;
+  const std::size_t rows = turn && transposed ? frame.width() : frame.height();
+  const std::size_t columns = turn && transposed ? frame.height() : frame.width();
+  if (height != rows || width != columns) {
+    std::string_view hint;
+    if (transposed && height == columns && width == rows) {
+      hint = turn ? ", as the file stores it, which --orientation keep takes"
+                  : ", turned upright, which --orientation apply takes";
+    }
+    return not_taken(
+        std::format("a picture of the file is {} x {} pixels, not {} x {}{}", rows, columns, height, width, hint));
+  }
+  MdArray<double, PictureExtents> samples(PictureExtents{height, width, channels});
+  scale(levels, png->bits(), samples.entries());
+  if (turn) samples = output::oriented(std::as_const(samples).view(), output::inverse(orientation));
+  return Given{.samples = std::move(samples), .warning = png->warning()};
+}
+
+// The settings that a projection took, as its report says them: the slack, and the
+// options of reading that were given.
+std::vector<std::string> projection_options(const Settings& settings) {
+  std::vector<std::string> options;
+  for (std::string& option : options_of(settings)) {
+    if (option.starts_with("--slack=")) options.push_back(std::move(option));
+  }
+  const auto given = [&settings](std::string_view name) {
+    return std::ranges::find(settings.given, name) != settings.given.end();
+  };
+  if (given("max-pixels")) options.push_back(std::format("--max-pixels={}", settings.reading.max_pixels));
+  if (given("max-scans")) options.push_back(std::format("--max-scans={}", settings.reading.max_scans));
+  if (settings.reading.warnings_are_errors) options.emplace_back("--warnings-are-errors");
+  return options;
+}
+
+// A number as the reference implementation writes it on standard error: three decimals
+// in scientific notation, the exponent without a plus sign or leading zeros (7.300e-1).
+std::string scientific(double value) {
+  std::string text = std::format("{:.3e}", value);
+  const std::size_t e = text.find('e');
+  if (e == std::string::npos) return text;
+  const char* first = text.data() + e + 1u;
+  const char* const last = text.data() + text.size();
+  if (first != last && *first == '+') ++first;
+  std::int32_t exponent = 0;
+  const auto [stop, error] = std::from_chars(first, last, exponent);
+  if (error != std::errc{} || stop != last) return text;
+  return std::format("{}e{}", text.substr(0, e), exponent);
+}
+
+// The names of a file's components on standard error: none of a greyscale file's.
+std::array<std::string_view, 3> component_names(ColourSpace space) noexcept {
+  switch (space) {
+    case ColourSpace::ycbcr:
+      return {"Y", "Cb", "Cr"};
+    case ColourSpace::rgb:
+      return {"R", "G", "B"};
+    case ColourSpace::grayscale:
+      break;
+  }
+  return {"", "", ""};
+}
+
+// What standard error says of a component's excess.
+std::string excess_line(std::string_view target, std::string_view name, const picture::Summary& excess) {
+  std::string line = std::format("{}: ", target);
+  if (!name.empty()) line += std::format("{}: ", name);
+  line += std::format("{} of {} coefficients of the picture lay outside their intervals", excess.outside,
+                      excess.coefficients);
+  if (excess.outside > 0u) line += std::format(", by at most {} steps", scientific(excess.largest));
+  return line;
+}
+
+std::string excess_json(const picture::Summary& excess) {
+  return std::format("{{\"coefficients\": {}, \"outside\": {}, \"largest\": {}}}", excess.coefficients, excess.outside,
+                     json_number(excess.largest));
 }
 
 }  // namespace
@@ -465,6 +642,17 @@ int run(std::span<const std::string_view> arguments, std::FILE* out, std::FILE* 
   if (command.positional.empty()) command.errors.emplace_back("INPUT is not given");
   if (command.positional.size() > 2u) {
     command.errors.push_back(std::format("INPUT and OUTPUT, not {} paths", command.positional.size()));
+  }
+  if (command.picture && parsed) {
+    for (const std::string& name : parsed->given) {
+      if (std::ranges::find(projection_settings, name) == projection_settings.end()) {
+        command.errors.push_back(
+            std::format("--{} is not taken with --project-only, which takes --slack and the options of reading", name));
+      }
+    }
+  }
+  if (command.picture == "-" && !command.positional.empty() && command.positional[0] == "-") {
+    command.errors.emplace_back("INPUT and PICTURE are not both the standard input");
   }
   // The format: --format, else OUTPUT's extension, else TIFF.
   Format format = Format::tiff;
@@ -505,7 +693,38 @@ int run(std::span<const std::string_view> arguments, std::FILE* out, std::FILE* 
     return false;
   };
   Made made;
-  if (samples::is_png(*bytes)) {
+  if (command.picture) {
+    if (samples::is_png(*bytes)) {
+      std::println(err, "unround: {}: --project-only projects onto the intervals of a JPEG file, not of a PNG file",
+                   input);
+      return refused;
+    }
+    const std::expected<Source, Error> source = read_source(*bytes, settings);
+    if (!source) {
+      std::println(err, "unround: {}: {}", input, source.error().message);
+      return status_of(source.error().code);
+    }
+    if (command.ycbcr && source->decoded.space != ColourSpace::ycbcr) {
+      std::println(err, "unround: --ycbcr is for files in YCbCr");
+      return refused;
+    }
+    const std::expected<Given, Failure> given =
+        picture_given(*command.picture, *source, command.keep, settings.reading.max_pixels);
+    if (!given) {
+      std::println(err, "unround: {}", given.error().message);
+      return given.error().status;
+    }
+    std::expected<picture::Projection, Error> projection = picture::project(*source, given->samples.view());
+    if (!projection) {
+      std::println(err, "unround: {}: {}", input, projection.error().message);
+      return status_of(projection.error().code);
+    }
+    made.projection = true;
+    for (const BlocksArray<double>& excess : projection->excess) made.excess.push_back(picture::summary(excess.view()));
+    take(made, std::move(projection->decoded), command.ycbcr);
+    // After the file's own, and before the writing's.
+    if (!given->warning.empty()) made.warnings.push_back(std::format("{}: {}", *command.picture, given->warning));
+  } else if (samples::is_png(*bytes)) {
     if (command.ycbcr) {
       std::println(err, "unround: --ycbcr is for JPEG files in YCbCr");
       return refused;
@@ -549,29 +768,11 @@ int run(std::span<const std::string_view> arguments, std::FILE* out, std::FILE* 
       std::println(err, "unround: {}: {}", input, decoded.error().message);
       return status_of(decoded.error().code);
     }
-    made.height = decoded->height;
-    made.width = decoded->width;
-    made.space = decoded->space;
-    made.exif_orientation = decoded->exif_orientation;
-    made.icc_profile = std::move(decoded->icc_profile);
-    made.records = std::move(decoded->records);
-    made.iterations = decoded->iterations;
-    made.stop = decoded->stop;
-    if (!decoded->warning.empty()) made.warnings.push_back(decoded->warning);
-    if (command.ycbcr) {
-      if (decoded->space != ColourSpace::ycbcr) {
-        std::println(err, "unround: --ycbcr is for files in YCbCr");
-        return refused;
-      }
-      // The canvas itself, cut to the picture: Y, Cb and Cr, which a picture of RGB's
-      // space is not converted from.
-      made.picture = picture_of(decoded->canvas, decoded->height, decoded->width, ColourSpace::rgb);
-      made.photometric = output::Photometric::ycbcr;
-    } else {
-      made.picture = std::move(decoded->picture);
-      made.photometric =
-          decoded->space == ColourSpace::grayscale ? output::Photometric::grey : output::Photometric::rgb;
+    if (command.ycbcr && decoded->space != ColourSpace::ycbcr) {
+      std::println(err, "unround: --ycbcr is for files in YCbCr");
+      return refused;
     }
+    take(made, std::move(*decoded), command.ycbcr);
   }
   // Upright, unless kept as stored.
   const bool oriented = !command.keep && output::turns(made.exif_orientation);
@@ -635,7 +836,7 @@ int run(std::span<const std::string_view> arguments, std::FILE* out, std::FILE* 
       break;
     }
   }
-  const bool solved = settings.method != Method::mmse || made.png;
+  const bool solved = !made.projection && (settings.method != Method::mmse || made.png);
   if (const std::expected<void, std::string> wrote =
           write_all(target, std::as_bytes(std::span(file)), command.overwrite, out);
       !wrote) {
@@ -647,6 +848,9 @@ int run(std::span<const std::string_view> arguments, std::FILE* out, std::FILE* 
     report += std::format("  \"version\": {},\n", json_string(version_text));
     report += std::format("  \"input\": {},\n", json_string(input));
     if (made.png) report += "  \"input_format\": \"png\",\n";
+    if (made.projection && command.picture) {
+      report += std::format("  \"picture\": {},\n", json_string(*command.picture));
+    }
     report += std::format("  \"height\": {},\n  \"width\": {},\n", made.height, made.width);
     report += std::format("  \"color_space\": {},\n", json_string(space_name(made.space)));
     if (made.png) report += std::format("  \"bits\": {},\n  \"alpha\": {},\n", made.png_bits, made.alpha);
@@ -658,8 +862,11 @@ int run(std::span<const std::string_view> arguments, std::FILE* out, std::FILE* 
                                                                      : "\"blue-noise-together\"";
     report += std::format("  \"dither\": {},\n", dither_name);
     report += std::format("  \"warnings\": {},\n", json_list(made.warnings, json_string));
-    report += std::format("  \"method\": {},\n", json_string(method_name(settings.method)));
-    report += std::format("  \"settings\": {}", json_list(options_of(settings), json_string));
+    report += std::format("  \"method\": {},\n",
+                          json_string(made.projection ? std::string_view("projection") : method_name(settings.method)));
+    report +=
+        std::format("  \"settings\": {}",
+                    json_list(made.projection ? projection_options(settings) : options_of(settings), json_string));
     if (made.png && made.alpha) {
       report += std::format(",\n  \"alpha_solver\": {{\"iterations\": {}, \"stop\": {}}}", made.alpha_iterations,
                             json_string(stop_name(made.alpha_stop)));
@@ -669,6 +876,8 @@ int run(std::span<const std::string_view> arguments, std::FILE* out, std::FILE* 
       report += std::format(",\n  \"iterations\": {},\n  \"stop\": {},\n  \"records\": {}", made.iterations,
                             json_string(stop_name(made.stop)), records_json(made.records));
     }
+    // A projection's, in place of a solver's: the picture's excess.
+    if (made.projection) report += std::format(",\n  \"excess\": {}", json_list(made.excess, excess_json));
     report += "\n}\n";
     if (const auto wrote = write_all(*command.report, std::as_bytes(std::span(report)), true, out); !wrote) {
       std::println(err, "unround: {}", wrote.error());
@@ -681,6 +890,12 @@ int run(std::span<const std::string_view> arguments, std::FILE* out, std::FILE* 
       std::println(err, "{}: {} iterations, {}", target, made.iterations, stop_name(made.stop));
       if (made.png && made.alpha) {
         std::println(err, "{}: alpha: {} iterations, {}", target, made.alpha_iterations, stop_name(made.alpha_stop));
+      }
+    }
+    if (made.projection && target != "-") {
+      const std::array<std::string_view, 3> names = component_names(made.space);
+      for (std::size_t c = 0; c < made.excess.size() && c < names.size(); ++c) {
+        std::println(err, "{}", excess_line(target, names[c], made.excess[c]));
       }
     }
   }

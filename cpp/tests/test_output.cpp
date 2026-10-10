@@ -5,8 +5,9 @@
 // of the ordered dither against its definition in integers, the levels of a constant
 // over the matrix keeping its mean, the channels' shifts, the levels of 16 bits of the
 // exact product 257 x (samples whose rounded product lands on a place where the level
-// turns, from below, among them), and rounding with its clamps; the eight orientations;
-// and TIFF and PNM files read back, their samples to the last bit and their fields.
+// turns, from below, among them), and rounding with its clamps; the eight orientations,
+// each turned back by its inverse; and TIFF and PNM files read back, their samples to
+// the last bit and their fields.
 
 #include "unround/output.hpp"
 
@@ -28,6 +29,7 @@
 #include <map>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -234,6 +236,10 @@ void orientations(void) {
       }
     }
     CHECK(equal);
+    // Turned back by the inverse, it is the picture stored.
+    const PictureArray back = unround::output::oriented(std::as_const(turned).view(), unround::output::inverse(o));
+    CHECK(back.extent(0) == h && back.extent(1) == w);
+    CHECK(std::ranges::equal(std::as_const(back).entries(), std::as_const(stored).entries(), same));
   }
 }
 

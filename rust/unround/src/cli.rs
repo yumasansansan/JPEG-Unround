@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Yuma Kakei <yumasansansan@gmail.com>
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The command line, `unround [OPTIONS] INPUT [OUTPUT]`, as docs/cli.md states it.
+//! The command line, `unround [OPTIONS] INPUT [OUTPUT]` and `unround [OPTIONS]
+//! --project-only PICTURE INPUT [OUTPUT]`, as docs/cli.md states it.
 //!
 //! The options have the names of the library's settings, and every value of the
 //! model and of the solvers can be given. The command line is checked as a whole:
@@ -16,12 +17,13 @@ use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use crate::decode::{self, Method, Settings};
+use crate::decode::{self, Decoded, Input, Method, Settings};
 use crate::error::Error;
 use crate::model::{Centres, DataTerm};
 use crate::orientation;
 use crate::output::{self, Depth, Dither, Written};
 use crate::pdhg::Record;
+use crate::picture::{self, Summary};
 use crate::results::{History, Stop};
 use crate::rounded::{self, Reconstructed};
 use crate::tiff;
@@ -31,11 +33,14 @@ pub const VERSION: &str = concat!("unround ", env!("CARGO_PKG_VERSION"), " (Rust
 
 const HELP: &str = "\
 Usage: unround [OPTIONS] INPUT [OUTPUT]
+       unround [OPTIONS] --project-only PICTURE INPUT [OUTPUT]
 
 Reconstructs the JPEG file INPUT within its quantization intervals, or the PNG
 file INPUT within the intervals of its rounded samples, and writes the result to
-OUTPUT (by default next to INPUT). INPUT and OUTPUT may be - for the standard input
-and output. docs/cli.md states every option and its default.
+OUTPUT (by default next to INPUT). With --project-only, projects the PNG file
+PICTURE, a picture of the JPEG file INPUT made elsewhere, onto INPUT's intervals
+instead. INPUT, PICTURE and OUTPUT may be - for the standard input and output.
+docs/cli.md states every option and its default.
 
 Output:      --format tiff|png|pnm  --bits 8|16  --dither blue-noise|none
              --dither-channels apart|together  --compression 0-9  --ycbcr
@@ -52,6 +57,7 @@ Solver:      --iterations N  --tolerance X  --relative-tolerance X  --partial-to
 Subgradient: --subgradient-iterations N  --subgradient-step X  --subgradient-decay X
              --no-momentum  --subgradient-record-every N
 Reading:     --max-pixels N  --max-scans N  --warnings-are-errors
+Projection:  --project-only PICTURE, with --slack and the options of reading
 Reports:     -v, --verbose  -q, --quiet  --report PATH  --version  -h, --help
 ";
 
@@ -99,6 +105,7 @@ const VALUED: &[&str] = &[
     "max-pixels",
     "max-scans",
     "report",
+    "project-only",
 ];
 
 /// The options that take none.
@@ -180,6 +187,9 @@ pub struct Command {
     pub overwrite: bool,
     /// The method, the model and the solvers' options.
     pub settings: Settings,
+    /// The picture made elsewhere that `--project-only` projects onto the intervals of
+    /// the input, in place of a reconstruction, where it is given.
+    pub picture: Option<PathBuf>,
     /// Where the report goes, where one is asked for.
     pub report: Option<PathBuf>,
     /// What goes to standard error besides errors.
@@ -534,7 +544,12 @@ const OUTPUT_OPTIONS: &[&str] = &[
     "quiet",
     "version",
     "help",
+    "project-only",
 ];
+
+/// The settings that a projection takes: the slack of the intervals, and the
+/// options of reading.
+const PROJECTION_SETTINGS: &[&str] = &["slack", "max-pixels", "max-scans", "warnings-are-errors"];
 
 /// The settings of options given by name as the command line takes them, without
 /// files and without the options of the output: the settings that the library, the C
@@ -739,6 +754,32 @@ impl Integers {
     }
 }
 
+/// zlib's level that `--compression` gives, 0 to 9.
+fn compression_of(reader: &mut Reader<'_>) -> Option<u8> {
+    let text = reader.text("compression")?.to_owned();
+    match text.parse::<u8>() {
+        Ok(level) if level <= 9 => Some(level),
+        _ => {
+            reader
+                .errors
+                .push(format!("--compression is a whole number from 0 to 9, not {text}"));
+            None
+        }
+    }
+}
+
+/// The errors of the settings given with `--project-only` that a projection does not
+/// take: all but those of [`PROJECTION_SETTINGS`].
+fn refuse_for_projection(given: &Given, errors: &mut Vec<String>) {
+    for name in given.values.keys().chain(given.flags.iter()) {
+        if !OUTPUT_OPTIONS.contains(&name.as_str()) && !PROJECTION_SETTINGS.contains(&name.as_str()) {
+            errors.push(format!(
+                "--{name} is not taken with --project-only, which takes --slack and the options of reading"
+            ));
+        }
+    }
+}
+
 /// What the arguments (without the program's name) ask for.
 ///
 /// # Errors
@@ -763,16 +804,7 @@ pub fn parse(arguments: Vec<OsString>) -> Result<Request, Vec<String>> {
         &[("tiff", Format::Tiff), ("png", Format::Png), ("pnm", Format::Pnm)],
     );
     let integers = Integers::read(&mut reader);
-    let compression = reader.text("compression").map(str::to_owned);
-    let compression = compression.and_then(|text| match text.parse::<u8>() {
-        Ok(level) if level <= 9 => Some(level),
-        _ => {
-            reader
-                .errors
-                .push(format!("--compression is a whole number from 0 to 9, not {text}"));
-            None
-        }
-    });
+    let compression = compression_of(&mut reader);
     let orientation = reader
         .choice(
             "orientation",
@@ -782,8 +814,12 @@ pub fn parse(arguments: Vec<OsString>) -> Result<Request, Vec<String>> {
     let (ycbcr, overwrite, icc) = (reader.flag("ycbcr"), reader.flag("overwrite"), !reader.flag("no-icc"));
     let (verbose, quiet) = (reader.flag("verbose"), reader.flag("quiet"));
     let report = reader.text("report").map(PathBuf::from);
+    let picture = reader.text("project-only").map(PathBuf::from);
     if verbose && quiet {
         errors.push("--verbose and --quiet do not go together".into());
+    }
+    if picture.is_some() {
+        refuse_for_projection(&given, &mut errors);
     }
     let mut positional = given.positional.into_iter().map(PathBuf::from);
     let input = positional.next();
@@ -795,6 +831,9 @@ pub fn parse(arguments: Vec<OsString>) -> Result<Request, Vec<String>> {
         errors.push("an INPUT file to read".into());
         return Err(errors);
     };
+    if input == Path::new("-") && picture.as_deref() == Some(Path::new("-")) {
+        errors.push("INPUT and PICTURE are not both the standard input".into());
+    }
     let format = format
         .or_else(|| named.as_deref().and_then(format_of))
         .unwrap_or(Format::Tiff);
@@ -832,6 +871,7 @@ pub fn parse(arguments: Vec<OsString>) -> Result<Request, Vec<String>> {
         icc,
         overwrite,
         settings,
+        picture,
         report,
         verbosity: match (verbose, quiet) {
             (true, _) => Verbosity::Verbose,
@@ -876,6 +916,17 @@ fn stop_name(stop: Stop) -> &'static str {
     }
 }
 
+/// How the report names the making of the samples: `null` for TIFF, which holds the
+/// result itself.
+fn dither_json(command: &Command) -> String {
+    match (command.format, command.dither) {
+        (Format::Tiff, _) => "null".to_owned(),
+        (_, Dither::BlueNoise) => json_string("blue-noise"),
+        (_, Dither::BlueNoiseTogether) => json_string("blue-noise-together"),
+        (_, Dither::None) => json_string("none"),
+    }
+}
+
 fn json_list(values: &[f64]) -> String {
     let items: Vec<String> = values.iter().map(|&value| json_number(value)).collect();
     format!("[{}]", items.join(", "))
@@ -895,7 +946,7 @@ pub struct Outcome {
 
 /// The report of a reconstruction, as a JSON object (docs/cli.md).
 #[must_use]
-pub fn report(command: &Command, decoded: &decode::Decoded, outcome: &Outcome) -> String {
+pub fn report(command: &Command, decoded: &Decoded, outcome: &Outcome) -> String {
     let method = match command.settings.method {
         Method::Mmse => "mmse",
         Method::Tv => "tv",
@@ -916,13 +967,7 @@ pub fn report(command: &Command, decoded: &decode::Decoded, outcome: &Outcome) -
     let _ = writeln!(text, "  \"exif_orientation\": {},", decoded.exif_orientation);
     let _ = writeln!(text, "  \"oriented\": {},", outcome.oriented);
     let _ = writeln!(text, "  \"icc_profile\": {},", outcome.icc_profile);
-    let dither = match (command.format, command.dither) {
-        (Format::Tiff, _) => "null".to_owned(),
-        (_, Dither::BlueNoise) => json_string("blue-noise"),
-        (_, Dither::BlueNoiseTogether) => json_string("blue-noise-together"),
-        (_, Dither::None) => json_string("none"),
-    };
-    let _ = writeln!(text, "  \"dither\": {dither},");
+    let _ = writeln!(text, "  \"dither\": {},", dither_json(command));
     let warnings: Vec<String> = outcome.warnings.iter().map(|warning| json_string(warning)).collect();
     let _ = writeln!(text, "  \"warnings\": [{}],", warnings.join(", "));
     let _ = writeln!(text, "  \"method\": {},", json_string(method));
@@ -987,7 +1032,7 @@ fn write_output(path: &Path, bytes: &[u8], overwrite: bool) -> Result<(), Error>
 }
 
 /// The file of the result, as the command asks for it, and what its writing did.
-fn write(command: &Command, decoded: &decode::Decoded) -> Result<(Written, Outcome), (u8, String)> {
+fn write(command: &Command, decoded: &Decoded) -> Result<(Written, Outcome), (u8, String)> {
     let (samples, channels) = if command.ycbcr {
         if decoded.color_space != jpegio_sys::ColorSpace::YCbCr {
             return Err((2, "--ycbcr is for files in YCbCr".into()));
@@ -1070,6 +1115,9 @@ fn write(command: &Command, decoded: &decode::Decoded) -> Result<(Written, Outco
 /// taken, 3 where the result is not written.
 pub fn run(command: &Command) -> Result<(), (u8, String)> {
     let data = read_input(&command.input).map_err(|error| (1, format!("{}: {error}", command.input.display())))?;
+    if let Some(picture) = &command.picture {
+        return run_projection(command, picture, &data);
+    }
     let mut verbose = |record: &Record<'_>| {
         eprintln!(
             "{:>6}  gap/sample {:.6e}  primal {:.10e}  dual {:.10e}",
@@ -1180,12 +1228,6 @@ fn report_rounded(command: &Command, reconstructed: &Reconstructed, outcome: &Ou
         1 | 2 => "grayscale",
         _ => "rgb",
     };
-    let dither = match (command.format, command.dither) {
-        (Format::Tiff, _) => "null".to_owned(),
-        (_, Dither::BlueNoise) => json_string("blue-noise"),
-        (_, Dither::BlueNoiseTogether) => json_string("blue-noise-together"),
-        (_, Dither::None) => json_string("none"),
-    };
     let method = match command.settings.method {
         Method::Tv => "tv",
         _ => "tgv",
@@ -1202,7 +1244,7 @@ fn report_rounded(command: &Command, reconstructed: &Reconstructed, outcome: &Ou
     let _ = writeln!(text, "  \"exif_orientation\": 0,");
     let _ = writeln!(text, "  \"oriented\": {},", outcome.oriented);
     let _ = writeln!(text, "  \"icc_profile\": {},", outcome.icc_profile);
-    let _ = writeln!(text, "  \"dither\": {dither},");
+    let _ = writeln!(text, "  \"dither\": {},", dither_json(command));
     let warnings: Vec<String> = outcome.warnings.iter().map(|warning| json_string(warning)).collect();
     let _ = writeln!(text, "  \"warnings\": [{}],", warnings.join(", "));
     let _ = writeln!(text, "  \"method\": {},", json_string(method));
@@ -1291,6 +1333,220 @@ fn run_rounded(
                 alpha.iterations,
                 stop_name(alpha.stop)
             );
+        }
+    }
+    Ok(())
+}
+
+/// The samples of a PNG file's levels on the scale of 0 to 255: level `v` of `bits`
+/// bits is the double nearest to `v 255 / (2^bits - 1)`, a quotient of integers that
+/// doubles hold, which the division rounds once.
+fn scaled(levels: &[u16], bits: u32) -> Vec<f64> {
+    let top = f64::from((1_u32 << bits) - 1);
+    levels
+        .iter()
+        .map(|&level| f64::from(u32::from(level) * 255) / top)
+        .collect()
+}
+
+/// `PICTURE` as a projection takes it (docs/cli.md): its samples as the file stores
+/// the picture, of the file's channels, interleaved, and the first warning of its
+/// reading; status 1 where it is not read, or not taken.
+fn picture_of(command: &Command, path: &Path, input: &Input) -> Result<(Vec<f64>, String), (u8, String)> {
+    let not_taken = |message: String| (1, format!("{}: {message}", path.display()));
+    let data = read_input(path).map_err(|error| not_taken(error.to_string()))?;
+    if !rounded::is_png(&data) {
+        return Err(not_taken("the picture to project is a PNG file".into()));
+    }
+    let png = jpegio_sys::read_png(&data, command.settings.read.max_pixels)
+        .map_err(|error| not_taken(format!("the picture is not read: {error}")))?;
+    let channels = picture::channels_of(input);
+    let levels = match (usize::try_from(png.channels).unwrap_or(0), channels) {
+        (1, 1) | (3, 3) => png.samples,
+        (3, 1)
+            if png
+                .samples
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .all(|&[red, green, blue]| red == green && green == blue) =>
+        {
+            png.samples.iter().step_by(3).copied().collect()
+        }
+        (2 | 4, _) => return Err(not_taken("a picture with alpha is not a JPEG file's".into())),
+        (_, 1) => {
+            return Err(not_taken(
+                "a greyscale file's picture is grey, or RGB of three channels alike".into(),
+            ));
+        }
+        _ => return Err(not_taken("a colour file's picture is RGB".into())),
+    };
+    // The picture is turned as the result is.
+    let orientation = input.exif_orientation;
+    let turn = command.orientation == Orientation::Apply && !matches!(orientation, 0 | 1);
+    let transposed = orientation::transposes(orientation);
+    let (height, width) = if turn && transposed {
+        (input.width, input.height)
+    } else {
+        (input.height, input.width)
+    };
+    let size = (
+        usize::try_from(png.height).unwrap_or(0),
+        usize::try_from(png.width).unwrap_or(0),
+    );
+    if size != (height, width) {
+        let hint = if transposed && size == (width, height) {
+            if turn {
+                ", as the file stores it, which --orientation keep takes"
+            } else {
+                ", turned upright, which --orientation apply takes"
+            }
+        } else {
+            ""
+        };
+        return Err(not_taken(format!(
+            "a picture of the file is {height} x {width} pixels, not {} x {}{hint}",
+            size.0, size.1
+        )));
+    }
+    let samples = scaled(&levels, png.bits);
+    if !turn {
+        return Ok((samples, png.warning));
+    }
+    let stored = orientation::oriented(&samples, height, width, channels, orientation::inverse(orientation))
+        .map_err(|error| not_taken(error.to_string()))?;
+    Ok((stored.samples, png.warning))
+}
+
+/// The names of a file's components on standard error: none of a greyscale file's.
+fn component_names(space: jpegio_sys::ColorSpace) -> &'static [&'static str] {
+    match space {
+        jpegio_sys::ColorSpace::Grayscale => &[""],
+        jpegio_sys::ColorSpace::YCbCr => &["Y", "Cb", "Cr"],
+        jpegio_sys::ColorSpace::Rgb => &["R", "G", "B"],
+    }
+}
+
+/// What standard error says of a component's excess.
+fn excess_line(output: &Path, name: &str, summary: &Summary) -> String {
+    let mut line = format!("{}: ", output.display());
+    if !name.is_empty() {
+        let _ = write!(line, "{name}: ");
+    }
+    let _ = write!(
+        line,
+        "{} of {} coefficients of the picture lay outside their intervals",
+        summary.outside, summary.coefficients
+    );
+    if summary.outside > 0 {
+        let _ = write!(line, ", by at most {:.3e} steps", summary.largest);
+    }
+    line
+}
+
+/// The report of a projection, as a JSON object (docs/cli.md): the picture, the
+/// settings taken, and the excess of each component, in place of a solver's.
+fn report_projection(
+    command: &Command,
+    picture: &Path,
+    decoded: &Decoded,
+    summaries: &[Summary],
+    outcome: &Outcome,
+) -> String {
+    let space = match decoded.color_space {
+        jpegio_sys::ColorSpace::Grayscale => "grayscale",
+        jpegio_sys::ColorSpace::YCbCr => "ycbcr",
+        jpegio_sys::ColorSpace::Rgb => "rgb",
+    };
+    let mut text = String::from("{\n");
+    let _ = writeln!(text, "  \"version\": {},", json_string(VERSION));
+    let _ = writeln!(text, "  \"input\": {},", json_string(&command.input.to_string_lossy()));
+    let _ = writeln!(text, "  \"picture\": {},", json_string(&picture.to_string_lossy()));
+    let _ = writeln!(text, "  \"height\": {},", decoded.height);
+    let _ = writeln!(text, "  \"width\": {},", decoded.width);
+    let _ = writeln!(text, "  \"color_space\": {},", json_string(space));
+    let _ = writeln!(text, "  \"exif_orientation\": {},", decoded.exif_orientation);
+    let _ = writeln!(text, "  \"oriented\": {},", outcome.oriented);
+    let _ = writeln!(text, "  \"icc_profile\": {},", outcome.icc_profile);
+    let _ = writeln!(text, "  \"dither\": {},", dither_json(command));
+    let warnings: Vec<String> = outcome.warnings.iter().map(|warning| json_string(warning)).collect();
+    let _ = writeln!(text, "  \"warnings\": [{}],", warnings.join(", "));
+    let _ = writeln!(text, "  \"method\": \"projection\",");
+    let settings: Vec<String> = options_of(&command.settings)
+        .iter()
+        .filter(|option| {
+            let name = option.trim_start_matches('-');
+            PROJECTION_SETTINGS.contains(&name.split_once('=').map_or(name, |(name, _)| name))
+        })
+        .map(|option| json_string(option))
+        .collect();
+    let _ = writeln!(text, "  \"settings\": [{}],", settings.join(", "));
+    let components: Vec<String> = summaries
+        .iter()
+        .map(|summary| {
+            format!(
+                "{{\"coefficients\": {}, \"outside\": {}, \"largest\": {}}}",
+                summary.coefficients,
+                summary.outside,
+                json_number(summary.largest)
+            )
+        })
+        .collect();
+    let _ = write!(text, "  \"excess\": [{}]", components.join(", "));
+    text.push_str("\n}\n");
+    text
+}
+
+/// Runs a command of `--project-only` (docs/cli.md): reads the JPEG file and the
+/// picture, projects the picture onto the file's intervals, and writes the result.
+fn run_projection(command: &Command, picture_path: &Path, data: &[u8]) -> Result<(), (u8, String)> {
+    let named = |error: Error| {
+        let status = match error {
+            Error::Options(_) => 2,
+            _ => 1,
+        };
+        (status, format!("{}: {error}", command.input.display()))
+    };
+    if rounded::is_png(data) {
+        return Err((
+            2,
+            format!(
+                "{}: --project-only projects onto the intervals of a JPEG file, not of a PNG file",
+                command.input.display()
+            ),
+        ));
+    }
+    let input = Input::read(data, &command.settings.read).map_err(named)?;
+    let (samples, warning) = picture_of(command, picture_path, &input)?;
+    let projection =
+        picture::project(&input, &command.settings, &samples, picture::channels_of(&input)).map_err(named)?;
+    let (written, mut outcome) = write(command, &projection.decoded)?;
+    if !warning.is_empty() {
+        // After the file's own, and before the writing's.
+        let at = usize::from(!projection.decoded.warning.is_empty());
+        outcome
+            .warnings
+            .insert(at, format!("{}: {warning}", picture_path.display()));
+    }
+    write_output(&command.output, &written.bytes, command.overwrite)
+        .map_err(|error| (3, format!("{}: {error}", command.output.display())))?;
+    if command.verbosity != Verbosity::Quiet {
+        for warning in &outcome.warnings {
+            eprintln!("unround: {}: {warning}", command.output.display());
+        }
+    }
+    let summaries: Vec<Summary> = projection
+        .excess
+        .iter()
+        .map(|excess| picture::summary(excess))
+        .collect();
+    if let Some(path) = &command.report {
+        let report = report_projection(command, picture_path, &projection.decoded, &summaries, &outcome);
+        write_output(path, report.as_bytes(), true).map_err(|error| (3, format!("{}: {error}", path.display())))?;
+    }
+    if command.verbosity != Verbosity::Quiet && command.output != Path::new("-") {
+        for (name, summary) in component_names(projection.decoded.color_space).iter().zip(&summaries) {
+            eprintln!("{}", excess_line(&command.output, name, summary));
         }
     }
     Ok(())
@@ -1414,6 +1670,41 @@ mod tests {
         ] {
             assert!(all.contains(fragment), "{fragment} in {all}");
         }
+    }
+
+    #[test]
+    fn a_projection_takes_the_slack_and_the_reading_alone() {
+        let Ok(Request::Run(command)) = parse(arguments(
+            "--project-only made.png --slack 0.5,0,0 --max-pixels 100 --warnings-are-errors --format png in.jpg",
+        )) else {
+            panic!("the arguments are taken");
+        };
+        assert_eq!(command.picture, Some(PathBuf::from("made.png")));
+        let slacks: Vec<f64> = command.settings.data.iter().map(|term| term.slack).collect();
+        assert_eq!(slacks, [0.5, 0.0, 0.0]);
+        assert_eq!(command.settings.read.max_pixels, 100);
+        assert_eq!(command.output, PathBuf::from("in.png"));
+        let Ok(Request::Run(command)) = parse(arguments("in.jpg")) else {
+            panic!("the arguments are taken");
+        };
+        assert_eq!(command.picture, None);
+        let Err(errors) = parse(arguments(
+            "--project-only made.png --mu 0.1 --no-momentum --tolerance 1 --orientation keep in.jpg",
+        )) else {
+            panic!("the arguments are refused");
+        };
+        let all = errors.join("\n");
+        for name in ["--mu", "--no-momentum", "--tolerance"] {
+            let fragment = format!("{name} is not taken with --project-only");
+            assert!(all.contains(&fragment), "{fragment} in {all}");
+        }
+        assert!(!all.contains("--orientation"), "{all}");
+        let Err(errors) = parse(arguments("--project-only - -")) else {
+            panic!("the arguments are refused");
+        };
+        assert!(errors.join("\n").contains("not both the standard input"), "{errors:?}");
+        // It is an option of the command line, not a setting.
+        assert!(settings_of(arguments("--project-only made.png")).is_err());
     }
 
     fn given_back(settings: &Settings) -> Result<Settings, Vec<String>> {

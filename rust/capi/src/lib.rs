@@ -8,7 +8,8 @@
 //! A file in memory -- a JPEG file, or a PNG file within the intervals of its rounded
 //! samples (docs/math.md, 11) -- or components given as arrays, are reconstructed into
 //! a result, whose arrays the caller reads until it frees the result; an observer can
-//! follow the solver's records and stop it. The writers of TIFF, PNG and PNM, the turning
+//! follow the solver's records and stop it. A picture made elsewhere is measured
+//! against a JPEG file's intervals and projected onto them. The writers of TIFF, PNG and PNM, the turning
 //! of a picture upright, JFIF's conversion, the command line, and the C layer's
 //! reading of JPEG files are there too.
 //!
@@ -25,13 +26,14 @@ use std::slice;
 
 use jpeg_unround::decode::{self, Component, Decoded, Input, Settings};
 use jpeg_unround::pdhg::{Observer, Record as SolverRecord};
+use jpeg_unround::picture::{self, Projection};
 use jpeg_unround::results::{History, Stop};
 use jpeg_unround::rounded::{self, Reconstructed};
 use jpeg_unround::{Error, cli, colour, orientation, output, tiff};
 use jpegio_sys::{ColorSpace, ffi};
 
 /// The version of this interface: `UNROUND_ABI_VERSION` of the header it matches.
-pub const ABI_VERSION: i32 = 4;
+pub const ABI_VERSION: i32 = 5;
 
 /// Success.
 pub const OK: i32 = 0;
@@ -271,6 +273,9 @@ pub struct UnroundResult {
     made: Made,
     /// The first warning of the reading, or an empty string, NUL-terminated.
     warning: CString,
+    /// Of a projection, how far each coefficient of the picture given lay outside its
+    /// interval, component by component; none for a reconstruction.
+    excess: Vec<Vec<f64>>,
 }
 
 /// A JPEG file's reconstruction, or a PNG file's.
@@ -311,6 +316,15 @@ impl UnroundResult {
         Self {
             made: Made::Jpeg(Box::new(decoded)),
             warning,
+            excess: Vec::new(),
+        }
+    }
+
+    fn projection(projection: Projection) -> Self {
+        let Projection { decoded, excess } = projection;
+        Self {
+            excess,
+            ..Self::jpeg(decoded)
         }
     }
 
@@ -323,6 +337,7 @@ impl UnroundResult {
         Self {
             made: Made::Png(Box::new(Rounded { reconstructed, planes })),
             warning,
+            excess: Vec::new(),
         }
     }
 
@@ -674,6 +689,64 @@ pub unsafe extern "C" fn unround_solve(
         let decoded = unsafe { observed(observer, user, |watch| decode::solve(&input, settings, watch)) }?;
         // SAFETY: the caller promised result valid for a write.
         unsafe { deliver(UnroundResult::jpeg(decoded), result) };
+        Ok(())
+    })
+}
+
+/// Measures a picture against a JPEG file's intervals, with the settings' slack, and
+/// projects it onto them (docs/math.md, 12), into a result that `unround_result_free`
+/// frees. The picture, `height x width x channels` binary64 samples interleaved, is of
+/// the file's size as the file stores it, before its EXIF orientation: greyscale, or
+/// of a file in colour RGB. The result is the projection, as a reconstruction without
+/// a solver, and holds the picture's excess (`unround_result_excess`).
+///
+/// # Safety
+///
+/// `picture` is valid for reads of `height x width x channels` doubles; the rest as
+/// for `unround_decode`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn unround_project(
+    data: *const u8,
+    size: usize,
+    settings: *const UnroundSettings,
+    samples: *const f64,
+    height: u64,
+    width: u64,
+    channels: u64,
+    result: *mut *mut UnroundResult,
+    message: *mut c_char,
+    message_size: usize,
+) -> i32 {
+    guarded(message, message_size, || {
+        if data.is_null() || settings.is_null() || result.is_null() {
+            return Err(refuse("the data, the settings and the result are not null pointers"));
+        }
+        // SAFETY: the caller promised size readable bytes at data.
+        let bytes = unsafe { slice::from_raw_parts(data, size) };
+        if rounded::is_png(bytes) {
+            return Err((
+                ERROR_OPTIONS,
+                "a picture is projected onto the intervals of a JPEG file, not of a PNG file".to_owned(),
+            ));
+        }
+        // SAFETY: the caller promised settings of unround_settings_new.
+        let settings = unsafe { &(*settings).settings };
+        // SAFETY: the caller promised that many doubles at samples.
+        let given = unsafe { picture(samples, height, width, channels) }?;
+        let input = Input::read(bytes, &settings.read).map_err(|error| (status_of(&error), error.to_string()))?;
+        if (wide(input.height), wide(input.width)) != (height, width) {
+            return Err((
+                ERROR_OPTIONS,
+                format!(
+                    "a picture of the file is {} x {}, not {height} x {width}",
+                    input.height, input.width
+                ),
+            ));
+        }
+        let projection = picture::project(&input, settings, given, narrow(channels)?)
+            .map_err(|error| (status_of(&error), error.to_string()))?;
+        // SAFETY: the caller promised result valid for a write.
+        unsafe { deliver(UnroundResult::projection(projection), result) };
         Ok(())
     })
 }
@@ -1150,6 +1223,32 @@ pub unsafe extern "C" fn unround_result_bits(result: *const UnroundResult) -> i3
 pub unsafe extern "C" fn unround_result_warning(result: *const UnroundResult) -> *const c_char {
     // SAFETY: the caller promised null or a live result.
     unsafe { result_of(result) }.map_or(ptr::null(), |made| made.warning.as_ptr())
+}
+
+/// How far each coefficient of component `component` of the picture given to
+/// `unround_project` lay outside its interval, in steps (0 within it), `count` of
+/// them, 64 to a block in natural order; null for a result of a reconstruction, or a
+/// component that is not there.
+///
+/// # Safety
+///
+/// As for `unround_result_picture`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn unround_result_excess(
+    result: *const UnroundResult,
+    component: u64,
+    count: *mut u64,
+) -> *const f64 {
+    // SAFETY: the caller promised a live result.
+    let Some(made) = (unsafe { result_of(result) }) else {
+        return ptr::null();
+    };
+    let Some(values) = usize::try_from(component).ok().and_then(|index| made.excess.get(index)) else {
+        return ptr::null();
+    };
+    // SAFETY: the caller promised a pointer null or valid for a write.
+    unsafe { put(count, wide(values.len())) };
+    values.as_ptr()
 }
 
 /// Samples of `height x width x channels`, from a pointer.

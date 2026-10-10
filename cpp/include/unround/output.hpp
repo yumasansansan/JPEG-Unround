@@ -38,6 +38,10 @@ enum class Dither : std::int32_t { none, blue_noise };
 // picture as it is stored.
 [[nodiscard]] bool turns(std::int32_t orientation) noexcept;
 
+// The orientation that turns back what an orientation turns, from the picture shown to
+// the picture stored: each is its own but 6 and 8, the quarter turns, each the other's.
+[[nodiscard]] std::int32_t inverse(std::int32_t orientation) noexcept;
+
 // The picture as orientation o says to show it (docs/cli.md, Orientation): pixel
 // (r, c) of the result is that of the stored picture S of h rows and w columns at
 // S[r][c] (1), S[r][w-1-c] (2), S[h-1-r][w-1-c] (3), S[h-1-r][c] (4), and of w rows
