@@ -56,7 +56,8 @@ impl Default for Options {
 
 /// A subgradient of `alpha ||grad x||_{2,1}` plus the data term, at any canvas of the
 /// frame's one component. Where the gradient of `x` is 0, the subgradient of its norm
-/// taken is 0.
+/// taken is 0; where the slack has a price, a coefficient beyond the file's own
+/// interval adds that price on the side it lies (docs/math.md, 7).
 #[must_use]
 pub fn subgradient(frame: &Frame, weights: &Tv, canvas: &[f64]) -> Vec<f64> {
     let shape = frame.shape();
@@ -74,16 +75,34 @@ pub fn subgradient(frame: &Frame, weights: &Tv, canvas: &[f64]) -> Vec<f64> {
     let mut divergence = vec![0.0; size];
     operators::div(&across, &down, shape, &mut divergence);
     let mut coefficients = dct::forward(canvas, shape.height, shape.width);
-    for (block, (values, centres)) in coefficients
+    // Without a price, the prices are 0 and the sides taken of the intervals themselves.
+    let free = [0.0; BLOCK_SIZE];
+    let (costs, own_lower, own_upper) = problem
+        .cost()
+        .map_or((&free, problem.lower(), problem.upper()), |cost| {
+            (cost.costs(), cost.inner_lower(), cost.inner_upper())
+        });
+    for (block, (((values, centres), lows), highs)) in coefficients
         .as_chunks_mut::<BLOCK_SIZE>()
         .0
         .iter_mut()
         .zip(problem.centres().as_chunks::<BLOCK_SIZE>().0)
+        .zip(own_lower.as_chunks::<BLOCK_SIZE>().0)
+        .zip(own_upper.as_chunks::<BLOCK_SIZE>().0)
         .enumerate()
     {
-        // Each block with its weights, a flat block's its own.
-        for ((value, &centre), &weight) in values.iter_mut().zip(centres).zip(problem.block_weights(block)) {
-            *value = weight * (*value - centre);
+        // Each block with its weights, a flat block's its own, and the price of the side
+        // of the file's own interval that the coefficient lies beyond.
+        let terms = values
+            .iter_mut()
+            .zip(centres)
+            .zip(problem.block_weights(block))
+            .zip(lows)
+            .zip(highs)
+            .zip(costs);
+        for (((((value, &centre), &weight), &low), &high), &cost) in terms {
+            let beyond = f64::from(u8::from(*value > high)) - f64::from(u8::from(*value < low));
+            *value = weight * (*value - centre) + cost * beyond;
         }
     }
     let data = dct::inverse(&coefficients, problem.rows(), problem.columns());

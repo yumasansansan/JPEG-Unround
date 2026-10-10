@@ -10,11 +10,17 @@
 find_package(Threads REQUIRED)
 
 add_library(unround_cpp STATIC
+  src/colour.cpp
   src/dct.cpp
+  src/decode.cpp
   src/exact.cpp
+  src/frames.cpp
   src/laplace.cpp
   src/model.cpp
-  src/operators.cpp)
+  src/operators.cpp
+  src/pdhg.cpp
+  src/settings.cpp
+  src/subgradient.cpp)
 add_library(unround::cpp ALIAS unround_cpp)
 target_include_directories(unround_cpp PUBLIC include)
 target_link_libraries(unround_cpp PUBLIC unround::jpegio Threads::Threads)
@@ -48,7 +54,7 @@ if(UNROUND_BUILD_TESTS)
   # The tests of the library; those that compare with the exact references take
   # their directory.
   set(UNROUND_REFERENCES "${PROJECT_SOURCE_DIR}/conformance/references")
-  foreach(name IN ITEMS exact dct laplace model operators)
+  foreach(name IN ITEMS exact dct laplace model operators frames pdhg settings subgradient colour)
     add_executable(unround_cpp_${name}_test tests/test_${name}.cpp)
     target_include_directories(unround_cpp_${name}_test PRIVATE tests)
     target_link_libraries(unround_cpp_${name}_test PRIVATE unround::cpp)
@@ -56,4 +62,20 @@ if(UNROUND_BUILD_TESTS)
     target_compile_options(unround_cpp_${name}_test PRIVATE ${UNROUND_CPP_TARGET_FLAGS})
     unround_add_test(cpp.${name} unround_cpp_${name}_test "${UNROUND_REFERENCES}")
   endforeach()
+
+  # The reconstruction of files that the test encoder writes.
+  add_executable(unround_cpp_decode_test tests/test_decode.cpp)
+  target_include_directories(unround_cpp_decode_test PRIVATE tests)
+  target_link_libraries(unround_cpp_decode_test PRIVATE unround::cpp unround_test_jpeg)
+  unround_target_defaults(unround_cpp_decode_test)
+  target_compile_options(unround_cpp_decode_test PRIVATE ${UNROUND_CPP_TARGET_FLAGS})
+  unround_add_test(cpp.decode unround_cpp_decode_test)
+
+  # The conformance cases (docs/math.md, 9), reproduced by the C++ library.
+  add_executable(unround_cpp_conformance_test tests/test_conformance.cpp)
+  target_include_directories(unround_cpp_conformance_test PRIVATE tests)
+  target_link_libraries(unround_cpp_conformance_test PRIVATE unround::cpp)
+  unround_target_defaults(unround_cpp_conformance_test)
+  target_compile_options(unround_cpp_conformance_test PRIVATE ${UNROUND_CPP_TARGET_FLAGS})
+  unround_add_test(cpp.conformance unround_cpp_conformance_test "${PROJECT_SOURCE_DIR}/conformance/cases")
 endif()

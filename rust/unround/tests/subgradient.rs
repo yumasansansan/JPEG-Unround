@@ -108,6 +108,20 @@ fn complex_objective(problem: &Problem, weights: &Tv, canvas: &[Complex], shape:
                     im: 0.0,
                 });
                 data = data.add(difference.mul(difference).scale(problem.weights()[v * BLOCK + u]));
+                // The price of a slack: lambda times the distance beyond the file's own
+                // interval, which is 2 lambda times half of it.
+                if let Some(cost) = problem.cost() {
+                    let (low, high) = (cost.inner_lower()[index], cost.inner_upper()[index]);
+                    let price = cost.costs()[v * BLOCK + u];
+                    let beyond = if coefficient.re > high {
+                        coefficient.sub(Complex { re: high, im: 0.0 })
+                    } else if coefficient.re < low {
+                        Complex { re: low, im: 0.0 }.sub(coefficient)
+                    } else {
+                        zero
+                    };
+                    data = data.add(beyond.scale(2.0 * price));
+                }
             }
         }
     }
@@ -116,16 +130,31 @@ fn complex_objective(problem: &Problem, weights: &Tv, canvas: &[Complex], shape:
 
 #[test]
 fn the_subgradient_is_the_derivative_where_the_objective_is_smooth() {
+    the_derivative_where_smooth(&DataTerm {
+        mu: Some(40.0),
+        ..DataTerm::default()
+    });
+}
+
+#[test]
+fn the_price_of_a_slack_is_in_the_subgradient() {
+    // Beyond the file's own interval the price adds lambda per unit of the distance: a
+    // coefficient there, which the noise of the canvas puts many at, adds lambda on its side.
+    the_derivative_where_smooth(&DataTerm {
+        mu: Some(40.0),
+        slack: 0.5,
+        slack_cost: 3.0,
+        ..DataTerm::default()
+    });
+}
+
+fn the_derivative_where_smooth(data: &DataTerm) {
     // The complex step, Im f(x + i h v) / h with h = 1e-20, gives the directional derivative
     // without the cancellation of a difference quotient: its error is of order h^2 and of
     // the rounding of the terms. The canvas has no zero gradient but at its last sample,
     // where both differences are 0 whatever x is, the term is constant, and the subgradient
     // taken is 0.
-    let data = DataTerm {
-        mu: Some(40.0),
-        ..DataTerm::default()
-    };
-    let (problem, canvas) = synthetic::problem(8, 16, 31, 2.0, &data);
+    let (problem, canvas) = synthetic::problem(8, 16, 31, 2.0, data);
     let frame = Frame::one(problem.clone());
     let shape = frame.shape();
     let mut numbers = Numbers::new(32);
@@ -157,7 +186,9 @@ fn the_subgradient_is_the_derivative_where_the_objective_is_smooth() {
             .iter()
             .enumerate()
             .map(|(index, &c)| {
-                problem.weights()[index % BLOCK_SIZE] * (c - problem.centres()[index]).abs() * transformed[index].abs()
+                let price = problem.cost().map_or(0.0, |cost| cost.costs()[index % BLOCK_SIZE]);
+                (problem.weights()[index % BLOCK_SIZE] * (c - problem.centres()[index]).abs() + price)
+                    * transformed[index].abs()
             })
             .sum::<f64>();
         let mut allowance = (gamma(4 * canvas.len()) + 16.0 * U) * magnitude;

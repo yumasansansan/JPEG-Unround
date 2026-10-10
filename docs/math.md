@@ -770,9 +770,12 @@ large as the solution's $w$, which is not known beforehand.
 
 ### 6.4 When the solvers stop
 
-Every few iterations (ten by default) a solver takes the gap, and it stops at
-the first of these where one of the following holds, each tolerance of 0
-turning its test off; or else after the most iterations allowed (6.5).
+A solver takes the gap of its start (iteration 0), every few iterations after it
+(ten by default), and after its last iteration; where it takes it only after the
+last, not of the start. Each is a record of the tilde point of its iteration (5),
+the start's being the start itself. The solver stops at the first record where
+one of the following holds, each tolerance of 0 turning its test off; or else
+after the most iterations allowed (6.5).
 
 - The gap per sample is at most a tolerance $\varepsilon$ (by default that of 6.5).
 - The gap is at most $\varepsilon_{\mathrm{rel}} P(z)$, which bounds
@@ -935,7 +938,7 @@ extrapolation of FISTA. The same scheme, applied to the objective $P$ of 4.2,
 with a step $\eta$ and a decay $\beta$:
 
 $$ \begin{aligned}
-g &= -\alpha \mathrm{div}\bigl(\nabla y / |\nabla y|\bigr) + D^\top \bigl(\mu\, \omega\, (D y - \hat c)\bigr)
+g &= -\alpha \mathrm{div}\bigl(\nabla y / |\nabla y|\bigr) + D^\top \bigl(m\, (D y - \hat c) + \lambda\, s\bigr)
    && (\text{0 where } \nabla y = 0), \\
 x^{n+1} &= P_{\mathcal{C}}\bigl(y^n - h_n\, g / \|g\|\bigr), \qquad h_n = \frac{\eta \sqrt{N}}{(1 + n)^\beta}, \\
 t_{n+1} &= \tfrac12 \bigl(1 + \sqrt{1 + 4 t_n^2}\bigr), \qquad
@@ -944,10 +947,16 @@ y^{n+1} = x^{n+1} + \frac{t_n - 1}{t_{n+1}} \bigl(x^{n+1} - x^n\bigr),
 
 from $y^0 = x^0$ and $t_0 = 1$, where $N$ is the number of samples, so that
 the first step moves a sample by $\eta$ grey levels on average (root mean
-square). By default $\eta = \beta = \tfrac12$ and the extrapolation is on;
-without it, $y^{n+1} = x^{n+1}$. $g$ is a subgradient of
-$P - \iota_{\mathcal{C}}$. The scheme has no convergence guarantee and no
-measure of how far it is from the least value.
+square). $m$ is the weight of each coefficient of 4.1 ($m_{b,k}$, in a flat block
+its own), and where the slack has a price, $\lambda$ that of each frequency and
+$s_k$ 1 where $(D y)_k$ lies above the file's own interval, $-1$ below it and 0
+within it ($\lambda s = 0$ without a price). By default $\eta = \beta = \tfrac12$
+and the extrapolation is on; without it, $y^{n+1} = x^{n+1}$. $g$ is a subgradient
+of $P - \iota_{\mathcal{C}}$. Where $g = 0$ there is no direction to step along,
+and the method stops there (stationary). It records the primal value $P(x^n)$, its
+data term at the coefficients of the projection, of the start, of every few
+iterates (each by default) and of the last, and no dual value. The scheme has no
+convergence guarantee and no measure of how far it is from the least value.
 
 ## 8. Colour
 

@@ -8,7 +8,10 @@
 # Functions whose loops may be scalar.
 [functions]
 "unround::laplace::" = "the logarithms and exponentials of the system's library, one frequency at a time, once for each component"
+"unround::pdhg::plan" = "the largest of the channels' weights, a few numbers, once for each solve"
+"unround::parse_settings" = "the numbers of the options read from their decimals (libc++'s from_chars, inlined), once for each command line"
 
 # Functions whose loops may be scalar where they only add: sums in a fixed order.
 [sums]
 "unround::exact::" = "the last terms of a row in its lanes, and the rows' sums added in a Sum and its tree, each added after the one before, in the order of docs/math.md, Arithmetic"
+"unround::pdhg::" = "the values of the channels' data terms and conjugates added in a record, channel after channel"
