@@ -4,11 +4,13 @@
 """Phase 2: when the primal-dual method stops, chosen again for the data term of the defaults.
 
     python experiments/phase2_stops.py --rust rust/target/release [--data data] [--workers 10]
-        [--cache data/phase2/stops] [--out experiments/results] [stage ...]
+        [--cache data/phase2/stops-flat] [--out experiments/results] [stage ...]
 
 The reconstructions are the reference implementation's, through the package's binding
-(experiments/common.py), with the library's defaults of the model (docs/math.md, 4.1):
-the defaults of the stop were chosen under the former data term (6.5). The files are the
+(experiments/common.py), with the library's defaults of the model (docs/math.md, 4.1),
+whose flat blocks weigh a tenth of the others: the defaults of the stop before (FORMER)
+were chosen without them (6.5). A run's name does not say the model, so the cache of
+another model is another directory. The files are the
 tuning images of scripts/test_images.py as libjpeg-turbo encoded them, of four sets: the
 synthetic greyscale images, the photographs in grey, and the synthetic and the
 photographed colour images in 4:2:0 and 4:4:4. The stages:
@@ -99,7 +101,7 @@ VARIANTS: Final[dict[str, tuple[Variant, ...]]] = {"tv": ((3.0, 1.9), (10.0, 1.9
 STOP_FLOORS: Final = {"tv": 5e-5, "tgv": 1e-3}
 MOST: Final = 8000
 # The defaults of the stop before (docs/math.md, 6.5), to compare with.
-FORMER: Final = {"tv": ((30.0, 1.9), 2e-4), "tgv": ((10.0, 1.9), 1e-2)}
+FORMER: Final = {"tv": ((10.0, 1.9), 5e-4), "tgv": ((3.0, 1.9), 5e-3)}
 
 STAGES: Final = ["ratios", "references", "stops", "report"]
 
@@ -671,7 +673,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--rust", type=Path, required=True, help="where cargo wrote unround_capi")
     parser.add_argument("--data", type=Path, default=common.ROOT / "data")
-    parser.add_argument("--cache", type=Path, default=common.ROOT / "data" / "phase2" / "stops")
+    parser.add_argument("--cache", type=Path, default=common.ROOT / "data" / "phase2" / "stops-flat")
     parser.add_argument("--out", type=Path, default=common.ROOT / "experiments" / "results")
     parser.add_argument("--workers", type=int, default=10)
     parser.add_argument("stages", nargs="*", default=STAGES, choices=STAGES)

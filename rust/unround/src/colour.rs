@@ -135,7 +135,6 @@ mod tests {
     use crate::exact::quotient;
 
     #[test]
-    #[expect(clippy::float_cmp, reason = "constants are compared to the last bit")]
     fn the_constants_are_the_nearest_doubles_to_their_rationals() {
         assert_eq!(RED_FROM_CR, quotient(701, 500));
         assert_eq!(BLUE_FROM_CB, quotient(443, 250));
@@ -149,7 +148,6 @@ mod tests {
     }
 
     #[test]
-    #[expect(clippy::float_cmp, reason = "a grey converts exactly")]
     fn a_grey_is_its_luma() {
         // With Cb and Cr at 128, every product is 0 and R = G = B = Y exactly.
         for luma in [0.0, 17.25, 128.0, 254.5, -3.0, 300.0] {

@@ -22,14 +22,24 @@ use crate::operators::{tensor_square, vector_square};
 use crate::planar::{Layout, Part};
 use crate::sweep::{TgvOutputs, TvOutputs};
 
-/// What the data term of a frequency takes.
+/// What the data term of a frequency takes: its weight in a block that is not flat,
+/// and in one that is.
 #[derive(Debug, Clone, Copy, Default)]
 struct Frequency {
     step: f64,
     shrunk: f64,
     shift: f64,
     weight: f64,
+    flat_weight: f64,
     charge: f64,
+}
+
+impl Frequency {
+    /// The weight in a block, flat where `mark` is 1.
+    #[inline]
+    fn weight_of(&self, mark: f64) -> f64 {
+        if mark > 0.0 { self.flat_weight } else { self.weight }
+    }
 }
 
 /// What the values of one component take: its layout and levels, the constants of
@@ -105,6 +115,7 @@ impl Values {
                         shrunk: problem.shrunk()[index],
                         shift: if index == 0 { LEVEL_SHIFT_DC } else { 0.0 },
                         weight: problem.weights()[index],
+                        flat_weight: problem.flat_weights()[index],
                         charge: costs.map_or(0.0, |costs| costs[index]),
                     };
                 }
@@ -445,8 +456,10 @@ impl Values {
                     }
                 }
                 let levels = &component.part.levels[by * block_row..(by + 1) * block_row];
+                let flat = component.part.flat_row(by, across);
                 for v in 0..BLOCK {
                     for (set, &count) in part.valid.iter().enumerate() {
+                        let marks = &flat[set * across..set * across + count];
                         for u in 0..BLOCK {
                             let start = (v * part.planes + BLOCK * set + u) * across;
                             let (values, own) =
@@ -454,9 +467,9 @@ impl Values {
                             let frequency = &component.frequencies[v][u];
                             let terms = &mut self.terms[..count];
                             if component.charged {
-                                conjugate_row::<true>(terms, values, own, component, frequency);
+                                conjugate_row::<true>(terms, values, own, marks, component, frequency);
                             } else {
-                                conjugate_row::<false>(terms, values, own, component, frequency);
+                                conjugate_row::<false>(terms, values, own, marks, component, frequency);
                             }
                             terms_sum.add(lanes(terms));
                         }
@@ -511,17 +524,19 @@ impl Values {
             for by in 0..part.rows {
                 let levels = &component.part.levels[by * block_row..(by + 1) * block_row];
                 let own = &values[by * block_row..(by + 1) * block_row];
+                let flat = component.part.flat_row(by, across);
                 for v in 0..BLOCK {
                     for (set, &count) in part.valid.iter().enumerate() {
+                        let marks = &flat[set * across..set * across + count];
                         for u in 0..BLOCK {
                             let start = (v * part.planes + BLOCK * set + u) * across;
                             let frequency = &component.frequencies[v][u];
                             let (coefficients, levels) = (&own[start..start + count], &levels[start..start + count]);
                             let terms = &mut self.terms[..count];
-                            data_row(terms, coefficients, levels, component, frequency, false);
+                            data_row(terms, coefficients, levels, marks, component, frequency, false);
                             squares.add(lanes(terms));
                             if component.charged {
-                                data_row(terms, coefficients, levels, component, frequency, true);
+                                data_row(terms, coefficients, levels, marks, component, frequency, true);
                                 charged.add(lanes(terms));
                             }
                         }
@@ -538,36 +553,41 @@ impl Values {
     }
 }
 
-/// `G*`'s terms of a row of coefficients of one frequency.
+/// `G*`'s terms of a row of coefficients of one frequency, each with the weight of
+/// its block, flat where its mark is 1.
 #[inline]
 fn conjugate_row<const CHARGED: bool>(
     terms: &mut [f64],
     values: &[f64],
     levels: &[i16],
+    marks: &[f64],
     component: &Component,
     frequency: &Frequency,
 ) {
     let count = terms.len();
-    let (values, levels) = (&values[..count], &levels[..count]);
+    let (values, levels, marks) = (&values[..count], &levels[..count], &marks[..count]);
     for i in 0..count {
         let (ends, centre, inner) = component.model(f64::from(levels[i]), frequency);
-        terms[i] = conjugate_term::<CHARGED>(values[i], frequency.weight, ends, centre, frequency.charge, inner);
+        let weight = frequency.weight_of(marks[i]);
+        terms[i] = conjugate_term::<CHARGED>(values[i], weight, ends, centre, frequency.charge, inner);
     }
 }
 
-/// `G`'s terms of a row of coefficients of one frequency: `w (c - centre)^2`, or where
-/// `charged`, the cost of lying beyond the file's own interval.
+/// `G`'s terms of a row of coefficients of one frequency: `w (c - centre)^2`, `w` the
+/// weight of the coefficient's block, flat where its mark is 1, or where `charged`,
+/// the cost of lying beyond the file's own interval.
 #[inline]
 fn data_row(
     terms: &mut [f64],
     values: &[f64],
     levels: &[i16],
+    marks: &[f64],
     component: &Component,
     frequency: &Frequency,
     charged: bool,
 ) {
     let count = terms.len();
-    let (values, levels) = (&values[..count], &levels[..count]);
+    let (values, levels, marks) = (&values[..count], &levels[..count], &marks[..count]);
     if charged {
         for i in 0..count {
             let (_, _, (lower, upper)) = component.model(f64::from(levels[i]), frequency);
@@ -576,7 +596,7 @@ fn data_row(
     } else {
         for i in 0..count {
             let (_, centre, _) = component.model(f64::from(levels[i]), frequency);
-            terms[i] = squared_term(values[i], frequency.weight, centre);
+            terms[i] = squared_term(values[i], frequency.weight_of(marks[i]), centre);
         }
     }
 }

@@ -235,6 +235,39 @@ fn a_slack_with_a_cost_sweeps_as_it_is_defined() {
     agree(&colour, &parameters(3), 3, 18);
 }
 
+/// Whether a channel of a frame has blocks of both kinds, flat and not.
+fn both_kinds(frame: &Frame) -> bool {
+    frame.channels().iter().any(|channel| {
+        let flat = channel.problem().flat();
+        flat.contains(&true) && flat.contains(&false)
+    })
+}
+
+/// The data term of flat blocks of their own: at most two AC levels not 0, a tenth of
+/// the weight; and with a slack that costs, where `charged`.
+fn flat_data(charged: bool) -> DataTerm {
+    DataTerm {
+        flat_weight: 0.1,
+        flat_levels: 2,
+        flat_dc: None,
+        slack: if charged { 0.5 } else { 0.0 },
+        slack_cost: if charged { 3.0 } else { 0.0 },
+        ..DataTerm::default()
+    }
+}
+
+#[test]
+fn flat_blocks_sweep_as_they_are_defined() {
+    for charged in [false, true] {
+        let frame = Frame::one(synthetic::problem(24, 40, 19, 2.0, &flat_data(charged)).0);
+        assert!(both_kinds(&frame));
+        agree(&frame, &parameters(1), 4, 19);
+        let (colour, _) = synthetic::colour_frame(21, 30, 20, (2, 2), &flat_data(charged));
+        assert!(both_kinds(&colour));
+        agree(&colour, &parameters(3), 3, 20);
+    }
+}
+
 /// The current point of TGV in the natural layout.
 #[derive(Clone)]
 struct TgvState {
@@ -474,6 +507,10 @@ fn tgv_sweeps_as_it_is_defined() {
     apart.coupled = false;
     apart.gammas = vec![1.0, 0.5, 2.0];
     agree_tgv(&colour, &apart, 3, 34);
+    // Flat blocks with their own weights.
+    let (flat, _) = synthetic::colour_frame(21, 30, 24, (2, 2), &flat_data(false));
+    assert!(both_kinds(&flat));
+    agree_tgv(&flat, &parameters(3), 3, 35);
 }
 
 /// The start and its gradient in the planes are those of the natural layout, to the last

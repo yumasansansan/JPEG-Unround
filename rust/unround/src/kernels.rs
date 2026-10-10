@@ -328,6 +328,43 @@ pub fn prox_row<const CHARGED: bool>(
     }
 }
 
+/// [`prox_row`] with flat blocks: the value at place `m` of each stream takes the
+/// factors of `flat[u]` where `marks[m]` is 1 (its block is flat) and those of
+/// `frequencies[u]` where it is 0. The factors are chosen, not computed, so that each
+/// value is that of its block's own map to the last bit.
+#[inline]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the row takes the streams, the levels, both kinds of factors and the marks"
+)]
+pub fn prox_row_flat<const CHARGED: bool>(
+    values: &mut [f64],
+    stride: usize,
+    levels: &[i16],
+    level_stride: usize,
+    frequencies: &[Frequency; 8],
+    flat: &[Frequency; 8],
+    marks: &[f64],
+    slack: f64,
+    count: usize,
+) {
+    let marks = &marks[..count];
+    for (u, (frequency, flat)) in frequencies.iter().zip(flat).enumerate() {
+        let values = &mut values[u * stride..u * stride + count];
+        let levels = &levels[u * level_stride..u * level_stride + count];
+        for ((value, &level), &mark) in values.iter_mut().zip(levels).zip(marks) {
+            let flat_block = mark > 0.0;
+            let chosen = Frequency {
+                scaled: if flat_block { flat.scaled } else { frequency.scaled },
+                inverse: if flat_block { flat.inverse } else { frequency.inverse },
+                shrink: if flat_block { flat.shrink } else { frequency.shrink },
+                ..*frequency
+            };
+            *value = prox_one::<CHARGED>(*value, f64::from(level), &chosen, slack);
+        }
+    }
+}
+
 /// The descent of one row of a channel's canvas: `x + step (across + down)`, `across`
 /// the backward difference of `px` along the row, `down` that of the entries down from
 /// the row's own (`own`, zeros at the last row) and the row above (`above`, zeros at

@@ -313,6 +313,34 @@ fn the_values_of_tv_are_those_of_the_natural_layout() {
     };
     let (slack, _) = synthetic::colour_frame(21, 30, 43, (2, 2), &charged);
     tv_agree(&slack, &Tv::default(), 255.0, 54);
+    // Flat blocks with their own weights, with and without a slack that costs.
+    for (seed, data) in [(46, flat_data(false)), (47, flat_data(true))] {
+        let (flat, _) = synthetic::colour_frame(21, 30, seed, (2, 2), &data);
+        assert!(both_kinds(&flat));
+        tv_agree(&flat, &Tv::default(), 255.0, seed + 10);
+    }
+}
+
+/// Whether a channel of a frame has blocks of both kinds, flat and not.
+fn both_kinds(frame: &Frame) -> bool {
+    frame.channels().iter().any(|channel| {
+        let flat = channel.problem().flat();
+        flat.contains(&true) && flat.contains(&false)
+    })
+}
+
+/// The data term of flat blocks of their own: at most two AC levels not 0, a tenth of
+/// the weight; and with a slack that costs, where `charged`.
+fn flat_data(charged: bool) -> DataTerm {
+    DataTerm {
+        flat_weight: 0.1,
+        flat_levels: 2,
+        flat_dc: None,
+        slack: if charged { 0.5 } else { 0.0 },
+        slack_cost: if charged { 3.0 } else { 0.0 },
+        dc_weight: 2.0,
+        ..DataTerm::default()
+    }
 }
 
 #[test]
@@ -328,4 +356,7 @@ fn the_values_of_tgv_are_those_of_the_natural_layout() {
         coupled: false,
     };
     tgv_agree(&colour, &apart, 100.0, 63);
+    let (flat, _) = synthetic::colour_frame(21, 30, 48, (2, 2), &flat_data(false));
+    assert!(both_kinds(&flat));
+    tgv_agree(&flat, &Tgv::default(), 255.0, 64);
 }

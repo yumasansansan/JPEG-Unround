@@ -36,6 +36,9 @@ pub const MEASURED: DataTerm = DataTerm {
     centres: Centres::Mmse,
     power: 2.0,
     slack_cost: 0.0,
+    flat_weight: 1.0,
+    flat_levels: 0,
+    flat_dc: None,
 };
 
 /// A deterministic stream of numbers, the `SplitMix64` generator.

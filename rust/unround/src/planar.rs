@@ -17,7 +17,9 @@
 //! `(v, u)` of block `h m + t` of a block row, `t < h` its place in the MCU, is at
 //! `(v P_c + 8 t + u) M + m`, where `P_c = P / a_c` are the component's columns in an
 //! MCU. Blocks that the component does not have -- beyond its last block of a row, in
-//! the last MCU -- have places that nothing reads.
+//! the last MCU -- have places that nothing reads. Which blocks are flat (docs/math.md,
+//! 4.1) is laid out block row by block row too: block `h m + t` of a block row at
+//! `t M + m`.
 
 use std::sync::Arc;
 
@@ -26,7 +28,7 @@ use crate::error::Error;
 use crate::frames::Frame;
 
 /// The layout of one component in the planes.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Part {
     /// The canvas's samples per sample of the component, down and across.
     pub ratio: (usize, usize),
@@ -46,6 +48,9 @@ pub struct Part {
     /// The component's levels in the planes, 0 at the places of blocks that it does
     /// not have; made once, and shared by what takes the part.
     pub levels: Arc<[i16]>,
+    /// For each block row, 1 where block `h m + t` is flat and 0 where it is not, at
+    /// `t M + m`, and 0 at the places of blocks that the component does not have.
+    pub flat: Arc<[f64]>,
 }
 
 impl Part {
@@ -54,10 +59,17 @@ impl Part {
     pub fn block_row(&self, across: usize) -> usize {
         BLOCK * self.planes * across
     }
+
+    /// The marks of flat blocks of block row `row`: `sets x M` of them.
+    #[must_use]
+    pub fn flat_row(&self, row: usize, across: usize) -> &[f64] {
+        let length = self.sets * across;
+        &self.flat[row * length..(row + 1) * length]
+    }
 }
 
 /// The layout of a frame in the planes.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Layout {
     /// Rows of the canvas.
     pub height: usize,
@@ -123,8 +135,10 @@ impl Layout {
                 columns,
                 valid,
                 levels: Arc::from([]),
+                flat: Arc::from([]),
             };
             part.levels = Arc::from(values_to_planes(&part, across, problem.levels()));
+            part.flat = Arc::from(flat_to_planes(&part, across, problem.flat()));
             parts.push(part);
         }
         Ok(Self {
@@ -235,6 +249,20 @@ impl Layout {
             }
         }
     }
+}
+
+/// Which of a component's blocks are flat, block row by block row: 1 for the flat
+/// block in column `c` of a block row at `(c mod h) M + c div h`, 0 elsewhere.
+fn flat_to_planes(part: &Part, across: usize, flat: &[bool]) -> Vec<f64> {
+    let length = part.sets * across;
+    let mut result = vec![0.0; part.rows * length];
+    for (source, target) in flat.chunks_exact(part.columns).zip(result.chunks_exact_mut(length)) {
+        for (column, &mark) in source.iter().enumerate() {
+            let (mcu, set) = (column / part.sets, column % part.sets);
+            target[set * across + mcu] = if mark { 1.0 } else { 0.0 };
+        }
+    }
+    result
 }
 
 /// A component's values in natural order in the planes of `across` MCUs, block by

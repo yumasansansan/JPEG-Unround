@@ -246,6 +246,9 @@ def _data_options(data: DataTerm | tuple[DataTerm, ...]) -> list[str]:
         ("--centres", lambda term: term.centres),
         ("--slack", lambda term: _number(term.slack)),
         ("--slack-cost", lambda term: _number(term.slack_cost)),
+        ("--flat-weight", lambda term: _number(term.flat_weight)),
+        ("--flat-levels", lambda term: str(term.flat_levels)),
+        ("--flat-dc", lambda term: "any" if term.flat_dc is None else str(term.flat_dc)),
     )
     result = []
     for name, value in fields:

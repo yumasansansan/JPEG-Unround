@@ -121,6 +121,9 @@ data_terms = st.builds(
     centres=st.sampled_from(["mmse", "midpoint"]),
     power=at_least_zero,
     slack_cost=at_least_zero,
+    flat_weight=at_least_zero,
+    flat_levels=st.integers(0, 63),
+    flat_dc=st.none() | st.integers(0, 2**32 - 1),
 )
 gammas = st.none() | st.tuples(positive, positive, positive)
 settings_drawn = st.builds(
@@ -188,10 +191,16 @@ def test_the_settings_reach_the_library_to_the_last_bit(
         ("dc-weight", "dc_weight"),
         ("slack", "slack"),
         ("slack-cost", "slack_cost"),
+        ("flat-weight", "flat_weight"),
     ):
         items = values.pop(name).split(",")
         for index, term in enumerate(terms):
             assert same(items[index if len(items) > 1 else 0], getattr(term, field)), name
+    counts, limits = values.pop("flat-levels").split(","), values.pop("flat-dc").split(",")
+    for index, term in enumerate(terms):
+        assert int(counts[index if len(counts) > 1 else 0]) == term.flat_levels
+        limit = limits[index if len(limits) > 1 else 0]
+        assert limit == ("any" if term.flat_dc is None else str(term.flat_dc))
     mus, centres = values.pop("mu").split(","), values.pop("centres").split(",")
     for index, term in enumerate(terms):
         mu = mus[index if len(mus) > 1 else 0]

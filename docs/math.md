@@ -389,7 +389,8 @@ $\mu = \mu_s \bar Q^{\,r}$, where $\bar Q$ is the mean of its 64 steps, with
 $\mu_s = 9$ and $r = 0.9$; in the chroma of a file in YCbCr (Cb and Cr) the scale
 is $\chi \mu_s$, with $\chi = 0.3$. A $\mu$ that is given is taken as it is, in
 every component. By default, too, $p = 2$, $\omega_{\mathrm{DC}} = 1$ (DC weighted
-as AC), the centres are the middles of the intervals, and there is no slack.
+as AC), the centres are the middles of the intervals, there is no slack, and flat
+blocks weigh a tenth of the others (below).
 
 These defaults gained most over the standard decoder on the tuning images
 (`experiments/results/phase2-weights.md`). The middles gained more than the MMSE
@@ -407,8 +408,53 @@ but the products, $(\chi \mu_s) \bar Q$ in the chroma, in that order: $\mu$ then
 agrees between implementations to the last bit. With another power $\bar Q^{\,r}$
 rounds as the platform's `pow` does, and $\mu$ may differ in its last bits.
 
+**Flat blocks.** A block is flat where at most $n_{\mathrm{flat}}$ of its 63 AC
+levels are not 0, $0 \le n_{\mathrm{flat}} \le 63$ (by default $n_{\mathrm{flat}} = 0$,
+every AC level 0), and, where a bound $d_{\mathrm{flat}}$ is given (by default 1),
+its DC level differs from those of the blocks above, below, left and right of it in
+its component by at most $d_{\mathrm{flat}}$. The weights of a flat block's
+coefficients, DC among them, are $\varphi \ge 0$ times those above: with
+$\varphi_b = \varphi$ in a flat block $b$ and 1 in the others, coefficient $k$ of
+block $b$ weighs
+
+$$ m_{b,k} = \varphi_b\, \mu \omega_k, $$
+
+and the proximal map and the conjugate below are those of each coefficient with its
+own $m_{b,k}$ in place of $\mu \omega_k$. By default $\varphi = 0.1$, with
+$d_{\mathrm{flat}} = 1$ (the measurement below); $\varphi = 1$ changes nothing.
+Whether a block is flat is a count of its levels, exact, and $\varphi (\mu \omega_k)$
+rounds once, and not at all where $\varphi = 1$.
+
+Within a smooth gradient the blocks are flat, and the data term pulls each of their
+coefficients to the middle of its interval: the AC ones to 0, and the block's mean
+to the middle of its DC interval, which is the standard decoder's staircase of flat
+blocks. The ramp that TGV prefers needs small AC coefficients within their bins of
+0, and block means away from those middles; the data term resists both, the more
+the larger $\mu$, and the $\mu$ that serves textures and photographs best keeps the
+staircase of a gradient visible (`--mu-scale 1` instead of 9 removes it, but smooths
+textures). A flat block holds no detail for the pull to keep, so a $\varphi < 1$
+weakens it only where it does that harm.
+
+On the tuning files (`experiments/flat_blocks.py`, `experiments/results/flat-blocks.md`:
+the synthetic images in grey and in colour, 4:2:0, and twelve photographs in colour,
+at the qualities 10, 30 and 70, by TGV with the other defaults and the stop of 6.5 of
+that time), a factor of every flat block without a bound of DC lost up to 0.4 dB of
+the 8-bit PSNR on charts in colour: in 4:2:0 almost every block of the chroma is
+flat, and the chroma spread over the edges. With $d_{\mathrm{flat}} = 1$, which leaves out the flat blocks beside an
+edge, no set lost (over the files of a set and a quality, the 10th percentile of the
+differences was at least $-0.02$ dB, the median at least $-0.01$ dB, and the SSIM's
+median rose), and the gradients gained: 0.10 to 1.17 dB (median 0.30 dB) with
+$\varphi = 0.3$ and 0.12 to 1.91 dB (median 0.51 dB) with $\varphi = 0.1$, the
+staircase of the chroma's blocks along their edges all but gone with the latter; the
+photographs gained a median 0.11 and 0.15 dB at the quality 10. The solvers took, in
+the median of a quality, up to 1.14 and 1.37 times the iterations on the synthetic
+images in colour, and as many on the photographs. The default is the factor that
+gained most on the gradients of those that lost nowhere, as was decided before the
+measurement.
+
 **Proximal map.** For $\tau > 0$ and $e = D v$,
-$\mathrm{prox}_{\tau G}(v) = D^\top \zeta$ with
+$\mathrm{prox}_{\tau G}(v) = D^\top \zeta$ with (in a flat block, $\varphi \mu \omega_k$
+in place of $\mu \omega_k$)
 
 $$ \zeta_k = \mathrm{clip}\!\left(\frac{e_k + \tau \mu \omega_k \hat c_k}{1 + \tau \mu \omega_k},\ a_k,\ b_k\right), $$
 
@@ -802,28 +848,36 @@ that reached the tolerances soonest on two other files of each set, among 3 to
 
 | | $\tau / \sigma$ | $\rho$ | gap per sample | most iterations |
 |---|---|---|---|---|
-| TV | 10 | 1.9 | $5 \cdot 10^{-4}$ | 2000 |
-| TGV | 3 | 1.9 | $5 \cdot 10^{-3}$ | 5000 |
+| TV | 10 | 1.9 | $2 \cdot 10^{-4}$ | 5000 |
+| TGV | 3 | 1.9 | $2 \cdot 10^{-3}$ | 10000 |
 
-TV at these defaults stopped the files after 20 to 980 iterations (median 275;
-by set, from 90 for the photographs in grey to 480 for those in colour). Its PSNR
-changed by 0.0002 dB in the median, 0.0047 dB in the 90th percentile and 0.026
-dB at most, and its SSIM by $2.3 \cdot 10^{-6}$, $2.3 \cdot 10^{-5}$ and
-$1.7 \cdot 10^{-4}$. TGV stopped them after 190 to 1900 iterations (median 1000),
-with changes of 0.0001, 0.0028 and 0.034 dB, and $5.3 \cdot 10^{-6}$,
-$1.8 \cdot 10^{-5}$ and $8.9 \cdot 10^{-5}$. The longer runs told the tolerances
-from $2 \cdot 10^{-5}$ for TV and $2.4 \cdot 10^{-3}$ for TGV. The synthetic colour
-images are where stopping changes most: their own 90th percentile is 0.012 dB
-for TV and 0.023 dB for TGV, where that of the other sets is 0.0044 dB or less.
+TV at these defaults stopped the files after 30 to 1660 iterations (median 575;
+by set, from 130 for the photographs in grey to 800 for the synthetic greyscale
+images). Its PSNR changed by 0.0001 dB in the median, 0.0027 dB in the 90th
+percentile and 0.049 dB at most, and its SSIM by $1.3 \cdot 10^{-6}$,
+$8.3 \cdot 10^{-6}$ and $1.7 \cdot 10^{-4}$. TGV stopped them after 330 to 2780
+iterations (median 1965), with changes of 0.0002, 0.0047 and 0.093 dB, and
+$5.8 \cdot 10^{-6}$, $1.8 \cdot 10^{-5}$ and $3.4 \cdot 10^{-5}$. The longer runs
+told the tolerances from $2 \cdot 10^{-5}$ for TV and $1.9 \cdot 10^{-3}$ for TGV.
+The synthetic colour images are where stopping changes most: their own 90th
+percentile is 0.028 dB for TV and 0.051 dB for TGV, where that of the other sets is
+0.0033 dB or less.
 
-The defaults before, chosen with the former data term ($\mu = 10^{-3}$, the MMSE
-centres, DC unweighted) on the synthetic greyscale images
+These were chosen again when flat blocks came to weigh a tenth of the others by
+default (4.1). The defaults before, chosen by the same criterion when every block
+weighed alike, were $\tau / \sigma = 10$, $\rho = 1.9$, $5 \cdot 10^{-4}$ and 2000
+iterations for TV, and 3, 1.9, $5 \cdot 10^{-3}$ and 5000 for TGV. With the flat
+blocks they changed the PSNR by 0.0057 and 0.0083 dB in the 90th percentile, more
+than the criterion allows: in a flat block the modulus of 6.4 is a tenth, and the
+same gap leaves the coefficients further from the least point. The tolerances above
+take about twice the iterations (in the median, TV 575 against 265, TGV 1965 against
+1075); the ratios that reached each tolerance soonest are those of before.
+
+The defaults before those, chosen with an earlier data term ($\mu = 10^{-3}$, the
+MMSE centres, DC unweighted) on the synthetic greyscale images
 (`experiments/results/phase2-solver.md`), were $\tau / \sigma = 30$, $\rho = 1.9$,
 $2 \cdot 10^{-4}$ and 20000 iterations for TV, and 10, 1.9, $10^{-2}$ and 10000 for
-TGV, which met no tolerance that its longer runs told. With the data term of 4.1,
-TV takes about half the iterations it took at those (on the files of the ratios,
-3620 in all against 7650), and TGV about one and a half times as many: at
-$10^{-2}$ its 90th percentile was 0.014 dB.
+TGV, which met no tolerance that its longer runs told.
 
 These are for $\alpha = 1$ (for TGV $\alpha_1 = 1$, with $\alpha_0 = 2 \alpha_1$).
 The dual variables are in units of $\alpha$ and the objective scales with it,
@@ -1321,13 +1375,14 @@ sums in a sum of a fixed order, channel after channel. The defaults of the steps
 those of 6.5, which were chosen on JPEG files, but for TGV's ratio, below.
 
 **When the solvers stop.** By default at a gap per sample of $10^{-4}$, times
-$\alpha$ of TV or $\alpha_1$ of TGV as in 6.5, within 10000 iterations: a fifth of
-TV's tolerance on JPEG files and a fiftieth of TGV's. The intervals of a smooth
+$\alpha$ of TV or $\alpha_1$ of TGV as in 6.5, within 10000 iterations: half of
+TV's tolerance on JPEG files and a twentieth of TGV's. The intervals of a smooth
 picture's samples are narrow and its bands wide; within a dim gradient's, tens of
 samples wide, the methods smooth slowly, and a stop at JPEG's tolerance leaves much
 of the work undone. On synthetic pictures of 8 bits (`experiments/rounded_stops.py`,
 `experiments/results/rounded-stops.md`), reconstructed by TGV at the ratio of the
-steps of JPEG files, 3, a gap per sample of $5 \cdot 10^{-3}$ stopped the dim ones a
+steps of JPEG files, 3, a gap per sample of $5 \cdot 10^{-3}$, TGV's tolerance on
+JPEG files when they were measured, stopped the dim ones a
 median RMS of 0.045 levels from a run of 20000 iterations, at an RMS error against
 the pictures drawn 0.012 above that run's;
 $10^{-4}$ stopped them a median of 0.004 levels from it (at most 0.008), each within

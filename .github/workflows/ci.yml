@@ -16,7 +16,7 @@
 # x86-64, NEON on AArch64).
 #
 # The rust job checks and tests the Rust implementation on each system
-# (ci/rust.sh), with the toolchain that rust/rust-toolchain.toml pins; checks
+# (ci/rust.sh), with the latest stable toolchain (rust/rust-toolchain.toml); checks
 # that its code is vector code of the full width of each build that is shipped
 # (ci/vectorization.sh: AVX2 and AVX-512 on x86-64, NEON on AArch64); and on
 # x86-64 builds it for AVX-512 (ci/avx512.sh), and tests that build where the

@@ -226,7 +226,8 @@ endif()
 # without it, and every other build keeps it -- Debug and the sanitizers', in which
 # the tests run too. The stack protector and _FORTIFY_SOURCE do the same for the C
 # of the C library's buffers, where glibc and Apple's libc check them;
-# _FORTIFY_SOURCE needs an optimized build.
+# _FORTIFY_SOURCE needs an optimized build, and the thread sanitizer's goes
+# without it (below).
 set(UNROUND_DEFINITIONS "")
 set(UNROUND_HARDENING_FLAGS "")
 set(unround_hardened "$<AND:$<COMPILE_LANGUAGE:CXX>,$<NOT:$<CONFIG:Release>>>")
@@ -243,7 +244,12 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
   list(APPEND UNROUND_DEFINITIONS _CRT_SECURE_NO_WARNINGS)
 else()
   list(APPEND UNROUND_HARDENING_FLAGS -fstack-protector-strong)
-  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # Not with the thread sanitizer: _FORTIFY_SOURCE makes glibc's longjmp
+  # __longjmp_chk, which the thread sanitizer does not intercept, so it would not
+  # see the jumps out of libjpeg's and libpng's errors, and the frames they skip
+  # would stay on its shadow stack, one error after another, until they ran past
+  # its end and over the memory beyond it, the thread's own state among it.
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT "thread" IN_LIST UNROUND_SANITIZER_LIST)
     list(APPEND UNROUND_HARDENING_FLAGS
       "$<$<NOT:$<CONFIG:Debug>>:-U_FORTIFY_SOURCE>"
       "$<$<NOT:$<CONFIG:Debug>>:-D_FORTIFY_SOURCE=3>")

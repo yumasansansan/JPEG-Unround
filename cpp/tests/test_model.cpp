@@ -6,7 +6,9 @@
 // of their formulas; options out of their ranges refused; the proximal map within
 // gamma_8 phi of the exact map (9.3), which exact rationals compute on inputs whose
 // values are dyadic; the conjugate the supremum of s c - g(c) over the interval,
-// within the rounding of both; and the clipping idempotent.
+// within the rounding of both; and the clipping idempotent. Flat blocks: which
+// blocks are, and their weights, exactly, and their proximal map and conjugate as
+// those of every block, with their own weights.
 
 #include "unround/arrays.hpp"
 #include "unround/exact.hpp"
@@ -164,6 +166,7 @@ void weights(void) {
   DataTerm rule;
   CHECK(!rule.mu && rule.mu_scale == 9.0 && rule.mu_power == 0.9 && rule.mu_chroma == 0.3);
   CHECK(rule.dc_weight == 1.0 && rule.centres == Centres::midpoint && rule.power == 2.0);
+  CHECK(rule.flat_weight == 0.1 && rule.flat_levels == 0u && rule.flat_dc == 1u);
   CHECK(unround::rule_mu(rule, table) == 9.0 * std::pow(mean, 0.9));
   CHECK(unround::rule_mu(rule.of_chroma(), table) == (9.0 * 0.3) * std::pow(mean, 0.9));
   rule.mu_power = 1.0;
@@ -291,7 +294,8 @@ Rational exact_prox(const Problem& problem, const At& at, double e, double step)
   using unround::exact::add;
   using unround::exact::multiply;
   using unround::exact::subtract;
-  const Rational t = need(multiply(need(rational_of(step)), need(rational_of(problem.weights()[at.v, at.u]))));
+  const Rational t =
+      need(multiply(need(rational_of(step)), need(rational_of(problem.block_weights(at.by, at.bx)[at.v, at.u]))));
   const Rational one_plus = need(add(Rational{.numerator = 1, .denominator = 1}, t));
   const Rational top =
       need(add(need(rational_of(e)), need(multiply(t, need(rational_of(entry(problem.centres(), at)))))));
@@ -322,8 +326,11 @@ void proximal_map(void) {
   // map within 128-bit rationals.
   std::array<std::uint16_t, 64> table{};
   for (std::uint16_t& step : table) step = static_cast<std::uint16_t>(1 << numbers.between(0, 4));
-  const BlocksArray<std::int16_t> levels = levels_of(numbers, 2, 2, -20, 20);
-  for (const bool costed : {false, true}) {
+  BlocksArray<std::int16_t> levels = levels_of(numbers, 2, 2, -20, 20);
+  // Block (0, 0) without AC levels: flat.
+  for (std::size_t k = 1; k < 64u; ++k) unround::block_entries(levels.view(), 0, 0)[k] = 0;
+  for (const int variant : {0, 1, 2, 3}) {
+    const bool costed = (variant & 1) != 0;
     DataTerm data;
     data.mu = static_cast<double>(numbers.between(1, 64)) / 16.0;
     data.dc_weight = 0.5;
@@ -331,9 +338,13 @@ void proximal_map(void) {
       data.slack = 0.5;
       data.slack_cost = 3.0;
     }
-    const std::expected<Problem, unround::Error> problem = Problem::make(levels.view(), table, data);
+    // Dyadic factors, which keep the weights dyadic: a quarter, or 1 for none.
+    data.flat_weight = (variant & 2) != 0 ? 0.25 : 1.0;
+    data.flat_dc = std::nullopt;  // flat by the count of AC levels alone
+    const std::expected<Problem, unround::Error> problem = Problem::make(std::as_const(levels).view(), table, data);
     CHECK(problem.has_value() && problem->cost().has_value() == costed);
     if (!problem) continue;
+    CHECK(problem->flat()[0, 0] == 1 && problem->flat()[0, 1] == 0 && problem->flat()[1, 1] == 0);
     for (int trial = 0; trial < 4000; ++trial) {
       const At at = random_at(numbers, levels.extents());
       const double step = static_cast<double>(numbers.between(1, 64)) / 64.0;
@@ -344,7 +355,7 @@ void proximal_map(void) {
       const Rational exact = exact_prox(*problem, at, e, step);
       const Rational error = need(unround::exact::subtract(need(rational_of(zeta)), exact));
       // phi = (|e| + t |c|) / (1 + t) + h, computed within gamma_6 of its value.
-      const double t = step * problem->weights()[at.v, at.u];
+      const double t = step * problem->block_weights(at.by, at.bx)[at.v, at.u];
       const std::optional<unround::Cost>& cost = problem->cost();
       const double h = cost ? step * price_of(*cost, at) / (1.0 + t) : 0.0;
       const double phi = ((std::abs(e) + t * std::abs(centre)) / (1.0 + t) + h) * (1.0 + gamma(6));
@@ -361,7 +372,7 @@ struct Objective {
 };
 
 Objective objective(const Problem& problem, const At& at, double s, double c) {
-  const double m = problem.weights()[at.v, at.u];
+  const double m = problem.block_weights(at.by, at.bx)[at.v, at.u];
   const double away = c - entry(problem.centres(), at);
   double beyond = 0.0;
   double lambda = 0.0;
@@ -378,16 +389,20 @@ Objective objective(const Problem& problem, const At& at, double s, double c) {
 void conjugate(void) {
   Numbers numbers(15);
   const std::array<std::uint16_t, 64> table = table_of(numbers, 1, 40);
-  const BlocksArray<std::int16_t> levels = levels_of(numbers, 1, 2, -8, 8);
-  for (const int variant : {0, 1, 2}) {
+  BlocksArray<std::int16_t> levels = levels_of(numbers, 1, 2, -8, 8);
+  // Block (0, 0) without AC levels: flat, weighing a quarter in the last variants.
+  for (std::size_t k = 1; k < 64u; ++k) unround::block_entries(levels.view(), 0, 0)[k] = 0;
+  for (const int variant : {0, 1, 2, 3, 4}) {
     DataTerm data;
     data.mu = variant == 2 ? 0.0 : 0.7;
     data.dc_weight = 0.0;  // DC without weight: its conjugate is the support function
-    if (variant == 1) {
+    if (variant == 1 || variant == 4) {
       data.slack = 1.0;
       data.slack_cost = 2.0;
     }
-    const std::expected<Problem, unround::Error> problem = Problem::make(levels.view(), table, data);
+    if (variant >= 3) data.flat_weight = 0.25;
+    data.flat_dc = std::nullopt;  // flat by the count of AC levels alone
+    const std::expected<Problem, unround::Error> problem = Problem::make(std::as_const(levels).view(), table, data);
     CHECK(problem.has_value());
     if (!problem) continue;
     for (int trial = 0; trial < 600; ++trial) {
@@ -415,10 +430,115 @@ void conjugate(void) {
       }
       // And it is reached: a fine grid comes within the grid's spacing of it.
       const double spacing = (high - low) / 200.0;
-      const double m = problem->weights()[at.v, at.u];
+      const double m = problem->block_weights(at.by, at.bx)[at.v, at.u];
       const double slope = std::abs(s) + m * (high - low) + price;
       CHECK(value <= best + slope * spacing + gamma(8) * std::abs(value) + 1e-12);
       if (m == 0.0 && !problem->cost()) CHECK(value == std::max(s * low, s * high));
+    }
+  }
+}
+
+void flat_blocks(void) {
+  // Block 0 has DC alone, block 1 one AC level, block 2 two, block 3 all 63.
+  BlocksArray<std::int16_t> levels(unround::block_extents(2, 2));
+  const auto block = [&levels](std::size_t index) {
+    return unround::block_entries(levels.view(), index / 2u, index % 2u);
+  };
+  block(0)[0] = 5;
+  block(1)[0] = -3;
+  block(1)[9] = 1;
+  block(2)[1] = 2;
+  block(2)[63] = -1;
+  std::ranges::fill(block(3), std::int16_t{1});
+  std::array<std::uint16_t, 64> table{};
+  table.fill(10);
+  const std::array<std::pair<std::uint32_t, std::array<int, 4>>, 5> cases = {{
+      {0u, {1, 0, 0, 0}},
+      {1u, {1, 1, 0, 0}},
+      {2u, {1, 1, 1, 0}},
+      {62u, {1, 1, 1, 0}},
+      {63u, {1, 1, 1, 1}},
+  }};
+  for (const auto& [most, flats] : cases) {
+    DataTerm data;
+    data.mu = 0.5;
+    data.flat_weight = 0.25;
+    data.flat_levels = most;
+    data.flat_dc = std::nullopt;
+    const std::expected<Problem, unround::Error> problem = Problem::make(std::as_const(levels).view(), table, data);
+    CHECK(problem.has_value());
+    if (!problem) continue;
+    for (std::size_t index = 0; index < 4u; ++index) {
+      CHECK(problem->flat()[index / 2u, index % 2u] == flats[index]);
+    }
+    // A flat block's weights are a quarter of the others', exactly, DC's among them, and
+    // every block's proximal map and conjugate take its own.
+    for (std::size_t v = 0; v < 8u; ++v) {
+      for (std::size_t u = 0; u < 8u; ++u) CHECK(problem->flat_weights()[v, u] == 0.25 * problem->weights()[v, u]);
+    }
+    const BlockExtents shape = levels.extents();
+    BlocksArray<double> e(shape);
+    Numbers numbers(17);
+    for (double& value : e.entries()) value = numbers.uniform(-200.0, 1300.0);
+    BlocksArray<double> mapped(shape);
+    problem->prox(std::as_const(e).view(), 0.75, mapped.view());
+    for (const At& at : every(shape)) {
+      const double own = problem->block_weights(at.by, at.bx)[at.v, at.u];
+      const double expected = (flats[(at.by * 2u) + at.bx] != 0 ? 0.25 : 1.0) * problem->weights()[at.v, at.u];
+      CHECK(own == expected);
+      // The map of all the blocks is that of each coefficient, to the last bit.
+      CHECK(entry(std::as_const(mapped).view(), at) ==
+            problem->prox_at(at.by, at.bx, at.v, at.u, entry(std::as_const(e).view(), at), 0.75));
+      const double away = entry(std::as_const(e).view(), at) - entry(problem->centres(), at);
+      CHECK(problem->value_at(at.by, at.bx, at.v, at.u, entry(std::as_const(e).view(), at)) ==
+            0.5 * own * (away * away));
+    }
+  }
+  // Blocks of 2 x 3 without AC levels, their DC levels 0 1 5 / 0 3 5, so that the
+  // largest differences beside each are 1 4 4 / 3 3 2: a bound of the difference
+  // leaves the blocks within it flat.
+  BlocksArray<std::int16_t> plain_levels(unround::block_extents(2, 3));
+  const std::array<std::int16_t, 6> dcs = {0, 1, 5, 0, 3, 5};
+  for (std::size_t index = 0; index < 6u; ++index) {
+    unround::block_entries(plain_levels.view(), index / 3u, index % 3u)[0] = dcs[index];
+  }
+  const std::array<std::pair<std::optional<std::uint32_t>, std::array<int, 6>>, 6> bounds = {{
+      {std::nullopt, {1, 1, 1, 1, 1, 1}},
+      {0u, {0, 0, 0, 0, 0, 0}},
+      {1u, {1, 0, 0, 0, 0, 0}},
+      {2u, {1, 0, 0, 0, 0, 1}},
+      {3u, {1, 0, 0, 1, 1, 1}},
+      {4u, {1, 1, 1, 1, 1, 1}},
+  }};
+  for (const auto& [bound, flats] : bounds) {
+    DataTerm data;
+    data.flat_weight = 0.5;
+    data.flat_dc = bound;
+    const std::expected<Problem, unround::Error> problem =
+        Problem::make(std::as_const(plain_levels).view(), table, data);
+    CHECK(problem.has_value());
+    if (!problem) continue;
+    for (std::size_t index = 0; index < 6u; ++index) {
+      CHECK(problem->flat()[index / 3u, index % 3u] == flats[index]);
+    }
+  }
+  // Out of their ranges, the options of flat blocks are refused.
+  for (const auto& [weight, most] :
+       std::array<std::pair<double, std::uint32_t>, 4>{{{-0.5, 0u}, {HUGE_VAL, 0u}, {std::nan(""), 0u}, {1.0, 64u}}}) {
+    DataTerm data;
+    data.flat_weight = weight;
+    data.flat_levels = most;
+    const std::expected<Problem, unround::Error> problem = Problem::make(std::as_const(levels).view(), table, data);
+    CHECK(!problem && problem.error().message.contains("flat blocks"));
+  }
+  // With a factor of 1 no block's weights are its own.
+  DataTerm unweighted;
+  unweighted.flat_weight = 1.0;
+  const std::expected<Problem, unround::Error> plain = Problem::make(std::as_const(levels).view(), table, unweighted);
+  CHECK(plain.has_value());
+  if (plain) {
+    for (std::size_t v = 0; v < 8u; ++v) {
+      for (std::size_t u = 0; u < 8u; ++u) CHECK(plain->flat_weights()[v, u] == plain->weights()[v, u]);
     }
   }
 }
@@ -474,6 +594,7 @@ int main(void) {
     mmse_centres();
     proximal_map();
     conjugate();
+    flat_blocks();
     clipping();
     return unround::test::finish("model");
   } catch (const std::exception& error) {

@@ -202,10 +202,6 @@ fn colour_files_keep_their_intervals() {
 }
 
 #[test]
-#[expect(
-    clippy::float_cmp,
-    reason = "the weights are computed as the library computes them, to the last bit"
-)]
 fn the_chroma_take_the_rule_s_scale_times_their_factor() {
     // By default mu follows the rule of each component's steps, and in Cb and Cr its scale
     // is mu_scale times mu_chroma (docs/math.md, 4.1); DC is weighted as AC. A mu that is

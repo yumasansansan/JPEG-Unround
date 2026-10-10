@@ -211,7 +211,7 @@ fn wrong_pictures_are_refused() {
     for png in wrong {
         let error = write_png(&png).expect_err("the picture is refused");
         assert_eq!(error.kind(), ErrorKind::Argument, "{error}");
-        assert!(!error.message().is_empty());
+        assert_ne!(error.message(), "");
     }
 }
 

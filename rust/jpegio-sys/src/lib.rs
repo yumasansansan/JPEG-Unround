@@ -318,7 +318,6 @@ impl Image {
     }
 
     /// The components, one for grayscale and three otherwise.
-    #[must_use]
     pub fn components(&self) -> impl ExactSizeIterator<Item = Component<'_>> + '_ {
         self.raw.components[..self.components]
             .iter()
@@ -510,7 +509,6 @@ impl Planes {
     }
 
     /// The planes, one for each component.
-    #[must_use]
     pub fn planes(&self) -> impl ExactSizeIterator<Item = Plane<'_>> + '_ {
         self.raw.planes[..self.count].iter().map(|raw| Plane { raw })
     }

@@ -437,10 +437,6 @@ mod tests {
     use super::*;
 
     #[test]
-    #[expect(
-        clippy::float_cmp,
-        reason = "a correctly rounded quotient is compared to the last bit"
-    )]
     fn quotients_are_those_of_a_correctly_rounded_division() {
         // Below 2^53 both integers are exact, and one division rounds correctly.
         let cases: [(i128, i128); 9] = [
@@ -522,10 +518,6 @@ mod tests {
     }
 
     #[test]
-    #[expect(
-        clippy::float_cmp,
-        reason = "sums of small integers are exact, and compared to the last bit"
-    )]
     fn sums_add_every_term_once() {
         for count in [0usize, 1, 127, 128, 129, 1000, 4096, 12_345] {
             let terms = (0..count).map(|index| nearest_from_usize(index % 7));

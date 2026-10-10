@@ -23,6 +23,7 @@ in Rust reproduced them; both are in the repository's history. The files are fix
 new case needs a program that traces a run of the reference implementation as that one
 did. Their options give every value of the model and of the steps that their runs took,
 the ratio of the steps and the relaxation where those were the defaults of the time,
+and the weight of flat blocks, 1, which they were made with before there was one,
 since the defaults change. An implementation reproduces the case when
 
 - the intervals (`lower`, `upper`), the weights of the data term (`weights`) and the

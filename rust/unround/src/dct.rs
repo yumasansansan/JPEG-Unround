@@ -303,7 +303,6 @@ mod tests {
     use super::*;
 
     #[test]
-    #[expect(clippy::float_cmp, reason = "the basis is compared to the last bit")]
     fn the_basis_is_built_from_the_cosines() {
         assert_eq!(SQRT_EIGHTH, 0.125f64.sqrt());
         for &entry in &BASIS[0] {
@@ -324,10 +323,6 @@ mod tests {
     }
 
     #[test]
-    #[expect(
-        clippy::float_cmp,
-        reason = "blocks are moved, not computed, and compared to the last bit"
-    )]
     fn blocks_are_in_raster_order() {
         let canvas: Vec<f64> = (0..16 * 24)
             .map(|index| f64::from(u32::try_from(index).expect("fits")))

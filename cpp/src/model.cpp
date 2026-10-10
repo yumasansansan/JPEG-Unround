@@ -147,6 +147,11 @@ std::expected<Problem, Error> Problem::make(Blocks<const std::int16_t> levels,
   if (!at_least_zero(data.slack_cost)) {
     return refuse(std::format("the cost of the slack is at least 0 and finite, not {}", data.slack_cost));
   }
+  if (!at_least_zero(data.flat_weight) || data.flat_levels > 63u) {
+    return refuse(std::format(
+        "the weight of flat blocks is at least 0 and finite, and their most AC levels not 0 at most 63, not {} and {}",
+        data.flat_weight, data.flat_levels));
+  }
   if (data.centres == Centres::midpoint && scale != nullptr) {
     return refuse("a Laplace scale is for the MMSE centres, not the middles");
   }
@@ -162,6 +167,31 @@ std::expected<Problem, Error> Problem::make(Blocks<const std::int16_t> levels,
     problem.weights_[k] = mu / power_of(problem.steps_[k], data.power);
   }
   problem.weights_[0] *= data.dc_weight;
+  for (std::size_t k = 0; k < 64u; ++k) problem.flat_weights_[k] = problem.weights_[k] * data.flat_weight;
+  // A block is flat where at most flat_levels of its AC levels are not 0, and where
+  // flat_dc is given, its DC level is within it of those beside it.
+  const std::size_t rows = extents.extent(0);
+  const std::size_t columns = extents.extent(1);
+  problem.flat_ = GridArray<std::uint8_t>(grid_extents(rows, columns));
+  const auto dc = [levels](std::size_t by, std::size_t bx) { return static_cast<std::int32_t>(levels[by, bx, 0, 0]); };
+  for (std::size_t by = 0; by < rows; ++by) {
+    for (std::size_t bx = 0; bx < columns; ++bx) {
+      const std::span<const std::int16_t, 64> q = block_entries(levels, by, bx);
+      const auto nonzero = static_cast<std::size_t>(
+          std::ranges::count_if(q.subspan<1>(), [](std::int16_t level) { return level != 0; }));
+      bool flat = nonzero <= data.flat_levels;
+      if (data.flat_dc) {
+        const std::int32_t own = dc(by, bx);
+        const auto within = [&](std::size_t other_y, std::size_t other_x) {
+          const std::int32_t other = dc(other_y, other_x);
+          return static_cast<std::uint32_t>(own > other ? own - other : other - own) <= *data.flat_dc;
+        };
+        flat = flat && (by == 0 || within(by - 1, bx)) && (by + 1 == rows || within(by + 1, bx)) &&
+               (bx == 0 || within(by, bx - 1)) && (bx + 1 == columns || within(by, bx + 1));
+      }
+      problem.flat_.view()[by, bx] = flat ? std::uint8_t{1} : std::uint8_t{0};
+    }
+  }
 
   // The shrinkage of each frequency for the MMSE centres; the middles need none.
   std::array<double, 64> shrink{};
@@ -215,7 +245,7 @@ std::expected<Problem, Error> Problem::make(Blocks<const std::int16_t> levels,
 
 double Problem::prox_at(std::size_t by, std::size_t bx, std::size_t v, std::size_t u, double e,
                         double step) const noexcept {
-  const double t = step * weights()[v, u];
+  const double t = step * block_weights(by, bx)[v, u];
   const double r = 1.0 / (1.0 + t);
   const double centre = centres()[by, bx, v, u];
   const double low = lower()[by, bx, v, u];
@@ -228,20 +258,34 @@ double Problem::prox_at(std::size_t by, std::size_t bx, std::size_t v, std::size
 
 void Problem::prox(Blocks<const double> e, double step, Blocks<double> out) const noexcept {
   if (e.extents() != extents() || out.extents() != extents()) std::abort();
-  // t, 1 / (1 + t) and the shrink of each frequency, once.
-  std::array<double, 64> t{};
-  std::array<double, 64> r{};
-  std::array<double, 64> h{};
-  for (std::size_t k = 0; k < 64u; ++k) {
-    t[k] = step * weights_[k];
-    r[k] = 1.0 / (1.0 + t[k]);
-  }
-  if (cost_) {
-    const std::array<double, 64>& costs = cost_->costs;
-    for (std::size_t k = 0; k < 64u; ++k) h[k] = step * costs[k] * r[k];
-  }
+  // t, 1 / (1 + t) and the shrink of each frequency, once for the blocks that are not
+  // flat and once for the flat ones.
+  struct Factors {
+    std::array<double, 64> t{};
+    std::array<double, 64> r{};
+    std::array<double, 64> h{};
+  };
+  const auto factors_of = [this, step](const std::array<double, 64>& weights) {
+    Factors factors;
+    for (std::size_t k = 0; k < 64u; ++k) {
+      factors.t[k] = step * weights[k];
+      factors.r[k] = 1.0 / (1.0 + factors.t[k]);
+    }
+    if (cost_) {
+      const std::array<double, 64>& costs = cost_->costs;
+      for (std::size_t k = 0; k < 64u; ++k) factors.h[k] = step * costs[k] * factors.r[k];
+    }
+    return factors;
+  };
+  const Factors others = factors_of(weights_);
+  const Factors flats = factors_of(flat_weights_);
+  const Grid<const std::uint8_t> flat = flat_.view();
   for (std::size_t by = 0; by < rows(); ++by) {
     for (std::size_t bx = 0; bx < columns(); ++bx) {
+      const Factors& own = flat[by, bx] != 0 ? flats : others;
+      const std::span<const double, 64> t = own.t;
+      const std::span<const double, 64> r = own.r;
+      const std::span<const double, 64> h = own.h;
       const std::span<const double, 64> in = block_entries(e, by, bx);
       const std::span<double, 64> to = block_entries(out, by, bx);
       const std::span<const double, 64> centre = block_entries(centres(), by, bx);
@@ -262,7 +306,7 @@ void Problem::prox(Blocks<const double> e, double step, Blocks<double> out) cons
 }
 
 double Problem::conjugate_at(std::size_t by, std::size_t bx, std::size_t v, std::size_t u, double s) const noexcept {
-  const double m = weights()[v, u];
+  const double m = block_weights(by, bx)[v, u];
   const double centre = centres()[by, bx, v, u];
   const double low = lower()[by, bx, v, u];
   const double high = upper()[by, bx, v, u];
@@ -273,7 +317,7 @@ double Problem::conjugate_at(std::size_t by, std::size_t bx, std::size_t v, std:
 
 double Problem::value_at(std::size_t by, std::size_t bx, std::size_t v, std::size_t u, double c) const noexcept {
   const double away = c - centres()[by, bx, v, u];
-  const double squares = 0.5 * weights()[v, u] * (away * away);
+  const double squares = 0.5 * block_weights(by, bx)[v, u] * (away * away);
   if (!cost_) return squares;
   return squares + Block8x8<const double>(cost_->costs.data())[v, u] *
                        beyond_of(c, cost_->inner_lower.view()[by, bx, v, u], cost_->inner_upper.view()[by, bx, v, u]);
@@ -302,9 +346,10 @@ double Problem::conjugate(Blocks<const double> s) const {
     const std::span<const double, 64> centre = block_entries(centres(), by, bx);
     const std::span<const double, 64> low = block_entries(lower(), by, bx);
     const std::span<const double, 64> high = block_entries(upper(), by, bx);
+    const std::span<const double, 64> weight = flat_.view()[by, bx] != 0 ? flat_weights_ : weights_;
     if (!cost_) {
       for (std::size_t k = 0; k < 64u; ++k) {
-        terms[k] = conjugate_plain(dual[k], weights_[k], centre[k], low[k], high[k]);
+        terms[k] = conjugate_plain(dual[k], weight[k], centre[k], low[k], high[k]);
       }
       return;
     }
@@ -313,7 +358,7 @@ double Problem::conjugate(Blocks<const double> s) const {
     const std::span<const double, 64> own_high = block_entries(cost.inner_upper.view(), by, bx);
     for (std::size_t k = 0; k < 64u; ++k) {
       terms[k] =
-          conjugate_costed(dual[k], weights_[k], centre[k], low[k], high[k], cost.costs[k], own_low[k], own_high[k]);
+          conjugate_costed(dual[k], weight[k], centre[k], low[k], high[k], cost.costs[k], own_low[k], own_high[k]);
     }
   });
 }
@@ -323,9 +368,10 @@ double Problem::value(Blocks<const double> c) const {
   return sum_of(extents(), [this, c](std::size_t by, std::size_t bx, std::span<double, 64> terms) {
     const std::span<const double, 64> at = block_entries(c, by, bx);
     const std::span<const double, 64> centre = block_entries(centres(), by, bx);
+    const std::span<const double, 64> weight = flat_.view()[by, bx] != 0 ? flat_weights_ : weights_;
     for (std::size_t k = 0; k < 64u; ++k) {
       const double away = at[k] - centre[k];
-      terms[k] = 0.5 * weights_[k] * (away * away);
+      terms[k] = 0.5 * weight[k] * (away * away);
     }
     if (!cost_) return;
     const Cost& cost = *cost_;

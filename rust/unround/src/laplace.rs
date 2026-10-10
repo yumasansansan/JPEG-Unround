@@ -173,7 +173,6 @@ mod tests {
     use super::*;
 
     #[test]
-    #[expect(clippy::float_cmp, reason = "exact values are compared to the last bit")]
     fn the_ends_of_the_shrinkage() {
         assert_eq!(shrinkage(0.0), 0.0);
         assert_eq!(shrinkage(f64::INFINITY), 0.5);
@@ -183,7 +182,6 @@ mod tests {
     }
 
     #[test]
-    #[expect(clippy::float_cmp, reason = "exact values are compared to the last bit")]
     fn all_zeros_have_the_scale_zero_and_dc_an_infinite_one() {
         let mut levels = vec![0i16; 6 * BLOCK_SIZE];
         for block in levels.as_chunks_mut::<BLOCK_SIZE>().0 {
@@ -195,7 +193,6 @@ mod tests {
     }
 
     #[test]
-    #[expect(clippy::float_cmp, reason = "exact values are compared to the last bit")]
     fn the_centres_of_zero_and_of_dc() {
         let mut levels = vec![0i16; 2 * BLOCK_SIZE];
         levels[0] = -4;

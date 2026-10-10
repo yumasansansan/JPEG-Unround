@@ -23,11 +23,14 @@ use crate::model::{LEVEL_SHIFT_DC, Step};
 use crate::planar::{Layout, Part};
 
 /// What the proximal map of one component takes: its layout and levels, the
-/// constants of each frequency, its slack, and the samples of its cells.
+/// constants of each frequency in a block that is not flat and in one that is,
+/// whether they differ in a block there is, its slack, and the samples of its cells.
 #[derive(Debug, Clone)]
 pub struct Component {
     part: Part,
     frequencies: [[Frequency; BLOCK]; BLOCK],
+    flat_frequencies: [[Frequency; BLOCK]; BLOCK],
+    flat: bool,
     slack: f64,
     charged: bool,
     cells: f64,
@@ -36,21 +39,28 @@ pub struct Component {
 impl Component {
     /// The component of a channel with the factors of its proximal map.
     fn new(part: &Part, problem: &crate::model::Problem, step: &Step) -> Self {
-        let mut frequencies = [[Frequency::default(); BLOCK]; BLOCK];
-        let (scaled, inverse, shrink) = step.factors();
-        for (index, frequency) in frequencies.iter_mut().flatten().enumerate() {
-            *frequency = Frequency {
-                step: problem.steps()[index],
-                shrunk: problem.shrunk()[index],
-                scaled: scaled[index],
-                inverse: inverse[index],
-                shrink: shrink[index],
-                shift: if index == 0 { LEVEL_SHIFT_DC } else { 0.0 },
-            };
-        }
+        let constants = |(scaled, inverse, shrink): (&[f64; 64], &[f64; 64], &[f64; 64])| {
+            let mut frequencies = [[Frequency::default(); BLOCK]; BLOCK];
+            for (index, frequency) in frequencies.iter_mut().flatten().enumerate() {
+                *frequency = Frequency {
+                    step: problem.steps()[index],
+                    shrunk: problem.shrunk()[index],
+                    scaled: scaled[index],
+                    inverse: inverse[index],
+                    shrink: shrink[index],
+                    shift: if index == 0 { LEVEL_SHIFT_DC } else { 0.0 },
+                };
+            }
+            frequencies
+        };
+        let (frequencies, flat_frequencies) = (constants(step.factors()), constants(step.flat_factors()));
+        // The flat blocks' own map, where they have one; otherwise every block's.
+        let flat = problem.flat().contains(&true) && flat_frequencies != frequencies;
         Self {
             part: part.clone(),
             frequencies,
+            flat_frequencies,
+            flat,
             slack: problem.slack(),
             charged: problem.cost().is_some(),
             cells: crate::exact::nearest_from_usize(part.ratio.0 * part.ratio.1),
@@ -111,11 +121,12 @@ struct Room {
     fresh: Vec<f64>,
 }
 
-/// The 8x8 blocks of one block row of a component's grid, `rows` its rows (`8 x P_c x
+/// The 8x8 blocks of block row `by` of a component's grid, `rows` its rows (`8 x P_c x
 /// M`, the planes one after another), into `fresh`: the DCT down the columns of every
 /// plane at once, the proximal map along the rows between the DCT and its inverse,
-/// set of blocks by set, and the inverse down the columns. The coefficients go to
-/// `kept` where `KEEP`.
+/// set of blocks by set, each block with its own map by the marks of the block row's
+/// flat blocks, and the inverse down the columns. The coefficients go to `kept` where
+/// `KEEP`.
 #[expect(
     clippy::too_many_arguments,
     reason = "the blocks take the rows in and out, the room, the component and the coefficients kept"
@@ -126,12 +137,17 @@ fn prox_blocks<const KEEP: bool>(
     y: &mut [f64],
     c: &mut [f64],
     component: &Component,
-    levels: &[i16],
+    by: usize,
     kept: &mut [f64],
     across: usize,
 ) {
     let part = &component.part;
     let row = part.planes * across;
+    let block_row = part.block_row(across);
+    let (levels, marks) = (
+        &part.levels[by * block_row..(by + 1) * block_row],
+        part.flat_row(by, across),
+    );
     // Down the columns of every plane: y[v] is vertical frequency v of the whole row.
     kernels::forward8(rows, row, y, row, row);
     for (set, &count) in part.valid.iter().enumerate() {
@@ -145,10 +161,38 @@ fn prox_blocks<const KEEP: bool>(
             kernels::forward8(&y[place..], across, c, across, count);
             let start = |u: usize| (v * part.planes + BLOCK * set + u) * across;
             let (frequencies, own) = (&component.frequencies[v], &levels[start(0)..]);
-            if component.charged {
-                kernels::prox_row::<true>(c, across, own, across, frequencies, component.slack, count);
-            } else {
-                kernels::prox_row::<false>(c, across, own, across, frequencies, component.slack, count);
+            let (flat, marks) = (&component.flat_frequencies[v], &marks[set * across..]);
+            match (component.flat, component.charged) {
+                (false, true) => kernels::prox_row::<true>(c, across, own, across, frequencies, component.slack, count),
+                (false, false) => {
+                    kernels::prox_row::<false>(c, across, own, across, frequencies, component.slack, count);
+                }
+                (true, true) => {
+                    kernels::prox_row_flat::<true>(
+                        c,
+                        across,
+                        own,
+                        across,
+                        frequencies,
+                        flat,
+                        marks,
+                        component.slack,
+                        count,
+                    );
+                }
+                (true, false) => {
+                    kernels::prox_row_flat::<false>(
+                        c,
+                        across,
+                        own,
+                        across,
+                        frequencies,
+                        flat,
+                        marks,
+                        component.slack,
+                        count,
+                    );
+                }
             }
             if KEEP {
                 for u in 0..BLOCK {
@@ -853,7 +897,6 @@ fn prox_band<const KEEP: bool>(
                 target[span.clone()].copy_from_slice(&work[span]);
                 continue;
             }
-            let levels = &component.part.levels[by * block_row..(by + 1) * block_row];
             let kept_row: &mut [f64] = if KEEP {
                 &mut kept[by * block_row..(by + 1) * block_row]
             } else {
@@ -865,7 +908,7 @@ fn prox_band<const KEEP: bool>(
                 &mut room.y,
                 &mut room.c,
                 component,
-                levels,
+                by,
                 kept_row,
                 across,
             );
@@ -903,7 +946,6 @@ fn prox_band<const KEEP: bool>(
             continue;
         }
         let span = BLOCK * bv * row..BLOCK * (bv + 1) * row;
-        let levels = &component.part.levels[by * block_row..(by + 1) * block_row];
         let kept_row: &mut [f64] = if KEEP {
             &mut kept[by * block_row..(by + 1) * block_row]
         } else {
@@ -915,7 +957,7 @@ fn prox_band<const KEEP: bool>(
             &mut room.y,
             &mut room.c,
             component,
-            levels,
+            by,
             kept_row,
             across,
         );

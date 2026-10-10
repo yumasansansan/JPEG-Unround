@@ -40,7 +40,6 @@ fn smooth(channels: usize, height: usize, width: usize) -> (Vec<f64>, Vec<u16>) 
 }
 
 #[test]
-#[expect(clippy::float_cmp, reason = "the intervals are exact rationals")]
 fn the_intervals_are_half_a_level_on_each_side_within_0_and_255() {
     let levels = [0u16, 1, 128, 254, 255];
     let model = Model::new(&levels, (1, 1, 5), 8, &Data::default()).expect("a model");

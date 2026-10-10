@@ -43,8 +43,10 @@ pub enum Centres {
 /// `mu_scale` ([`DataTerm::of_chroma`]). `slack` widens every interval by that many
 /// steps on each side; `slack_cost` is what leaving the file's own interval costs,
 /// within the slack, per step (0: nothing). The weight of an AC coefficient is
-/// `mu / Q^power`, and that of DC `dc_weight` times it. The defaults are those of
-/// docs/math.md, 4.1.
+/// `mu / Q^power`, and that of DC `dc_weight` times it. In a flat block, one with at
+/// most `flat_levels` AC levels that are not 0 and, where `flat_dc` is given, a DC
+/// level within `flat_dc` of those of the blocks beside it, every weight is
+/// `flat_weight` times that. The defaults are those of docs/math.md, 4.1.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DataTerm {
     /// The weight of the data term, or `None` for the rule of the quantization.
@@ -65,6 +67,13 @@ pub struct DataTerm {
     pub power: f64,
     /// What leaving the file's own interval costs, per step.
     pub slack_cost: f64,
+    /// The factor of the weights in a flat block.
+    pub flat_weight: f64,
+    /// The most AC levels that are not 0 in a flat block, at most 63.
+    pub flat_levels: u32,
+    /// The most that a flat block's DC level differs from those of the blocks above,
+    /// below, left and right of it, or `None` for no such bound.
+    pub flat_dc: Option<u32>,
 }
 
 impl Default for DataTerm {
@@ -79,6 +88,9 @@ impl Default for DataTerm {
             centres: Centres::Midpoint,
             power: 2.0,
             slack_cost: 0.0,
+            flat_weight: 0.1,
+            flat_levels: 0,
+            flat_dc: Some(1),
         }
     }
 }
@@ -183,7 +195,8 @@ impl Cost {
 
 /// A component to reconstruct: `rows x columns` blocks of coefficients, 64 to a
 /// block in natural order, each with its interval, the centre of the data term,
-/// and the weight and the step of its frequency.
+/// and the weight and the step of its frequency; the weights of a flat block are
+/// their own.
 #[derive(Debug, Clone)]
 pub struct Problem {
     rows: usize,
@@ -196,24 +209,36 @@ pub struct Problem {
     centres: Vec<f64>,
     steps: [f64; BLOCK_SIZE],
     weights: [f64; BLOCK_SIZE],
+    flat_weights: [f64; BLOCK_SIZE],
+    flat: Vec<bool>,
     cost: Option<Cost>,
 }
 
-/// What a step of `tau` does to each frequency in the proximal map: `tau w`,
-/// `1 / (1 + tau w)`, and `tau` times the cost over `1 + tau w`.
+/// What a step of `tau` does to each frequency in the proximal map, in a block that
+/// is not flat and in one that is: `tau w`, `1 / (1 + tau w)`, and `tau` times the
+/// cost over `1 + tau w`.
 #[derive(Debug, Clone)]
 pub struct Step {
     scaled: [f64; BLOCK_SIZE],
     inverse: [f64; BLOCK_SIZE],
     shrink: [f64; BLOCK_SIZE],
+    flat_scaled: [f64; BLOCK_SIZE],
+    flat_inverse: [f64; BLOCK_SIZE],
+    flat_shrink: [f64; BLOCK_SIZE],
 }
 
 impl Step {
     /// `tau w`, `1 / (1 + tau w)` and `tau` times the cost over `1 + tau w`, for each
-    /// frequency.
+    /// frequency of a block that is not flat.
     #[must_use]
     pub fn factors(&self) -> (&[f64; BLOCK_SIZE], &[f64; BLOCK_SIZE], &[f64; BLOCK_SIZE]) {
         (&self.scaled, &self.inverse, &self.shrink)
+    }
+
+    /// The same for each frequency of a flat block.
+    #[must_use]
+    pub fn flat_factors(&self) -> (&[f64; BLOCK_SIZE], &[f64; BLOCK_SIZE], &[f64; BLOCK_SIZE]) {
+        (&self.flat_scaled, &self.flat_inverse, &self.flat_shrink)
     }
 }
 
@@ -235,21 +260,60 @@ pub fn rule_mu(data: &DataTerm, table: &[u16; BLOCK_SIZE]) -> f64 {
     data.mu_scale * if plain { mean } else { mean.powf(data.mu_power) }
 }
 
+/// Whether each block is flat (docs/math.md, 4.1): at most `flat_levels` of its AC
+/// levels are not 0, and where `flat_dc` is given, its DC level differs from those of
+/// the blocks above, below, left and right of it by at most that. Integers, exact.
+fn flat_blocks(levels: &[i16], rows: usize, columns: usize, data: &DataTerm) -> Vec<bool> {
+    let most = usize::try_from(data.flat_levels).unwrap_or(usize::MAX);
+    let dc = |row: usize, column: usize| i32::from(levels[(row * columns + column) * BLOCK_SIZE]);
+    let blocks = levels.as_chunks::<BLOCK_SIZE>().0;
+    (0..rows * columns)
+        .map(|index| {
+            let quiet = blocks[index][1..].iter().filter(|&&level| level != 0).count() <= most;
+            let Some(limit) = data.flat_dc else {
+                return quiet;
+            };
+            let (row, column) = (index / columns, index % columns);
+            let own = dc(row, column);
+            let beside = [
+                (row > 0).then(|| (row - 1, column)),
+                (row + 1 < rows).then(|| (row + 1, column)),
+                (column > 0).then(|| (row, column - 1)),
+                (column + 1 < columns).then(|| (row, column + 1)),
+            ];
+            quiet
+                && beside
+                    .into_iter()
+                    .flatten()
+                    .all(|(other_row, other_column)| own.abs_diff(dc(other_row, other_column)) <= limit)
+        })
+        .collect()
+}
+
 fn finite_at_least_zero(value: f64) -> bool {
     (0.0..f64::INFINITY).contains(&value)
 }
 
-/// `Q^power`: exact for the powers 1 and 2 of steps of 16 bits.
-fn powers(step: f64, power: f64) -> f64 {
+/// `mu / Q^power` of each step: `Q^power` exact for the powers 1 and 2 of steps of 16
+/// bits. The power is chosen once, outside the loops.
+fn weights_of(mu: f64, steps: &[f64; BLOCK_SIZE], power: f64) -> [f64; BLOCK_SIZE] {
+    let mut weights = [0.0; BLOCK_SIZE];
     #[expect(clippy::float_cmp, reason = "the powers 1 and 2 are taken exactly as they are given")]
     let (square, plain) = (power == 2.0, power == 1.0);
     if square {
-        step * step
+        for (weight, &step) in weights.iter_mut().zip(steps) {
+            *weight = mu / (step * step);
+        }
     } else if plain {
-        step
+        for (weight, &step) in weights.iter_mut().zip(steps) {
+            *weight = mu / step;
+        }
     } else {
-        step.powf(power)
+        for (weight, &step) in weights.iter_mut().zip(steps) {
+            *weight = mu / step.powf(power);
+        }
     }
+    weights
 }
 
 impl Problem {
@@ -277,12 +341,16 @@ impl Problem {
         check(levels, rows, columns, table, data, scale)?;
         let mu = rule_mu(data, table);
         let mut steps = [0.0; BLOCK_SIZE];
-        let mut weights = [0.0; BLOCK_SIZE];
-        for ((step, weight), &entry) in steps.iter_mut().zip(&mut weights).zip(table) {
+        for (step, &entry) in steps.iter_mut().zip(table) {
             *step = f64::from(entry);
-            *weight = mu / powers(*step, data.power);
         }
+        let mut weights = weights_of(mu, &steps, data.power);
         weights[0] *= data.dc_weight;
+        let mut flat_weights = weights;
+        for weight in &mut flat_weights {
+            *weight *= data.flat_weight;
+        }
+        let flat = flat_blocks(levels, rows, columns, data);
         let slack = data.slack;
         // The shrinkage of each frequency: the MMSE centres', or none for the middles
         // q Q, which are exact: |q| <= 2^15 and Q < 2^16.
@@ -333,6 +401,8 @@ impl Problem {
             }),
             steps,
             weights,
+            flat_weights,
+            flat,
             cost: None,
         };
         if slack > 0.0 && data.slack_cost > 0.0 {
@@ -424,10 +494,35 @@ impl Problem {
         &self.steps
     }
 
-    /// The weight of each frequency in the data term, `mu` included.
+    /// The weight of each frequency in the data term, `mu` included, in a block that
+    /// is not flat.
     #[must_use]
     pub fn weights(&self) -> &[f64; BLOCK_SIZE] {
         &self.weights
+    }
+
+    /// The weight of each frequency in a flat block: `flat_weight` times
+    /// [`Problem::weights`].
+    #[must_use]
+    pub fn flat_weights(&self) -> &[f64; BLOCK_SIZE] {
+        &self.flat_weights
+    }
+
+    /// Whether each block, in natural order, is flat.
+    #[must_use]
+    pub fn flat(&self) -> &[bool] {
+        &self.flat
+    }
+
+    /// The weights of the frequencies of block `block`.
+    #[inline]
+    #[must_use]
+    pub fn block_weights(&self, block: usize) -> &[f64; BLOCK_SIZE] {
+        if self.flat[block] {
+            &self.flat_weights
+        } else {
+            &self.weights
+        }
     }
 
     /// The file's own intervals and the costs of leaving them, where the slack has
@@ -484,14 +579,20 @@ impl Problem {
             scaled: [0.0; BLOCK_SIZE],
             inverse: [0.0; BLOCK_SIZE],
             shrink: [0.0; BLOCK_SIZE],
+            flat_scaled: [0.0; BLOCK_SIZE],
+            flat_inverse: [0.0; BLOCK_SIZE],
+            flat_shrink: [0.0; BLOCK_SIZE],
         };
-        for (frequency, &weight) in self.weights.iter().enumerate() {
-            let scaled = tau * weight;
-            let inverse = 1.0 / (1.0 + scaled);
-            step.scaled[frequency] = scaled;
-            step.inverse[frequency] = inverse;
-            if let Some(cost) = &self.cost {
-                step.shrink[frequency] = tau * cost.costs[frequency] * inverse;
+        for frequency in 0..BLOCK_SIZE {
+            step.scaled[frequency] = tau * self.weights[frequency];
+            step.inverse[frequency] = 1.0 / (1.0 + step.scaled[frequency]);
+            step.flat_scaled[frequency] = tau * self.flat_weights[frequency];
+            step.flat_inverse[frequency] = 1.0 / (1.0 + step.flat_scaled[frequency]);
+        }
+        if let Some(cost) = &self.cost {
+            for frequency in 0..BLOCK_SIZE {
+                step.shrink[frequency] = tau * cost.costs[frequency] * step.inverse[frequency];
+                step.flat_shrink[frequency] = tau * cost.costs[frequency] * step.flat_inverse[frequency];
             }
         }
         step
@@ -499,11 +600,17 @@ impl Problem {
 
     /// The coefficients of `prox_{tau G}(v)` of a block, from those of `v`, in place
     /// (docs/math.md, 4.1): `(e + tau w centre) / (1 + tau w)`, clipped to the
-    /// interval. Where the slack has a cost, the minimizer of the quadratic that lies
-    /// beyond the file's own interval moves back towards it by `tau` times the cost
-    /// over `1 + tau w`, but not past its end, before it is clipped.
+    /// interval, with the block's own weights `w`. Where the slack has a cost, the
+    /// minimizer of the quadratic that lies beyond the file's own interval moves back
+    /// towards it by `tau` times the cost over `1 + tau w`, but not past its end,
+    /// before it is clipped.
     #[inline]
     pub fn prox_block(&self, step: &Step, block: usize, coefficients: &mut [f64]) {
+        let (scaled, inverse, shrink) = if self.flat[block] {
+            step.flat_factors()
+        } else {
+            step.factors()
+        };
         let start = block * BLOCK_SIZE;
         let range = start..start + BLOCK_SIZE;
         let centres = &self.centres[range.clone()];
@@ -512,12 +619,7 @@ impl Problem {
         match &self.cost {
             None => {
                 for (frequency, value) in coefficients.iter_mut().enumerate() {
-                    let moved = kernels::proximal(
-                        *value,
-                        step.scaled[frequency],
-                        step.inverse[frequency],
-                        centres[frequency],
-                    );
+                    let moved = kernels::proximal(*value, scaled[frequency], inverse[frequency], centres[frequency]);
                     *value = kernels::at_most(kernels::at_least(moved, lower[frequency]), upper[frequency]);
                 }
             }
@@ -525,18 +627,9 @@ impl Problem {
                 let inner_lower = &cost.inner_lower[range.clone()];
                 let inner_upper = &cost.inner_upper[range];
                 for (frequency, value) in coefficients.iter_mut().enumerate() {
-                    let moved = kernels::proximal(
-                        *value,
-                        step.scaled[frequency],
-                        step.inverse[frequency],
-                        centres[frequency],
-                    );
-                    let kept = kernels::charged(
-                        moved,
-                        step.shrink[frequency],
-                        inner_lower[frequency],
-                        inner_upper[frequency],
-                    );
+                    let moved = kernels::proximal(*value, scaled[frequency], inverse[frequency], centres[frequency]);
+                    let kept =
+                        kernels::charged(moved, shrink[frequency], inner_lower[frequency], inner_upper[frequency]);
                     *value = kernels::at_most(kernels::at_least(kept, lower[frequency]), upper[frequency]);
                 }
             }
@@ -552,24 +645,30 @@ impl Problem {
     }
 
     /// `G` at coefficients within their intervals: half the sum of `w (c - centre)^2`,
-    /// and the slack's cost. The terms of a block row are added in lanes
-    /// ([`crate::exact::lanes`]), and the block rows' sums in a [`Sum`].
+    /// each block with its own weights, and the slack's cost. The terms of a block row
+    /// are added in lanes ([`crate::exact::lanes`]), and the block rows' sums in a
+    /// [`Sum`].
     #[must_use]
     pub fn data_term(&self, coefficients: &[f64]) -> f64 {
         let row = self.columns * BLOCK_SIZE;
         let mut terms = vec![0.0; row];
         let mut squares = Sum::new();
-        for (values, centres) in coefficients.chunks_exact(row).zip(self.centres.chunks_exact(row)) {
+        for (block_row, (values, centres)) in coefficients
+            .chunks_exact(row)
+            .zip(self.centres.chunks_exact(row))
+            .enumerate()
+        {
             // Block by block, each frequency with its weight.
-            for ((terms, values), centres) in terms
+            for (column, ((terms, values), centres)) in terms
                 .as_chunks_mut::<BLOCK_SIZE>()
                 .0
                 .iter_mut()
                 .zip(values.as_chunks::<BLOCK_SIZE>().0)
                 .zip(centres.as_chunks::<BLOCK_SIZE>().0)
+                .enumerate()
             {
-                for (((term, &value), &centre), &weight) in terms.iter_mut().zip(values).zip(centres).zip(&self.weights)
-                {
+                let weights = self.block_weights(block_row * self.columns + column);
+                for (((term, &value), &centre), &weight) in terms.iter_mut().zip(values).zip(centres).zip(weights) {
                     *term = kernels::squared_term(value, weight, centre);
                 }
             }
@@ -612,7 +711,7 @@ impl Problem {
     #[must_use]
     pub fn conjugate_one(&self, index: usize, s: f64) -> f64 {
         let frequency = index % BLOCK_SIZE;
-        let weight = self.weights[frequency];
+        let weight = self.block_weights(index / BLOCK_SIZE)[frequency];
         let ends = (self.lower[index], self.upper[index]);
         let centre = self.centres[index];
         match &self.cost {
@@ -639,7 +738,8 @@ impl Problem {
                 &self.upper[span.clone()],
                 &self.centres[span.clone()],
             );
-            // Block by block, each frequency with its constants.
+            // Block by block, each frequency with its constants and the block's weights.
+            let blocks = &self.flat[block_row * self.columns..(block_row + 1) * self.columns];
             let own = terms
                 .as_chunks_mut::<BLOCK_SIZE>()
                 .0
@@ -652,20 +752,16 @@ impl Problem {
                         .iter()
                         .zip(upper.as_chunks::<BLOCK_SIZE>().0),
                 )
-                .zip(centres.as_chunks::<BLOCK_SIZE>().0);
+                .zip(centres.as_chunks::<BLOCK_SIZE>().0)
+                .zip(blocks);
             match &self.cost {
                 None => {
-                    for (((terms, values), (lower, upper)), centres) in own {
+                    for ((((terms, values), (lower, upper)), centres), &flat) in own {
+                        let weights = if flat { &self.flat_weights } else { &self.weights };
                         for (k, term) in terms.iter_mut().enumerate() {
                             let ends = (lower[k], upper[k]);
-                            *term = kernels::conjugate_term::<false>(
-                                values[k],
-                                self.weights[k],
-                                ends,
-                                centres[k],
-                                0.0,
-                                ends,
-                            );
+                            *term =
+                                kernels::conjugate_term::<false>(values[k], weights[k], ends, centres[k], 0.0, ends);
                         }
                     }
                 }
@@ -676,11 +772,14 @@ impl Problem {
                         .0
                         .iter()
                         .zip(inner_upper.as_chunks::<BLOCK_SIZE>().0);
-                    for ((((terms, values), (lower, upper)), centres), (inner_lower, inner_upper)) in own.zip(inner) {
+                    for (((((terms, values), (lower, upper)), centres), &flat), (inner_lower, inner_upper)) in
+                        own.zip(inner)
+                    {
+                        let weights = if flat { &self.flat_weights } else { &self.weights };
                         for (k, term) in terms.iter_mut().enumerate() {
                             *term = kernels::conjugate_term::<true>(
                                 values[k],
-                                self.weights[k],
+                                weights[k],
                                 (lower[k], upper[k]),
                                 centres[k],
                                 cost.costs[k],
@@ -731,6 +830,13 @@ fn check(
             data.slack_cost
         ));
     }
+    if !finite_at_least_zero(data.flat_weight) || data.flat_levels > 63 {
+        return refuse(format!(
+            "the weight of flat blocks is at least 0 and finite, and their most AC levels not 0 at most 63, not {} and \
+             {}",
+            data.flat_weight, data.flat_levels
+        ));
+    }
     if data.centres == Centres::Midpoint && scale.is_some() {
         return refuse("a Laplace scale is for the MMSE centres, not the middles".into());
     }
@@ -759,7 +865,6 @@ mod tests {
     }
 
     #[test]
-    #[expect(clippy::float_cmp, reason = "exact values are compared to the last bit")]
     fn the_intervals_and_the_weights() {
         let levels = levels_with(&[(0, 3), (2 * 8 + 1, -2)]);
         let data = DataTerm {
@@ -782,7 +887,92 @@ mod tests {
     }
 
     #[test]
-    #[expect(clippy::float_cmp, reason = "exact values are compared to the last bit")]
+    fn a_flat_block_s_dc_level_is_within_the_bound_of_those_beside_it() {
+        // Blocks of 2 x 3 without AC levels, their DC levels
+        //   0 1 5
+        //   0 3 5
+        // so that the largest differences beside each are: 1 4 4 / 3 3 2.
+        let mut levels = Vec::new();
+        for dc in [0, 1, 5, 0, 3, 5] {
+            levels.extend(levels_with(&[(0, dc)]));
+        }
+        for (bound, flat) in [
+            (None, [true; 6]),
+            (Some(0), [false; 6]),
+            (Some(1), [true, false, false, false, false, false]),
+            (Some(2), [true, false, false, false, false, true]),
+            (Some(3), [true, false, false, true, true, true]),
+            (Some(4), [true; 6]),
+        ] {
+            let data = DataTerm {
+                flat_weight: 0.5,
+                flat_dc: bound,
+                ..DataTerm::default()
+            };
+            let problem = Problem::new(&levels, 2, 3, &[10; BLOCK_SIZE], &data, None).expect("a problem");
+            assert_eq!(problem.flat(), flat, "{bound:?}");
+        }
+    }
+
+    #[test]
+    fn the_options_of_flat_blocks_out_of_their_ranges_are_refused() {
+        let levels = vec![0i16; BLOCK_SIZE];
+        for (flat_weight, flat_levels) in [(-0.5, 0), (f64::INFINITY, 0), (f64::NAN, 0), (1.0, 64)] {
+            let data = DataTerm {
+                flat_weight,
+                flat_levels,
+                ..DataTerm::default()
+            };
+            let Err(Error::Options(message)) = Problem::new(&levels, 1, 1, &[10; BLOCK_SIZE], &data, None) else {
+                panic!("{flat_weight} and {flat_levels} are refused");
+            };
+            assert!(message.contains("flat blocks"), "{message}");
+        }
+    }
+
+    #[test]
+    fn a_block_is_flat_by_the_count_of_its_ac_levels_not_0() {
+        // Block 0 has no AC level but DC, block 1 one AC level, block 2 two, block 3 every
+        // one of its 63.
+        let mut levels = levels_with(&[(0, 5)]);
+        levels.extend(levels_with(&[(0, -3), (9, 1)]));
+        levels.extend(levels_with(&[(1, 2), (63, -1)]));
+        levels.extend(vec![1i16; BLOCK_SIZE]);
+        for (most, flat) in [
+            (0, [true, false, false, false]),
+            (1, [true, true, false, false]),
+            (2, [true, true, true, false]),
+            (62, [true, true, true, false]),
+            (63, [true, true, true, true]),
+        ] {
+            let data = DataTerm {
+                mu: Some(0.5),
+                flat_weight: 0.25,
+                flat_levels: most,
+                flat_dc: None,
+                ..DataTerm::default()
+            };
+            let problem = Problem::new(&levels, 2, 2, &[10; BLOCK_SIZE], &data, None).expect("a problem");
+            assert_eq!(problem.flat(), flat, "{most}");
+            // A flat block's weights are a quarter of the others', exactly; DC's among them.
+            for (k, (&flat_weight, &weight)) in problem.flat_weights().iter().zip(problem.weights()).enumerate() {
+                assert_eq!(flat_weight, 0.25 * weight, "{k}");
+            }
+            for (block, &own) in flat.iter().enumerate() {
+                let expected = if own { problem.flat_weights() } else { problem.weights() };
+                assert_eq!(problem.block_weights(block), expected);
+            }
+        }
+        // With a factor of 1 no block's weights are its own.
+        let plain = DataTerm {
+            flat_weight: 1.0,
+            ..DataTerm::default()
+        };
+        let problem = Problem::new(&levels, 2, 2, &[10; BLOCK_SIZE], &plain, None).expect("a problem");
+        assert_eq!(problem.flat_weights(), problem.weights());
+    }
+
+    #[test]
     fn without_slack_the_intervals_are_exact() {
         // (q - 1/2) Q is exact for integers of the sizes a file holds, and so are the ends.
         let mut levels = Vec::new();
@@ -891,7 +1081,6 @@ mod tests {
     }
 
     #[test]
-    #[expect(clippy::float_cmp, reason = "exact values are compared to the last bit")]
     fn the_weight_of_dc_the_power_and_the_middles() {
         let levels = levels_with(&[(0, 3), (17, -2)]);
         let table = [10; BLOCK_SIZE];
@@ -931,7 +1120,6 @@ mod tests {
     }
 
     #[test]
-    #[expect(clippy::float_cmp, reason = "exact values are compared to the last bit")]
     fn mu_follows_the_steps_where_it_is_not_given() {
         let mut table = [10; BLOCK_SIZE];
         table[0] = 74;
@@ -965,10 +1153,10 @@ mod tests {
             (1.0, 2.0, 0.0, 0.0)
         );
         assert_eq!(data.centres, Centres::Midpoint);
+        assert_eq!((data.flat_weight, data.flat_levels, data.flat_dc), (0.1, 0, Some(1)));
     }
 
     #[test]
-    #[expect(clippy::float_cmp, reason = "exact values are compared to the last bit")]
     fn a_slack_costs_only_where_it_is_given() {
         let levels = levels_with(&[(0, 3), (17, -2)]);
         let table = [10; BLOCK_SIZE];

@@ -353,7 +353,6 @@ mod tests {
     }
 
     #[test]
-    #[expect(clippy::float_cmp, reason = "the thresholds are exact")]
     fn the_matrix_holds_every_rank_once_and_its_thresholds_exactly() {
         let mut seen = [false; SIDE * SIDE];
         for (&rank, &threshold) in RANKS.iter().zip(&THRESHOLDS) {
@@ -367,7 +366,6 @@ mod tests {
     }
 
     #[test]
-    #[expect(clippy::float_cmp, reason = "levels are whole numbers, compared exactly")]
     fn a_dithered_level_is_the_exact_one() {
         // Samples of every kind of fraction: whole, halves, the thresholds' own ends and
         // their neighbours, and others at random.

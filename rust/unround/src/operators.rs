@@ -162,7 +162,6 @@ mod tests {
     use super::*;
 
     #[test]
-    #[expect(clippy::float_cmp, reason = "differences of small integers are exact")]
     fn the_gradient_has_neumann_boundaries() {
         let shape = Shape { height: 3, width: 4 };
         let x: Vec<f64> = (0..12u32).map(|index| f64::from(index * index)).collect();
@@ -201,10 +200,6 @@ mod tests {
     }
 
     #[test]
-    #[expect(
-        clippy::float_cmp,
-        reason = "the norm of an exact square root is compared to the last bit"
-    )]
     fn the_tensor_norm_counts_the_off_diagonal_twice() {
         assert_eq!(tensor_square(3.0, 4.0, 1.0), 27.0);
         assert_eq!(vector_square(3.0, 4.0).sqrt(), 5.0);

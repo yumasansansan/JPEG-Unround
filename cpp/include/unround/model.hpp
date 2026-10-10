@@ -46,6 +46,13 @@ struct DataTerm {
   Centres centres = Centres::midpoint;
   double power = 2.0;
   double slack_cost = 0.0;
+  // A block is flat where at most flat_levels of its AC levels are not 0 (0 to 63) and,
+  // where flat_dc is given, its DC level differs from those of the blocks above, below,
+  // left and right of it by at most that; the weights of its coefficients are
+  // flat_weight times the others'.
+  double flat_weight = 0.1;
+  std::uint32_t flat_levels = 0;
+  std::optional<std::uint32_t> flat_dc = 1u;
 
   // The data term of a chroma component, Cb or Cr of a file in YCbCr: where mu
   // follows the rule, its scale is mu_scale times mu_chroma, rounded once; a mu that
@@ -70,7 +77,8 @@ struct Cost {
 };
 
 // A component to reconstruct: rows x columns blocks of 8 x 8 coefficients, each
-// with its interval and its centre, and the weight and the step of its frequency.
+// with its interval and its centre, and the weight and the step of its frequency; a
+// flat block's weights are its own.
 class Problem {
  public:
   // The problem of a component's levels and quantization table (natural order), with
@@ -91,9 +99,19 @@ class Problem {
   [[nodiscard]] Blocks<const double> lower(void) const noexcept { return lower_.view(); }
   [[nodiscard]] Blocks<const double> upper(void) const noexcept { return upper_.view(); }
   [[nodiscard]] Blocks<const double> centres(void) const noexcept { return centres_.view(); }
-  // The steps and the weights mu omega of the 64 frequencies, [v, u].
+  // The steps and the weights mu omega of the 64 frequencies, [v, u], in a block that
+  // is not flat, and the weights in one that is: flat_weight times those.
   [[nodiscard]] Block8x8<const double> steps(void) const noexcept { return Block8x8<const double>(steps_.data()); }
   [[nodiscard]] Block8x8<const double> weights(void) const noexcept { return Block8x8<const double>(weights_.data()); }
+  [[nodiscard]] Block8x8<const double> flat_weights(void) const noexcept {
+    return Block8x8<const double>(flat_weights_.data());
+  }
+  // Whether each block is flat: 1 or 0, [by, bx].
+  [[nodiscard]] Grid<const std::uint8_t> flat(void) const noexcept { return flat_.view(); }
+  // The weights of block (by, bx).
+  [[nodiscard]] Block8x8<const double> block_weights(std::size_t by, std::size_t bx) const noexcept {
+    return flat_.view()[by, bx] != 0 ? flat_weights() : weights();
+  }
   [[nodiscard]] double slack(void) const noexcept { return slack_; }
   [[nodiscard]] const std::optional<Cost>& cost(void) const noexcept { return cost_; }
 
@@ -131,6 +149,8 @@ class Problem {
   BlocksArray<double> centres_;
   std::array<double, 64> steps_{};
   std::array<double, 64> weights_{};
+  std::array<double, 64> flat_weights_{};
+  GridArray<std::uint8_t> flat_;
   double slack_ = 0.0;
   std::optional<Cost> cost_;
 };

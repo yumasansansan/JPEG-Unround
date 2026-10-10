@@ -29,9 +29,11 @@ class DataTerm:
     given is every component's. slack widens every interval by that many steps on each side
     (docs/math.md, 1.2); slack_cost is what leaving the file's own interval costs, within the
     slack, per step (0: nothing). The weight of an AC coefficient is mu / Q^power, and that of
-    DC dc_weight times it (4.1). centres are the data term's: "mmse", the MMSE centres of the
-    Laplace model (2.2), or "midpoint", the middles of the intervals, q Q. The defaults are
-    those of docs/math.md, 4.1.
+    DC dc_weight times it (4.1). In a flat block, one with at most flat_levels AC levels that
+    are not 0 (0 to 63) and, where flat_dc is not None, a DC level within flat_dc of those of
+    the blocks above, below, left and right of it, every weight is flat_weight times that. centres are the data term's:
+    "mmse", the MMSE centres of the Laplace model (2.2), or "midpoint", the middles of the
+    intervals, q Q. The defaults are those of docs/math.md, 4.1.
     """
 
     mu: float | None = None
@@ -43,6 +45,9 @@ class DataTerm:
     centres: Centres = "midpoint"
     power: float = 2.0
     slack_cost: float = 0.0
+    flat_weight: float = 0.1
+    flat_levels: int = 0
+    flat_dc: int | None = 1
 
 
 @dataclass(frozen=True, slots=True)

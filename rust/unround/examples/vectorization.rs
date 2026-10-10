@@ -39,6 +39,34 @@ pub fn inspect_prox_row_charged(
     kernels::prox_row::<true>(values, count, levels, count, frequencies, slack, count);
 }
 
+/// The proximal maps of a row of coefficients, flat blocks with their own factors.
+#[inline(never)]
+pub fn inspect_prox_row_flat(
+    values: &mut [f64],
+    levels: &[i16],
+    frequencies: [&[Frequency; 8]; 2],
+    marks: &[f64],
+    slack: f64,
+    count: usize,
+) {
+    let [frequencies, flat] = frequencies;
+    kernels::prox_row_flat::<false>(values, count, levels, count, frequencies, flat, marks, slack, count);
+}
+
+/// The same with the cost of the slack.
+#[inline(never)]
+pub fn inspect_prox_row_flat_charged(
+    values: &mut [f64],
+    levels: &[i16],
+    frequencies: [&[Frequency; 8]; 2],
+    marks: &[f64],
+    slack: f64,
+    count: usize,
+) {
+    let [frequencies, flat] = frequencies;
+    kernels::prox_row_flat::<true>(values, count, levels, count, frequencies, flat, marks, slack, count);
+}
+
 /// The primal descent of a row.
 #[inline(never)]
 pub fn inspect_descend_row(out: &mut [f64], rows: [&[f64]; 4], step: f64, planes: usize, across: usize) {
@@ -181,6 +209,29 @@ pub fn inspect_relax_pair_row(new: [&[f64]; 2], field: [&mut [f64]; 2], rho: f64
     kernels::relax_pair_row::<false>((new_x, new_y), (x, y), none, rho, rest);
 }
 
+/// The proximal maps of a row, of every kind.
+fn prox_kernels(coefficients: &mut [f64], levels: &[i16], across: usize) {
+    let frequency = Frequency {
+        step: 10.0,
+        shrunk: 0.25,
+        scaled: 0.5,
+        inverse: 1.0 / 1.5,
+        shrink: 0.1,
+        shift: 0.0,
+    };
+    let frequencies = [frequency; 8];
+    inspect_prox_row(coefficients, levels, &frequencies, 0.0, across);
+    inspect_prox_row_charged(coefficients, levels, &frequencies, 0.5, across);
+    let marks: Vec<f64> = (0..across).map(|m| if m % 3 == 0 { 1.0 } else { 0.0 }).collect();
+    let flat = frequencies.map(|frequency| Frequency {
+        scaled: 0.5 * frequency.scaled,
+        inverse: 1.0 / (1.0 + 0.5 * frequency.scaled),
+        ..frequency
+    });
+    inspect_prox_row_flat(coefficients, levels, [&frequencies, &flat], &marks, 0.0, across);
+    inspect_prox_row_flat_charged(coefficients, levels, [&frequencies, &flat], &marks, 0.5, across);
+}
+
 fn main() {
     // The sizes are opaque, so that no kernel is specialized for them.
     let (planes, across) = (black_box(8), black_box(12));
@@ -191,22 +242,12 @@ fn main() {
     let levels: Vec<i16> = (0..8 * width)
         .map(|index| i16::try_from(index % 5).unwrap_or(0) - 2)
         .collect();
-    let frequency = Frequency {
-        step: 10.0,
-        shrunk: 0.25,
-        scaled: 0.5,
-        inverse: 1.0 / 1.5,
-        shrink: 0.1,
-        shift: 0.0,
-    };
-    let frequencies = [frequency; 8];
     let mut out = vec![0.0; 8 * width];
     inspect_forward8(black_box(&values), width, &mut out, width, width);
     let mut back = vec![0.0; 8 * width];
     inspect_inverse8(black_box(&out), width, &mut back, width, width);
     let mut coefficients = values[..8 * across].to_vec();
-    inspect_prox_row(&mut coefficients, &levels, &frequencies, 0.0, across);
-    inspect_prox_row_charged(&mut coefficients, &levels, &frequencies, 0.5, across);
+    prox_kernels(&mut coefficients, &levels, across);
     let row = &values[..width];
     let mut target = vec![0.0; width];
     inspect_descend_row(&mut target, [row, row, row, row], 0.1, planes, across);

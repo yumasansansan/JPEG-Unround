@@ -74,14 +74,15 @@ pub fn subgradient(frame: &Frame, weights: &Tv, canvas: &[f64]) -> Vec<f64> {
     let mut divergence = vec![0.0; size];
     operators::div(&across, &down, shape, &mut divergence);
     let mut coefficients = dct::forward(canvas, shape.height, shape.width);
-    let frequencies = problem.weights();
-    for (values, centres) in coefficients
+    for (block, (values, centres)) in coefficients
         .as_chunks_mut::<BLOCK_SIZE>()
         .0
         .iter_mut()
         .zip(problem.centres().as_chunks::<BLOCK_SIZE>().0)
+        .enumerate()
     {
-        for ((value, &centre), &weight) in values.iter_mut().zip(centres).zip(frequencies) {
+        // Each block with its weights, a flat block's its own.
+        for ((value, &centre), &weight) in values.iter_mut().zip(centres).zip(problem.block_weights(block)) {
             *value = weight * (*value - centre);
         }
     }

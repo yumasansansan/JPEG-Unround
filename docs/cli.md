@@ -161,13 +161,16 @@ one value for each (4.1, 4.4).
 | `--centres` | `mmse`, `midpoint` | `midpoint` | The MMSE centres of the Laplace model (2.2), or the middles of the intervals |
 | `--slack` | ≥ 0 | 0 | Widens every interval by that many steps on each side (1.2) |
 | `--slack-cost` | ≥ 0 | 0 | What leaving the file's own interval costs, per step, within the slack |
+| `--flat-weight` | ≥ 0 | 0.1 | The weights of a flat block's coefficients, a factor of the others' (4.1); 1 weighs every block alike |
+| `--flat-levels` | 0 to 63 | 0 | The most AC levels that are not 0 in a flat block |
+| `--flat-dc` | ≥ 0, or `any` | 1 | The most a flat block's DC level differs from those of the blocks above, below, left and right of it; `any`: no bound |
 
 ## The primal–dual method
 
 | Option | Values | Default | |
 |---|---|---|---|
-| `--iterations` | ≥ 0 | TV 2000, TGV 5000; of a PNG file 10000 | The most iterations |
-| `--tolerance` | ≥ 0 | TV `5e-4` times `alpha`, TGV `5e-3` times `alpha1`; of a PNG file `1e-4` times either | Stops where the duality gap per sample is at most this; 0 turns it off (6.4) |
+| `--iterations` | ≥ 0 | TV 5000, TGV 10000; of a PNG file 10000 | The most iterations |
+| `--tolerance` | ≥ 0 | TV `2e-4` times `alpha`, TGV `2e-3` times `alpha1`; of a PNG file `1e-4` times either | Stops where the duality gap per sample is at most this; 0 turns it off (6.4) |
 | `--relative-tolerance` | ≥ 0 | 0 | Stops where the gap is at most this times the primal value; 0 turns it off |
 | `--partial-tolerance` | ≥ 0 | 0 | TGV: stops where the partial gap per sample is at most this; needs `--partial-radius` |
 | `--partial-radius` | ≥ 0 | none | TGV: the radius of the partial gap (6.3), which is then recorded |

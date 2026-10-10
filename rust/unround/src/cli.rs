@@ -44,6 +44,7 @@ Method:      --method mmse|tv|tgv|subgradient  --alpha A  --alpha1 A  --alpha0 A
              --channel-weights G,G,G  --channels coupled|apart
 Data term:   --mu X|rule  --mu-scale S  --mu-power R  --mu-chroma K  --weight-power P
              --dc-weight W  --centres mmse|midpoint  --slack S  --slack-cost B
+             --flat-weight F  --flat-levels N  --flat-dc D|any
              (one value, or one per component)
 Solver:      --iterations N  --tolerance X  --relative-tolerance X  --partial-tolerance X
              --partial-radius X  --step-ratio X  --relaxation X  --step-product X
@@ -77,6 +78,9 @@ const VALUED: &[&str] = &[
     "centres",
     "slack",
     "slack-cost",
+    "flat-weight",
+    "flat-levels",
+    "flat-dc",
     "iterations",
     "tolerance",
     "relative-tolerance",
@@ -332,9 +336,19 @@ fn number_list(text: &str, valid: impl Fn(f64) -> bool) -> Option<f64> {
     text.parse::<f64>().ok().filter(|&value| valid(value))
 }
 
+/// A list of values at least 0 and finite.
+fn at_least_zero_list(reader: &mut Reader<'_>, name: &str) -> Option<Vec<f64>> {
+    reader.list(name, |item| number_list(item, at_least_zero), "at least 0 and finite")
+}
+
+/// Component `index`'s value of a list: its only value, or its own; or the default
+/// where the list is not given.
+fn pick<T: Copy>(values: Option<&Vec<T>>, index: usize, default: T) -> T {
+    values.map_or(default, |values| values[if values.len() == 1 { 0 } else { index }])
+}
+
 /// The options of `G` for each component, from the lists of the data term.
 fn data_terms(reader: &mut Reader<'_>) -> Vec<DataTerm> {
-    let finite = |value: f64| value.is_finite();
     let mu = reader.list(
         "mu",
         |item| {
@@ -346,37 +360,13 @@ fn data_terms(reader: &mut Reader<'_>) -> Vec<DataTerm> {
         },
         "at least 0 and finite, or rule",
     );
-    let mu_scale = reader.list(
-        "mu-scale",
-        |item| number_list(item, at_least_zero),
-        "at least 0 and finite",
-    );
-    let mu_power = reader.list("mu-power", |item| number_list(item, finite), "finite");
-    let mu_chroma = reader.list(
-        "mu-chroma",
-        |item| number_list(item, at_least_zero),
-        "at least 0 and finite",
-    );
-    let power = reader.list(
-        "weight-power",
-        |item| number_list(item, at_least_zero),
-        "at least 0 and finite",
-    );
-    let dc_weight = reader.list(
-        "dc-weight",
-        |item| number_list(item, at_least_zero),
-        "at least 0 and finite",
-    );
-    let slack = reader.list(
-        "slack",
-        |item| number_list(item, at_least_zero),
-        "at least 0 and finite",
-    );
-    let slack_cost = reader.list(
-        "slack-cost",
-        |item| number_list(item, at_least_zero),
-        "at least 0 and finite",
-    );
+    let mu_scale = at_least_zero_list(reader, "mu-scale");
+    let mu_power = reader.list("mu-power", |item| number_list(item, f64::is_finite), "finite");
+    let mu_chroma = at_least_zero_list(reader, "mu-chroma");
+    let power = at_least_zero_list(reader, "weight-power");
+    let dc_weight = at_least_zero_list(reader, "dc-weight");
+    let slack = at_least_zero_list(reader, "slack");
+    let slack_cost = at_least_zero_list(reader, "slack-cost");
     let centres = reader.list(
         "centres",
         |item| match item {
@@ -385,6 +375,23 @@ fn data_terms(reader: &mut Reader<'_>) -> Vec<DataTerm> {
             _ => None,
         },
         "mmse or midpoint",
+    );
+    let flat_weight = at_least_zero_list(reader, "flat-weight");
+    let flat_levels = reader.list(
+        "flat-levels",
+        |item| item.parse::<u32>().ok().filter(|&count| count <= 63),
+        "an integer from 0 to 63",
+    );
+    let flat_dc = reader.list(
+        "flat-dc",
+        |item| {
+            if item == "any" {
+                Some(None)
+            } else {
+                item.parse::<u32>().ok().map(Some)
+            }
+        },
+        "a whole number or any",
     );
     let lengths: BTreeSet<usize> = [
         mu.as_ref().map(Vec::len),
@@ -396,6 +403,9 @@ fn data_terms(reader: &mut Reader<'_>) -> Vec<DataTerm> {
         slack.as_ref().map(Vec::len),
         slack_cost.as_ref().map(Vec::len),
         centres.as_ref().map(Vec::len),
+        flat_weight.as_ref().map(Vec::len),
+        flat_levels.as_ref().map(Vec::len),
+        flat_dc.as_ref().map(Vec::len),
     ]
     .into_iter()
     .flatten()
@@ -407,29 +417,21 @@ fn data_terms(reader: &mut Reader<'_>) -> Vec<DataTerm> {
         ));
     }
     let count = lengths.into_iter().next().unwrap_or(1);
+    let defaults = DataTerm::default();
     (0..count)
-        .map(|index| {
-            let pick = |values: &Option<Vec<f64>>, default: f64| {
-                values
-                    .as_ref()
-                    .map_or(default, |values| values[if values.len() == 1 { 0 } else { index }])
-            };
-            let defaults = DataTerm::default();
-            DataTerm {
-                mu: mu
-                    .as_ref()
-                    .map_or(defaults.mu, |values| values[if values.len() == 1 { 0 } else { index }]),
-                mu_scale: pick(&mu_scale, defaults.mu_scale),
-                mu_power: pick(&mu_power, defaults.mu_power),
-                mu_chroma: pick(&mu_chroma, defaults.mu_chroma),
-                slack: pick(&slack, defaults.slack),
-                dc_weight: pick(&dc_weight, defaults.dc_weight),
-                centres: centres.as_ref().map_or(defaults.centres, |values| {
-                    values[if values.len() == 1 { 0 } else { index }]
-                }),
-                power: pick(&power, defaults.power),
-                slack_cost: pick(&slack_cost, defaults.slack_cost),
-            }
+        .map(|index| DataTerm {
+            mu: pick(mu.as_ref(), index, defaults.mu),
+            mu_scale: pick(mu_scale.as_ref(), index, defaults.mu_scale),
+            mu_power: pick(mu_power.as_ref(), index, defaults.mu_power),
+            mu_chroma: pick(mu_chroma.as_ref(), index, defaults.mu_chroma),
+            slack: pick(slack.as_ref(), index, defaults.slack),
+            dc_weight: pick(dc_weight.as_ref(), index, defaults.dc_weight),
+            centres: pick(centres.as_ref(), index, defaults.centres),
+            power: pick(power.as_ref(), index, defaults.power),
+            slack_cost: pick(slack_cost.as_ref(), index, defaults.slack_cost),
+            flat_weight: pick(flat_weight.as_ref(), index, defaults.flat_weight),
+            flat_levels: pick(flat_levels.as_ref(), index, defaults.flat_levels),
+            flat_dc: pick(flat_dc.as_ref(), index, defaults.flat_dc),
         })
         .collect()
 }
@@ -610,7 +612,7 @@ pub fn options_of(settings: &Settings) -> Vec<String> {
     }
     put("channels", (if coupled { "coupled" } else { "apart" }).to_owned());
     let terms = &settings.data;
-    let fields: [Field<'_>; 9] = [
+    let fields: [Field<'_>; 12] = [
         ("mu", &|term| term.mu.map_or_else(|| "rule".to_owned(), decimal)),
         ("mu-scale", &|term| decimal(term.mu_scale)),
         ("mu-power", &|term| decimal(term.mu_power)),
@@ -626,6 +628,11 @@ pub fn options_of(settings: &Settings) -> Vec<String> {
         }),
         ("slack", &|term| decimal(term.slack)),
         ("slack-cost", &|term| decimal(term.slack_cost)),
+        ("flat-weight", &|term| decimal(term.flat_weight)),
+        ("flat-levels", &|term| term.flat_levels.to_string()),
+        ("flat-dc", &|term| {
+            term.flat_dc.map_or_else(|| "any".to_owned(), |limit| limit.to_string())
+        }),
     ];
     for (name, value) in fields {
         if let Some(value) = listed(terms, value) {
@@ -1341,7 +1348,9 @@ mod tests {
     fn the_options_reach_the_settings() {
         let Ok(Request::Run(command)) = parse(arguments(
             "--method tv --alpha 2 --mu 0.01,rule,0.5 --mu-scale 9 --mu-chroma 0.5 --centres midpoint --slack 0.5 \
-             --iterations 300 --tolerance=1e-5 --relaxation 1.5 --record-every 5 --no-weight-scaling in.jpg out.tif",
+             --flat-weight 0.2 --flat-levels 1,0,63 --flat-dc 1,any,2 --iterations 300 --tolerance=1e-5 --relaxation 1.5 \
+             --record-every 5 \
+             --no-weight-scaling in.jpg out.tif",
         )) else {
             panic!("the arguments are taken");
         };
@@ -1354,6 +1363,11 @@ mod tests {
         assert_eq!(command.settings.data[1].mu_chroma, 0.5);
         assert_eq!(command.settings.data[2].centres, Centres::Midpoint);
         assert_eq!(command.settings.data[2].slack, 0.5);
+        assert!(command.settings.data.iter().all(|term| term.flat_weight == 0.2));
+        let counts: Vec<u32> = command.settings.data.iter().map(|term| term.flat_levels).collect();
+        assert_eq!(counts, [1, 0, 63]);
+        let bounds: Vec<Option<u32>> = command.settings.data.iter().map(|term| term.flat_dc).collect();
+        assert_eq!(bounds, [Some(1), None, Some(2)]);
         assert_eq!(command.settings.pdhg.iterations, Some(300));
         assert_eq!(command.settings.pdhg.tolerance, Some(1e-5));
         assert_eq!(command.settings.pdhg.relaxation, Some(1.5));
@@ -1366,7 +1380,8 @@ mod tests {
     #[test]
     fn every_refused_option_is_named() {
         let Err(errors) = parse(arguments(
-            "--alpha0 -1 --relaxation 2 --mu 1,2 --slack 0,0,0 --bogus --iterations x --alpha 1 --alpha 3 in.jpg",
+            "--alpha0 -1 --relaxation 2 --mu 1,2 --slack 0,0,0 --bogus --iterations x --alpha 1 --alpha 3 \
+             --flat-weight -1 --flat-levels 64 --flat-dc -1 in.jpg",
         )) else {
             panic!("the arguments are refused");
         };
@@ -1378,6 +1393,9 @@ mod tests {
             "unknown option --bogus",
             "--iterations is a whole number",
             "--alpha is given twice",
+            "--flat-weight is at least 0 and finite, not -1",
+            "--flat-levels is an integer from 0 to 63, not 64",
+            "--flat-dc is a whole number or any, not -1",
         ] {
             assert!(all.contains(fragment), "{fragment} in {all}");
         }
@@ -1424,6 +1442,9 @@ mod tests {
                     centres: Centres::Mmse,
                     power: 1.0,
                     slack_cost: 7.0,
+                    flat_weight: 0.1 + 0.2,
+                    flat_levels: 5,
+                    flat_dc: Some(7),
                     ..DataTerm::default()
                 },
                 DataTerm::default(),

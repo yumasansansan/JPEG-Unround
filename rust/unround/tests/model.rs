@@ -147,22 +147,32 @@ fn prox_error(problem: &Problem, e: &[f64], tau: f64) -> Vec<f64> {
     e.iter()
         .enumerate()
         .map(|(index, &value)| {
-            let w = problem.weights()[index % BLOCK_SIZE];
+            let w = problem.block_weights(index / BLOCK_SIZE)[index % BLOCK_SIZE];
             8.0 * U * (value.abs() + tau * w * problem.centres()[index].abs()) / (1.0 + tau * w)
         })
         .collect()
 }
 
+/// Whether a problem has blocks of both kinds, flat and not.
+fn both_kinds(problem: &Problem) -> bool {
+    problem.flat().contains(&true) && problem.flat().contains(&false)
+}
+
 #[test]
 fn the_prox_minimizes_its_objective() {
-    for dc_weight in [0.0, 1.0] {
+    // Flat blocks, with at most three AC levels not 0, weigh a tenth in the last case.
+    for (dc_weight, flat_weight) in [(0.0, 1.0), (1.0, 1.0), (1.0, 0.1)] {
         for tau in [0.01, 1.0, 1e4] {
             let data = DataTerm {
                 mu: Some(5.0),
                 dc_weight,
+                flat_weight,
+                flat_levels: 3,
+                flat_dc: None,
                 ..DataTerm::default()
             };
             let (problem, canvas) = synthetic::problem(16, 24, 3, 2.0, &data);
+            assert!(both_kinds(&problem));
             let mut numbers = Numbers::new(21);
             let e = forward(&problem, &noisy(&canvas, 20.0, &mut numbers));
             let c = prox(&problem, &e, tau);
@@ -172,7 +182,7 @@ fn the_prox_minimizes_its_objective() {
             // evaluated within (gamma(2n) + 4U) of its value, its parts being non-negative.
             let mut suboptimal = 0.0;
             for (index, (&value, &shift)) in c.iter().zip(&delta).enumerate() {
-                let w = problem.weights()[index % BLOCK_SIZE];
+                let w = problem.block_weights(index / BLOCK_SIZE)[index % BLOCK_SIZE];
                 let slope = (value - e[index]).abs()
                     + tau * w * (value - problem.centres()[index]).abs()
                     + (1.0 + tau * w) * shift;
@@ -193,7 +203,7 @@ fn the_prox_minimizes_its_objective() {
                 if !interior {
                     continue;
                 }
-                let w = problem.weights()[index % BLOCK_SIZE];
+                let w = problem.block_weights(index / BLOCK_SIZE)[index % BLOCK_SIZE];
                 let residual = (e[index] - value) / tau - w * (value - problem.centres()[index]);
                 let allowance = shift * (1.0 / tau + w)
                     + 4.0 * U * ((e[index] - value).abs() / tau + w * (value - problem.centres()[index]).abs());
@@ -213,14 +223,18 @@ fn the_prox_with_a_costly_slack_meets_its_optimality_conditions() {
     // widened one; and alike below. c is within delta of the exact minimizer: the
     // quotient's rounding, and three more of the shift by tau cost / (1 + tau m); r is
     // computed within 4U of its parts.
-    for tau in [0.01, 1.0, 1e4] {
+    for (tau, flat_weight) in [(0.01, 1.0), (1.0, 1.0), (1e4, 1.0), (1.0, 0.1), (1e4, 0.1)] {
         let data = DataTerm {
             mu: Some(5.0),
             slack: 0.5,
             slack_cost: 0.3,
+            flat_weight,
+            flat_levels: 3,
+            flat_dc: None,
             ..DataTerm::default()
         };
         let (problem, canvas) = synthetic::problem(16, 24, 3, 2.0, &data);
+        assert!(both_kinds(&problem));
         let cost = problem.cost().expect("a cost");
         let mut numbers = Numbers::new(27);
         let e = forward(&problem, &noisy(&canvas, 40.0, &mut numbers));
@@ -229,7 +243,7 @@ fn the_prox_with_a_costly_slack_meets_its_optimality_conditions() {
         let quotient = prox_error(&problem, &e, tau);
         for (index, &value) in c.iter().enumerate() {
             let frequency = index % BLOCK_SIZE;
-            let m = problem.weights()[frequency];
+            let m = problem.block_weights(index / BLOCK_SIZE)[frequency];
             let force = tau * cost.costs()[frequency];
             let moved = (e[index] + tau * m * problem.centres()[index]) / (1.0 + tau * m);
             let delta = quotient[index] + 4.0 * U * (moved.abs() + force / (1.0 + tau * m));
@@ -266,7 +280,7 @@ fn conjugate_magnitude(problem: &Problem, s: &[f64]) -> f64 {
         .map(|(index, &value)| {
             let ends = problem.lower()[index].abs().max(problem.upper()[index].abs());
             let width = problem.upper()[index] - problem.lower()[index];
-            value.abs() * ends + 0.5 * problem.weights()[index % BLOCK_SIZE] * width * width
+            value.abs() * ends + 0.5 * problem.block_weights(index / BLOCK_SIZE)[index % BLOCK_SIZE] * width * width
         })
         .sum()
 }
@@ -279,13 +293,23 @@ fn conjugate_error(problem: &Problem, s: &[f64]) -> f64 {
 
 #[test]
 fn the_conjugate_is_the_largest_of_its_objective() {
-    for (mu, dc_weight) in [(0.0, 0.0), (2.0, 0.0), (2.0, 1.0)] {
+    // The last case's block is flat (it has at most 63 AC levels that are not 0), and
+    // weighs a quarter.
+    for (mu, dc_weight, flat_weight, flat_levels) in [
+        (0.0, 0.0, 1.0, 0),
+        (2.0, 0.0, 1.0, 0),
+        (2.0, 1.0, 1.0, 0),
+        (2.0, 1.0, 0.25, 63),
+    ] {
         let data = DataTerm {
             mu: Some(mu),
             dc_weight,
+            flat_weight,
+            flat_levels,
             ..DataTerm::default()
         };
         let (problem, _) = synthetic::problem(8, 8, 4, 2.0, &data);
+        assert_eq!(problem.flat(), [flat_levels == 63]);
         let mut numbers = Numbers::new(22);
         for _ in 0..5 {
             let s: Vec<f64> = (0..BLOCK_SIZE).map(|_| numbers.normal(0.0, 3.0)).collect();
@@ -308,7 +332,10 @@ fn the_conjugate_is_the_largest_of_its_objective() {
             let mut reach = 0.0;
             for (index, &slope_at) in s.iter().enumerate() {
                 let (lower, upper) = (problem.lower()[index], problem.upper()[index]);
-                let (w, centre) = (problem.weights()[index], problem.centres()[index]);
+                let (w, centre) = (
+                    problem.block_weights(index / BLOCK_SIZE)[index % BLOCK_SIZE],
+                    problem.centres()[index],
+                );
                 let mut largest = f64::NEG_INFINITY;
                 for step in 0..=20_000u32 {
                     let c = lower + f64::from(step) / 20_000.0 * (upper - lower);
