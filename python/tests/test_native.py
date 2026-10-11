@@ -19,6 +19,7 @@ import dataclasses
 import io
 import math
 import os
+import pickle
 import struct
 import subprocess
 import sys
@@ -146,6 +147,7 @@ settings_drawn = st.builds(
         record_every=st.integers(0, 2**40),
         partial_radius=st.none() | at_least_zero,
         free_radius=at_least_zero,
+        threads=st.integers(0, 2**16),
     ),
     subgradient=st.builds(
         SubgradientOptions,
@@ -223,6 +225,7 @@ def test_the_settings_reach_the_library_to_the_last_bit(
     iterations = values.pop("iterations", None)
     assert iterations == (None if solver.iterations is None else str(solver.iterations))
     assert values.pop("record-every") == str(solver.record_every)
+    assert values.pop("threads") == str(solver.threads)
     assert ("no-weight-scaling" in values) == (not solver.scale_with_weight)
     values.pop("no-weight-scaling", None)
     method = settings.subgradient
@@ -450,6 +453,14 @@ def test_what_is_not_reconstructed_is_said() -> None:
     with pytest.raises(native.UnroundError) as partial:
         native.decode(grey_file(), Settings(method="tv", pdhg=PdhgOptions(partial_radius=20.0)))
     assert partial.value.status is native.Status.OPTIONS
+    # Pickled, as a process of a pool sends it back, the error is made again as it was.
+    again = pickle.loads(pickle.dumps(garbage.value))  # noqa: S301 -- the test's own error
+    assert type(again) is native.UnroundError
+    assert (again.status, again.message, str(again)) == (
+        garbage.value.status,
+        garbage.value.message,
+        str(garbage.value),
+    )
 
 
 def test_the_profile_and_the_orientation_are_the_file_s() -> None:

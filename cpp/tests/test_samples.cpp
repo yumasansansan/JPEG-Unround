@@ -8,8 +8,9 @@
 // bit, and a slack so large that every interval is 0 to 255; the proximal map, at mu = 0
 // the clip to the last bit and above 0 within the bound of its roundings of the exact
 // minimizer; the conjugate by Fenchel and Young; the solvers' records, gaps and stops,
-// and their results within the intervals; and PNG files reconstructed, their alpha
-// alone, rounded to their own bits their levels again, and the settings they refuse.
+// and their results within the intervals, on several threads those of one to the last
+// bit; and PNG files reconstructed, their alpha alone, rounded to their own bits their
+// levels again, and the settings they refuse.
 
 #include "unround/samples.hpp"
 
@@ -280,6 +281,34 @@ void solves(void) {
           for (std::size_t k = 0; k < x.size(); ++k) within = within && x[k] >= lows[k] && x[k] <= highs[k];
         }
         CHECK(within);
+      }
+    }
+  }
+  // On several threads, each a part of the rows, as on one to the last bit.
+  for (const std::size_t channels : {std::size_t{1}, std::size_t{3}}) {
+    const auto levels = levels_of(numbers, 13, 9, channels, 8);
+    const unround::samples::Model model = model_of(levels, 8, 0, channels, 0.0, 0.05);
+    for (const unround::pdhg::Model method : {unround::pdhg::Model::tv, unround::pdhg::Model::tgv}) {
+      unround::pdhg::Options options;
+      options.iterations = 17;
+      options.tolerance = 0.0;
+      options.record_every = 4;
+      options.threads = 1;
+      const auto one = unround::samples::solve(model, method, {}, options);
+      if (!CHECK(one.has_value())) continue;
+      for (const std::uint64_t count : {2u, 5u, 13u, 20u}) {
+        options.threads = count;
+        const auto more = unround::samples::solve(model, method, {}, options);
+        if (!CHECK(more.has_value())) continue;
+        bool equal = more->iterations == one->iterations && more->records.size() == one->records.size();
+        for (std::size_t c = 0; equal && c < channels; ++c) {
+          equal = std::ranges::equal(more->canvas[c].entries(), one->canvas[c].entries(), same);
+        }
+        for (std::size_t k = 0; equal && k < one->records.size(); ++k) {
+          equal = same(more->records[k].primal, one->records[k].primal) &&
+                  same(more->records[k].dual, one->records[k].dual);
+        }
+        CHECK(equal);
       }
     }
   }

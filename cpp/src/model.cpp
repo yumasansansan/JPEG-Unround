@@ -258,6 +258,14 @@ double Problem::prox_at(std::size_t by, std::size_t bx, std::size_t v, std::size
 
 void Problem::prox(Blocks<const double> e, double step, Blocks<double> out) const noexcept {
   if (e.extents() != extents() || out.extents() != extents()) std::abort();
+  prox_rows(e, step, out, 0);
+}
+
+void Problem::prox_rows(Blocks<const double> e, double step, Blocks<double> out, std::size_t first) const noexcept {
+  const std::size_t count = e.extent(0);
+  if (out.extents() != e.extents() || e.extent(1) != columns() || first > rows() || count > rows() - first) {
+    std::abort();
+  }
   // t, 1 / (1 + t) and the shrink of each frequency, once for the blocks that are not
   // flat and once for the flat ones.
   struct Factors {
@@ -280,14 +288,17 @@ void Problem::prox(Blocks<const double> e, double step, Blocks<double> out) cons
   const Factors others = factors_of(weights_);
   const Factors flats = factors_of(flat_weights_);
   const Grid<const std::uint8_t> flat = flat_.view();
-  for (std::size_t by = 0; by < rows(); ++by) {
-    for (std::size_t bx = 0; bx < columns(); ++bx) {
+  const std::size_t width = columns();
+  for (std::size_t row = 0; row < count; ++row) {
+    // Row `row` of e and out, row `by` of the component.
+    const std::size_t by = first + row;
+    for (std::size_t bx = 0; bx < width; ++bx) {
       const Factors& own = flat[by, bx] != 0 ? flats : others;
       const std::span<const double, 64> t = own.t;
       const std::span<const double, 64> r = own.r;
       const std::span<const double, 64> h = own.h;
-      const std::span<const double, 64> in = block_entries(e, by, bx);
-      const std::span<double, 64> to = block_entries(out, by, bx);
+      const std::span<const double, 64> in = block_entries(e, row, bx);
+      const std::span<double, 64> to = block_entries(out, row, bx);
       const std::span<const double, 64> centre = block_entries(centres(), by, bx);
       const std::span<const double, 64> low = block_entries(lower(), by, bx);
       const std::span<const double, 64> high = block_entries(upper(), by, bx);
@@ -325,62 +336,88 @@ double Problem::value_at(std::size_t by, std::size_t bx, std::size_t v, std::siz
 
 namespace {
 
-// A sum over the coefficients of a term of each, in the order of docs/math.md,
-// Arithmetic: rows of `columns` blocks of 64 terms, a block row a row. `term` fills
-// the 64 terms of a block.
-template <typename Terms>
-double sum_of(const BlockExtents& extents, const Terms& terms_of) {
-  BlocksArray<double> terms(extents);
-  for (std::size_t by = 0; by < extents.extent(0); ++by) {
-    for (std::size_t bx = 0; bx < extents.extent(1); ++bx) terms_of(by, bx, block_entries(terms.view(), by, bx));
+// The terms of the block rows from `first` on that `at` and `terms` hold, as many as
+// they have, a term of each coefficient: `term` fills the 64 terms of block (by, bx)
+// from its entries in `at`, by counting from the first of all.
+template <typename Term>
+void terms_of(Blocks<const double> at, std::size_t first, Blocks<double> terms, const Term& term) noexcept {
+  const std::size_t count = at.extent(0);
+  const std::size_t columns = at.extent(1);
+  for (std::size_t by = 0; by < count; ++by) {
+    for (std::size_t bx = 0; bx < columns; ++bx) {
+      term(first + by, bx, block_entries(at, by, bx), block_entries(terms, by, bx));
+    }
   }
-  return exact::sum_rows(Grid<const double>(terms.entries().data(), extents.extent(0), extents.extent(1) * 64u));
 }
 
 }  // namespace
 
+void Problem::conjugate_terms(Blocks<const double> s, std::size_t first, Blocks<double> terms) const noexcept {
+  const std::size_t count = s.extent(0);
+  if (terms.extents() != s.extents() || s.extent(1) != columns() || first > rows() || count > rows() - first) {
+    std::abort();
+  }
+  terms_of(s, first, terms,
+           [this](std::size_t by, std::size_t bx, std::span<const double, 64> dual, std::span<double, 64> out) {
+             const std::span<const double, 64> centre = block_entries(centres(), by, bx);
+             const std::span<const double, 64> low = block_entries(lower(), by, bx);
+             const std::span<const double, 64> high = block_entries(upper(), by, bx);
+             const std::span<const double, 64> weight = flat_.view()[by, bx] != 0 ? flat_weights_ : weights_;
+             if (!cost_) {
+               for (std::size_t k = 0; k < 64u; ++k) {
+                 out[k] = conjugate_plain(dual[k], weight[k], centre[k], low[k], high[k]);
+               }
+               return;
+             }
+             const Cost& cost = *cost_;
+             const std::span<const double, 64> own_low = block_entries(cost.inner_lower.view(), by, bx);
+             const std::span<const double, 64> own_high = block_entries(cost.inner_upper.view(), by, bx);
+             for (std::size_t k = 0; k < 64u; ++k) {
+               out[k] = conjugate_costed(dual[k], weight[k], centre[k], low[k], high[k], cost.costs[k], own_low[k],
+                                         own_high[k]);
+             }
+           });
+}
+
 double Problem::conjugate(Blocks<const double> s) const {
   if (s.extents() != extents()) std::abort();
-  return sum_of(extents(), [this, s](std::size_t by, std::size_t bx, std::span<double, 64> terms) {
-    const std::span<const double, 64> dual = block_entries(s, by, bx);
-    const std::span<const double, 64> centre = block_entries(centres(), by, bx);
-    const std::span<const double, 64> low = block_entries(lower(), by, bx);
-    const std::span<const double, 64> high = block_entries(upper(), by, bx);
-    const std::span<const double, 64> weight = flat_.view()[by, bx] != 0 ? flat_weights_ : weights_;
-    if (!cost_) {
-      for (std::size_t k = 0; k < 64u; ++k) {
-        terms[k] = conjugate_plain(dual[k], weight[k], centre[k], low[k], high[k]);
-      }
-      return;
-    }
-    const Cost& cost = *cost_;
-    const std::span<const double, 64> own_low = block_entries(cost.inner_lower.view(), by, bx);
-    const std::span<const double, 64> own_high = block_entries(cost.inner_upper.view(), by, bx);
-    for (std::size_t k = 0; k < 64u; ++k) {
-      terms[k] =
-          conjugate_costed(dual[k], weight[k], centre[k], low[k], high[k], cost.costs[k], own_low[k], own_high[k]);
-    }
-  });
+  BlocksArray<double> terms(extents());
+  conjugate_terms(s, 0, terms.view());
+  return sum(std::as_const(terms).view());
+}
+
+void Problem::value_terms(Blocks<const double> c, std::size_t first, Blocks<double> terms) const noexcept {
+  const std::size_t count = c.extent(0);
+  if (terms.extents() != c.extents() || c.extent(1) != columns() || first > rows() || count > rows() - first) {
+    std::abort();
+  }
+  terms_of(c, first, terms,
+           [this](std::size_t by, std::size_t bx, std::span<const double, 64> at, std::span<double, 64> out) {
+             const std::span<const double, 64> centre = block_entries(centres(), by, bx);
+             const std::span<const double, 64> weight = flat_.view()[by, bx] != 0 ? flat_weights_ : weights_;
+             for (std::size_t k = 0; k < 64u; ++k) {
+               const double away = at[k] - centre[k];
+               out[k] = 0.5 * weight[k] * (away * away);
+             }
+             if (!cost_) return;
+             const Cost& cost = *cost_;
+             const std::span<const double, 64> own_low = block_entries(cost.inner_lower.view(), by, bx);
+             const std::span<const double, 64> own_high = block_entries(cost.inner_upper.view(), by, bx);
+             for (std::size_t k = 0; k < 64u; ++k) {
+               out[k] = out[k] + cost.costs[k] * beyond_of(at[k], own_low[k], own_high[k]);
+             }
+           });
 }
 
 double Problem::value(Blocks<const double> c) const {
   if (c.extents() != extents()) std::abort();
-  return sum_of(extents(), [this, c](std::size_t by, std::size_t bx, std::span<double, 64> terms) {
-    const std::span<const double, 64> at = block_entries(c, by, bx);
-    const std::span<const double, 64> centre = block_entries(centres(), by, bx);
-    const std::span<const double, 64> weight = flat_.view()[by, bx] != 0 ? flat_weights_ : weights_;
-    for (std::size_t k = 0; k < 64u; ++k) {
-      const double away = at[k] - centre[k];
-      terms[k] = 0.5 * weight[k] * (away * away);
-    }
-    if (!cost_) return;
-    const Cost& cost = *cost_;
-    const std::span<const double, 64> own_low = block_entries(cost.inner_lower.view(), by, bx);
-    const std::span<const double, 64> own_high = block_entries(cost.inner_upper.view(), by, bx);
-    for (std::size_t k = 0; k < 64u; ++k) {
-      terms[k] = terms[k] + cost.costs[k] * beyond_of(at[k], own_low[k], own_high[k]);
-    }
-  });
+  BlocksArray<double> terms(extents());
+  value_terms(c, 0, terms.view());
+  return sum(std::as_const(terms).view());
+}
+
+double Problem::sum(Blocks<const double> terms) {
+  return exact::sum_rows(Grid<const double>(terms.data_handle(), terms.extent(0), terms.extent(1) * 64u));
 }
 
 void Problem::clip(Blocks<const double> c, Blocks<double> out) const noexcept {

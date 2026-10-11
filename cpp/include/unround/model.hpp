@@ -118,6 +118,9 @@ class Problem {
   // The proximal map of `step` G in the coefficients (4.1): each output the minimizer
   // of (c - e)^2 / (2 step) + g(c) of its coefficient.
   void prox(Blocks<const double> e, double step, Blocks<double> out) const noexcept;
+  // The same of the block rows from `first` on that e and out hold, as many as they
+  // have: the part of the blocks that a thread takes.
+  void prox_rows(Blocks<const double> e, double step, Blocks<double> out, std::size_t first) const noexcept;
   // That of coefficient (v, u) of block (by, bx).
   [[nodiscard]] double prox_at(std::size_t by, std::size_t bx, std::size_t v, std::size_t u, double e,
                                double step) const noexcept;
@@ -132,6 +135,13 @@ class Problem {
   // squares and the cost of the slack, summed as the conjugate is.
   [[nodiscard]] double value(Blocks<const double> c) const;
   [[nodiscard]] double value_at(std::size_t by, std::size_t bx, std::size_t v, std::size_t u, double c) const noexcept;
+
+  // The terms of those sums of the block rows from `first` on that the coefficients
+  // and `terms` hold, as many as they have: the part of the blocks that a thread
+  // takes. The sum of the terms of every block row, in their order, is the value.
+  void conjugate_terms(Blocks<const double> s, std::size_t first, Blocks<double> terms) const noexcept;
+  void value_terms(Blocks<const double> c, std::size_t first, Blocks<double> terms) const noexcept;
+  [[nodiscard]] static double sum(Blocks<const double> terms);
 
   // The coefficients clipped to their intervals: the projection onto the set, in
   // the coefficients.

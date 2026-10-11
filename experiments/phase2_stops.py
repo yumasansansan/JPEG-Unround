@@ -166,7 +166,10 @@ def solve(run: Run) -> dict[str, Any]:
                 crossings[f"{tolerance:g}"] = point
         return False
 
-    options = PdhgOptions(iterations=run.most, tolerance=run.floor, step_ratio=run.ratio, relaxation=run.relaxation)
+    # One thread to a run: the runs go in parallel, one to a process.
+    options = PdhgOptions(
+        iterations=run.most, tolerance=run.floor, step_ratio=run.ratio, relaxation=run.relaxation, threads=1
+    )
     settings = Settings(method=run.model, pdhg=options)  # type: ignore[arg-type]
     started = time.perf_counter()
     decoded = native.decode(data, settings, observer=observer)

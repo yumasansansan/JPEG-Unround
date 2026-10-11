@@ -9,7 +9,8 @@
 //! the pixels one by one and the model's coefficients by block rows of at most `8 W`
 //! terms; `rounding::record_roundings` counts what a term goes through in either, and
 //! the two values differ by at most twice `gamma` of that times the sum of the terms'
-//! magnitudes, which the tests compute from the natural layout.
+//! magnitudes, which the tests compute from the natural layout. On several threads,
+//! each a part of the bands, the values are those of one thread to the last bit.
 
 mod support;
 
@@ -150,6 +151,17 @@ fn tv_agree(frame: &Frame, weights: &Tv, radius: f64, seed: u64) {
     let (primal, dual) =
         frames::tv_values(frame, weights, &coefficients, &canvas, &dual_field, radius).expect("values");
     let (ours_primal, ours_dual) = values.tv(weights, &outputs, radius);
+    // On threads, each a part of the bands, to the last bit as on one.
+    for threads in [2, 3, 7] {
+        let (on_primal, on_dual) = Values::new(frame, &layout, &gammas)
+            .on_threads(threads)
+            .tv(weights, &outputs, radius);
+        assert_eq!(
+            (on_primal.to_bits(), on_dual.to_bits()),
+            (ours_primal.to_bits(), ours_dual.to_bits()),
+            "TV's values on {threads} threads"
+        );
+    }
     assert_close(
         "TV's primal value",
         ours_primal,
@@ -251,6 +263,9 @@ fn tgv_agree(frame: &Frame, weights: &Tgv, radius: f64, seed: u64) {
     let (primal, dual, theta) =
         frames::tgv_values(frame, weights, &coefficients, &canvas, &w_out, &r_out, radius).expect("values");
     let (ours_primal, ours_dual, ours_theta) = values.tgv(weights, &outputs, radius);
+    let ours_partial = values.tgv_partial(&outputs, radius);
+    let ours = [ours_primal, ours_dual, ours_theta, ours_partial.0, ours_partial.1];
+    tgv_on_threads(frame, (weights, radius), &outputs, ours);
     assert_close(
         "TGV's primal value",
         ours_primal,
@@ -291,6 +306,25 @@ fn tgv_agree(frame: &Frame, weights: &Tgv, radius: f64, seed: u64) {
         conjugate_magnitude(frame, &xi, radius),
         &layout,
     );
+}
+
+/// TGV's values on threads, each a part of the bands: to the last bit those of one,
+/// `ours` (the primal and dual values, theta, and the partial gap's bound and residual).
+fn tgv_on_threads(frame: &Frame, (weights, radius): (&Tgv, f64), outputs: &TgvOutputs, ours: [f64; 5]) {
+    let layout = Layout::new(frame).expect("a layout");
+    let gammas = frame
+        .channel_weights(weights.channel_weights.as_deref())
+        .expect("weights");
+    for threads in [2, 3, 7] {
+        let mut on_threads = Values::new(frame, &layout, &gammas).on_threads(threads);
+        let (primal, dual, theta) = on_threads.tgv(weights, outputs, radius);
+        let (bound, residual) = on_threads.tgv_partial(outputs, radius);
+        assert_eq!(
+            [primal, dual, theta, bound, residual].map(f64::to_bits),
+            ours.map(f64::to_bits),
+            "TGV's values on {threads} threads"
+        );
+    }
 }
 
 #[test]

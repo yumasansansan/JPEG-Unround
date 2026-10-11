@@ -44,54 +44,101 @@ void put(double& place, double value) noexcept {
   }
 }
 
-// Row i of d_x f: f[i, j + 1] - f[i, j], and 0 in the last column.
+// The entries of row i of a grid of at least one column.
+std::span<const double> row_of(Grid<const double> f, std::size_t i) noexcept { return {&f[i, 0], f.extent(1)}; }
+std::span<double> row_of(Grid<double> f, std::size_t i) noexcept { return {&f[i, 0], f.extent(1)}; }
+
+// Row i of d_x f into `out`, from f's row i: f[i, j + 1] - f[i, j], and 0 in the last
+// column.
 template <bool add>
-void forward_across(Grid<const double> f, Grid<double> out, std::size_t i) noexcept {
-  const std::size_t width = f.extent(1);
-  for (std::size_t j = 0; j + 1u < width; ++j) put<add>(out[i, j], f[i, j + 1u] - f[i, j]);
-  put<add>(out[i, width - 1u], 0.0);
+void forward_across(std::span<const double> row, std::span<double> out) noexcept {
+  const std::size_t width = out.size();
+  const double* from = row.data();
+  double* to = out.data();
+  for (std::size_t j = 0; j + 1u < width; ++j) put<add>(to[j], from[j + 1u] - from[j]);
+  put<add>(to[width - 1u], 0.0);
 }
 
-// Row i of d_y f: f[i + 1, j] - f[i, j], and 0 in the last row.
+// Row i of d_y f into `out`, from f's rows i and i + 1 (`below`, none in the last row):
+// f[i + 1, j] - f[i, j], and 0 in the last row.
 template <bool add>
-void forward_down(Grid<const double> f, Grid<double> out, std::size_t i) noexcept {
-  const std::size_t width = f.extent(1);
-  if (i + 1u < f.extent(0)) {
-    for (std::size_t j = 0; j < width; ++j) put<add>(out[i, j], f[i + 1u, j] - f[i, j]);
+void forward_down(std::span<const double> row, std::span<const double> below, std::span<double> out) noexcept {
+  const std::size_t width = out.size();
+  const double* from = row.data();
+  double* to = out.data();
+  if (!below.empty()) {
+    const double* next = below.data();
+    for (std::size_t j = 0; j < width; ++j) put<add>(to[j], next[j] - from[j]);
   } else {
-    for (std::size_t j = 0; j < width; ++j) put<add>(out[i, j], 0.0);
+    for (std::size_t j = 0; j < width; ++j) put<add>(to[j], 0.0);
   }
 }
 
-// Row i of delta_x f: f[i, j] (not in the last column) - f[i, j - 1] (not in the
-// first).
+// Row i of delta_x f into `out`, from f's row i: f[i, j] (not in the last column) -
+// f[i, j - 1] (not in the first).
 template <bool add>
-void backward_across(Grid<const double> f, Grid<double> out, std::size_t i) noexcept {
-  const std::size_t width = f.extent(1);
+void backward_across(std::span<const double> row, std::span<double> out) noexcept {
+  const std::size_t width = out.size();
+  const double* from = row.data();
+  double* to = out.data();
   if (width == 1u) {
-    put<add>(out[i, 0], 0.0);
+    put<add>(to[0], 0.0);
     return;
   }
-  put<add>(out[i, 0], f[i, 0]);
-  for (std::size_t j = 1; j + 1u < width; ++j) put<add>(out[i, j], f[i, j] - f[i, j - 1u]);
-  put<add>(out[i, width - 1u], -f[i, width - 2u]);
+  put<add>(to[0], from[0]);
+  for (std::size_t j = 1; j + 1u < width; ++j) put<add>(to[j], from[j] - from[j - 1u]);
+  put<add>(to[width - 1u], -from[width - 2u]);
 }
 
-// Row i of delta_y f: f[i, j] (not in the last row) - f[i - 1, j] (not in the first).
+// Row i of delta_y f into `out`, from f's rows i and i - 1 (`above`, none in the first
+// row), `last` where i is the last: f[i, j] (not in the last row) - f[i - 1, j] (not in
+// the first).
 template <bool add>
-void backward_down(Grid<const double> f, Grid<double> out, std::size_t i) noexcept {
-  const std::size_t width = f.extent(1);
-  const bool first = i == 0u;
-  const bool last = i + 1u == f.extent(0);
+void backward_down(std::span<const double> row, std::span<const double> above, bool last,
+                   std::span<double> out) noexcept {
+  const std::size_t width = out.size();
+  const double* from = row.data();
+  double* to = out.data();
+  const bool first = above.empty();
   if (!first && !last) {
-    for (std::size_t j = 0; j < width; ++j) put<add>(out[i, j], f[i, j] - f[i - 1u, j]);
+    const double* previous = above.data();
+    for (std::size_t j = 0; j < width; ++j) put<add>(to[j], from[j] - previous[j]);
   } else if (!last) {
-    for (std::size_t j = 0; j < width; ++j) put<add>(out[i, j], f[i, j]);
+    for (std::size_t j = 0; j < width; ++j) put<add>(to[j], from[j]);
   } else if (!first) {
-    for (std::size_t j = 0; j < width; ++j) put<add>(out[i, j], -f[i - 1u, j]);
+    const double* previous = above.data();
+    for (std::size_t j = 0; j < width; ++j) put<add>(to[j], -previous[j]);
   } else {
-    for (std::size_t j = 0; j < width; ++j) put<add>(out[i, j], 0.0);
+    for (std::size_t j = 0; j < width; ++j) put<add>(to[j], 0.0);
   }
+}
+
+// The same of row i of a grid of at least one column.
+template <bool add>
+void forward_across(Grid<const double> f, std::size_t i, std::span<double> out) noexcept {
+  forward_across<add>(row_of(f, i), out);
+}
+
+template <bool add>
+void forward_down(Grid<const double> f, std::size_t i, std::span<double> out) noexcept {
+  forward_down<add>(row_of(f, i), i + 1u < f.extent(0) ? row_of(f, i + 1u) : std::span<const double>{}, out);
+}
+
+template <bool add>
+void backward_across(Grid<const double> f, std::size_t i, std::span<double> out) noexcept {
+  backward_across<add>(row_of(f, i), out);
+}
+
+template <bool add>
+void backward_down(Grid<const double> f, std::size_t i, std::span<double> out) noexcept {
+  backward_down<add>(row_of(f, i), i > 0u ? row_of(f, i - 1u) : std::span<const double>{}, i + 1u == f.extent(0), out);
+}
+
+// out = out / 2, which is exact.
+void halve(std::span<double> out) noexcept {
+  double* to = out.data();
+  const std::size_t width = out.size();
+  for (std::size_t j = 0; j < width; ++j) to[j] = 0.5 * to[j];
 }
 
 }  // namespace
@@ -107,49 +154,154 @@ Tensor tensor_of(std::size_t rows, std::size_t columns) {
                 .xy = GridArray<double>(grid_extents(rows, columns))};
 }
 
+namespace {
+
+// Rows beyond the grid are a mistake of the caller, which ends the program.
+void within(Rows rows, std::size_t height) noexcept {
+  if (rows.first > rows.end || rows.end > height) std::abort();
+}
+
+// So is a row beyond it, or a row of the output of another width than the grid's.
+template <typename... Spans>
+void row_within(const GridExtents& shape, std::size_t i, const Spans&... out) noexcept {
+  if (i >= shape.extent(0) || ((out.size() != shape.extent(1)) || ...)) std::abort();
+}
+
+// The rows of a difference, of a grid of at least one column.
+void gradient_of(Grid<const double> field, std::size_t i, std::span<double> x, std::span<double> y) noexcept {
+  forward_across<false>(field, i, x);
+  forward_down<false>(field, i, y);
+}
+
+void divergence_of(VectorView<const double> p, std::size_t i, std::span<double> out) noexcept {
+  backward_down<false>(p.y, i, out);
+  backward_across<true>(p.x, i, out);
+}
+
+void symmetrized_gradient_of(VectorView<const double> w, std::size_t i, std::span<double> xx, std::span<double> yy,
+                             std::span<double> xy) noexcept {
+  backward_across<false>(w.x, i, xx);
+  backward_down<false>(w.y, i, yy);
+  // (delta_y w_1 + delta_x w_2) / 2: the sum, then its half, which is exact.
+  backward_down<false>(w.x, i, xy);
+  backward_across<true>(w.y, i, xy);
+  halve(xy);
+}
+
+void tensor_divergence_of(TensorView<const double> r, std::size_t i, std::span<double> x,
+                          std::span<double> y) noexcept {
+  // d_x r11 + d_y r12, and d_x r12 + d_y r22.
+  forward_across<false>(r.xx, i, x);
+  forward_down<true>(r.xy, i, x);
+  forward_across<false>(r.xy, i, y);
+  forward_down<true>(r.yy, i, y);
+}
+
+}  // namespace
+
 void gradient(Grid<const double> field, VectorView<double> out) noexcept {
+  gradient(field, out, Rows{.first = 0, .end = field.extent(0)});
+}
+
+void gradient(Grid<const double> field, VectorView<double> out, Rows rows) noexcept {
   same_shape(field.extents(), out.x, out.y);
+  within(rows, field.extent(0));
   if (field.extent(1) == 0u) return;
-  for (std::size_t i = 0; i < field.extent(0); ++i) {
-    forward_across<false>(field, out.x, i);
-    forward_down<false>(field, out.y, i);
-  }
+  const std::size_t end = rows.end;
+  for (std::size_t i = rows.first; i < end; ++i) gradient_of(field, i, row_of(out.x, i), row_of(out.y, i));
+}
+
+void gradient(Grid<const double> field, std::size_t i, std::span<double> x, std::span<double> y) noexcept {
+  row_within(field.extents(), i, x, y);
+  if (field.extent(1) == 0u) return;
+  gradient_of(field, i, x, y);
+}
+
+void gradient(std::span<const double> row, std::span<const double> below, std::span<double> x,
+              std::span<double> y) noexcept {
+  const std::size_t width = row.size();
+  if (x.size() != width || y.size() != width || (!below.empty() && below.size() != width)) std::abort();
+  if (width == 0u) return;
+  forward_across<false>(row, x);
+  forward_down<false>(row, below, y);
 }
 
 void divergence(VectorView<const double> p, Grid<double> out) noexcept {
+  divergence(p, out, Rows{.first = 0, .end = out.extent(0)});
+}
+
+void divergence(VectorView<const double> p, Grid<double> out, Rows rows) noexcept {
   same_shape(out.extents(), p.x, p.y);
+  within(rows, out.extent(0));
   if (out.extent(1) == 0u) return;
-  for (std::size_t i = 0; i < out.extent(0); ++i) {
-    backward_down<false>(p.y, out, i);
-    backward_across<true>(p.x, out, i);
-  }
+  const std::size_t end = rows.end;
+  for (std::size_t i = rows.first; i < end; ++i) divergence_of(p, i, row_of(out, i));
+}
+
+void divergence(VectorView<const double> p, std::size_t i, std::span<double> out) noexcept {
+  same_shape(p.x.extents(), p.y);
+  row_within(p.x.extents(), i, out);
+  if (p.x.extent(1) == 0u) return;
+  divergence_of(p, i, out);
 }
 
 void symmetrized_gradient(VectorView<const double> w, TensorView<double> out) noexcept {
+  symmetrized_gradient(w, out, Rows{.first = 0, .end = w.x.extent(0)});
+}
+
+void symmetrized_gradient(VectorView<const double> w, TensorView<double> out, Rows rows) noexcept {
   same_shape(w.x.extents(), w.y, out.xx, out.yy, out.xy);
-  const std::size_t width = w.x.extent(1);
-  if (width == 0u) return;
-  for (std::size_t i = 0; i < w.x.extent(0); ++i) {
-    backward_across<false>(w.x, out.xx, i);
-    backward_down<false>(w.y, out.yy, i);
-    // (delta_y w_1 + delta_x w_2) / 2: the sum, then its half, which is exact.
-    const Grid<double> mixed = out.xy;
-    backward_down<false>(w.x, mixed, i);
-    backward_across<true>(w.y, mixed, i);
-    for (std::size_t j = 0; j < width; ++j) mixed[i, j] = 0.5 * mixed[i, j];
+  within(rows, w.x.extent(0));
+  if (w.x.extent(1) == 0u) return;
+  const std::size_t end = rows.end;
+  for (std::size_t i = rows.first; i < end; ++i) {
+    symmetrized_gradient_of(w, i, row_of(out.xx, i), row_of(out.yy, i), row_of(out.xy, i));
   }
 }
 
-void tensor_divergence(TensorView<const double> r, VectorView<double> out) noexcept {
-  same_shape(r.xx.extents(), r.yy, r.xy, out.x, out.y);
-  if (r.xx.extent(1) == 0u) return;
-  for (std::size_t i = 0; i < r.xx.extent(0); ++i) {
-    // d_x r11 + d_y r12, and d_x r12 + d_y r22.
-    forward_across<false>(r.xx, out.x, i);
-    forward_down<true>(r.xy, out.x, i);
-    forward_across<false>(r.xy, out.y, i);
-    forward_down<true>(r.yy, out.y, i);
+void symmetrized_gradient(VectorView<const double> w, std::size_t i, std::span<double> xx, std::span<double> yy,
+                          std::span<double> xy) noexcept {
+  same_shape(w.x.extents(), w.y);
+  row_within(w.x.extents(), i, xx, yy, xy);
+  if (w.x.extent(1) == 0u) return;
+  symmetrized_gradient_of(w, i, xx, yy, xy);
+}
+
+void symmetrized_gradient(std::span<const double> wx, std::span<const double> wy, std::span<const double> above_x,
+                          std::span<const double> above_y, bool last, std::span<double> xx, std::span<double> yy,
+                          std::span<double> xy) noexcept {
+  const std::size_t width = wx.size();
+  const bool first = above_x.empty();
+  if (wy.size() != width || xx.size() != width || yy.size() != width || xy.size() != width ||
+      above_y.empty() != first || (!first && (above_x.size() != width || above_y.size() != width))) {
+    std::abort();
   }
+  if (width == 0u) return;
+  backward_across<false>(wx, xx);
+  backward_down<false>(wy, above_y, last, yy);
+  // (delta_y w_1 + delta_x w_2) / 2: the sum, then its half, which is exact.
+  backward_down<false>(wx, above_x, last, xy);
+  backward_across<true>(wy, xy);
+  halve(xy);
+}
+
+void tensor_divergence(TensorView<const double> r, VectorView<double> out) noexcept {
+  tensor_divergence(r, out, Rows{.first = 0, .end = r.xx.extent(0)});
+}
+
+void tensor_divergence(TensorView<const double> r, VectorView<double> out, Rows rows) noexcept {
+  same_shape(r.xx.extents(), r.yy, r.xy, out.x, out.y);
+  within(rows, r.xx.extent(0));
+  if (r.xx.extent(1) == 0u) return;
+  const std::size_t end = rows.end;
+  for (std::size_t i = rows.first; i < end; ++i) tensor_divergence_of(r, i, row_of(out.x, i), row_of(out.y, i));
+}
+
+void tensor_divergence(TensorView<const double> r, std::size_t i, std::span<double> x, std::span<double> y) noexcept {
+  same_shape(r.xx.extents(), r.yy, r.xy);
+  row_within(r.xx.extents(), i, x, y);
+  if (r.xx.extent(1) == 0u) return;
+  tensor_divergence_of(r, i, x, y);
 }
 
 namespace {
@@ -189,14 +341,14 @@ double inner(TensorView<const double> a, TensorView<const double> b) {
 
 namespace {
 
-// max(1, |p| / radius) of every pixel of a row from its squared norm.
+// What every pixel of a row is multiplied by, from its squared norm (ball_scale).
 void scales_of(std::span<const double> squares, double radius, std::span<double> scales) noexcept {
-  for (std::size_t j = 0; j < scales.size(); ++j) scales[j] = std::max(1.0, std::sqrt(squares[j]) / radius);
+  for (std::size_t j = 0; j < scales.size(); ++j) scales[j] = ball_scale(squares[j], radius);
 }
 
-// Row i of a field's entries divided by the scales of its pixels.
-void divide(Grid<double> entries, std::size_t i, std::span<const double> scales) noexcept {
-  for (std::size_t j = 0; j < scales.size(); ++j) entries[i, j] = entries[i, j] / scales[j];
+// Row i of a field's entries multiplied by the scales of its pixels.
+void scale(Grid<double> entries, std::size_t i, std::span<const double> scales) noexcept {
+  for (std::size_t j = 0; j < scales.size(); ++j) entries[i, j] = entries[i, j] * scales[j];
 }
 
 // The squares of the entries of the pixels of row i added to `squares`.
@@ -222,47 +374,70 @@ std::array<Grid<double>, 3> entries_of(const TensorView<double>& field) noexcept
 
 // The projection onto the balls, row by row: the squared norms of the pixels of a
 // row, summed over the channels in their order (coupled: all of them; apart: each
-// channel's own), and then every entry of a pixel divided by max(1, |p| / radius).
+// channel's own), and then every entry of a pixel multiplied by its scale.
+// The squares and the scales of a row are kept in the first entries of
+// `squares_room` and `scales_room`, as many as the fields' columns.
 template <typename Field>
-void project_rows(std::span<const Field> fields, double radius, bool coupled) noexcept {
+void project_rows(std::span<const Field> fields, double radius, bool coupled, Rows rows, std::span<double> squares_room,
+                  std::span<double> scales_room) noexcept {
   if (fields.empty()) return;
   const GridExtents shape = entries_of(fields.front())[0].extents();
   for (const Field& field : fields) {
     for (const Grid<double>& grid : entries_of(field)) same_shape(shape, grid);
   }
-  const std::size_t height = shape.extent(0);
+  within(rows, shape.extent(0));
   const std::size_t width = shape.extent(1);
-  std::vector<double> squares_storage(width);
-  std::vector<double> scales_storage(width);
-  const std::span<double> squares(squares_storage);
-  const std::span<double> scales(scales_storage);
-  for (std::size_t i = 0; i < height; ++i) {
+  if (squares_room.size() < width || scales_room.size() < width) std::abort();
+  const std::span<double> squares = squares_room.first(width);
+  const std::span<double> scales = scales_room.first(width);
+  const std::size_t end = rows.end;
+  for (std::size_t i = rows.first; i < end; ++i) {
     if (coupled) {
       std::ranges::fill(squares, 0.0);
       for (const Field& field : fields) add_squares(field, i, squares);
       scales_of(squares, radius, scales);
       for (const Field& field : fields) {
-        for (const Grid<double>& grid : entries_of(field)) divide(grid, i, scales);
+        for (const Grid<double>& grid : entries_of(field)) scale(grid, i, scales);
       }
     } else {
       for (const Field& field : fields) {
         std::ranges::fill(squares, 0.0);
         add_squares(field, i, squares);
         scales_of(squares, radius, scales);
-        for (const Grid<double>& grid : entries_of(field)) divide(grid, i, scales);
+        for (const Grid<double>& grid : entries_of(field)) scale(grid, i, scales);
       }
     }
   }
 }
 
+// The projection of every row, with room of its own.
+template <typename Field>
+void project_all(std::span<const Field> fields, double radius, bool coupled) noexcept {
+  if (fields.empty()) return;
+  const GridExtents shape = entries_of(fields.front())[0].extents();
+  std::vector<double> squares(shape.extent(1));
+  std::vector<double> scales(shape.extent(1));
+  project_rows(fields, radius, coupled, Rows{.first = 0, .end = shape.extent(0)}, squares, scales);
+}
+
 }  // namespace
 
 void project(std::span<const VectorView<double>> fields, double radius, bool coupled) noexcept {
-  project_rows(fields, radius, coupled);
+  project_all(fields, radius, coupled);
 }
 
 void project(std::span<const TensorView<double>> fields, double radius, bool coupled) noexcept {
-  project_rows(fields, radius, coupled);
+  project_all(fields, radius, coupled);
+}
+
+void project(std::span<const VectorView<double>> fields, double radius, bool coupled, Rows rows,
+             std::span<double> squares, std::span<double> scales) noexcept {
+  project_rows(fields, radius, coupled, rows, squares, scales);
+}
+
+void project(std::span<const TensorView<double>> fields, double radius, bool coupled, Rows rows,
+             std::span<double> squares, std::span<double> scales) noexcept {
+  project_rows(fields, radius, coupled, rows, squares, scales);
 }
 
 }  // namespace unround::operators

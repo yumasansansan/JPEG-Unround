@@ -8,6 +8,7 @@
 #include "unround/pdhg.hpp"
 
 #include "unround/arrays.hpp"
+#include "unround/dct.hpp"
 #include "unround/error.hpp"
 #include "unround/exact.hpp"
 #include "unround/frames.hpp"
@@ -21,11 +22,13 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <expected>
 #include <format>
 #include <optional>
 #include <span>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -48,6 +51,8 @@ class FrameData {
     for (std::size_t c = 0; c < frame.channels(); ++c) {
       coefficients_.emplace_back(frame.component(c).problem.extents());
       rooms_.push_back(frame.room(c));
+      value_terms_.emplace_back(frame.component(c).problem.extents());
+      conjugate_terms_.push_back(frame.conjugate_room(c));
     }
   }
 
@@ -75,24 +80,66 @@ class FrameData {
     return {};
   }
 
-  void prox(std::size_t c, Grid<const double> v, double tau, Grid<double> out) {
-    frame_.prox(c, v, tau, out, coefficients_[c].view(), rooms_[c]);
+  // The rows of the canvas of a part that a thread takes whole.
+  [[nodiscard]] std::size_t band(void) const noexcept { return frame_.band(); }
+
+  // The proximal map of channel c on the rows of a part of the canvas, whose ends are
+  // ends of bands (or of the canvas): the blocks of the component that they cover, with
+  // `row` a row of the canvas of the part's own.
+  void prox_rows(std::size_t c, Grid<const double> v, double tau, Grid<double> out, operators::Rows rows,
+                 std::vector<double>& row) {
+    const Component& component = frame_.component(c);
+    const auto [first, end] = block_rows_of(c, rows);
+    const std::size_t columns = component.block_columns();
+    const std::size_t width = v.extent(1);
+    const Blocks<double> kept(coefficients_[c].view().data_handle() + (first * columns * dct::block_size), end - first,
+                              columns);
+    const Grid<const double> from(v.data_handle() + (rows.first * width), rows.end - rows.first, width);
+    const Grid<double> to(out.data_handle() + (rows.first * width), rows.end - rows.first, width);
+    frame_.prox_rows(c, from, tau, to, kept, rooms_[c], first, row);
   }
 
-  [[nodiscard]] double value(std::size_t c) const {
-    return frame_.component(c).problem.value(std::as_const(coefficients_[c]).view());
+  // G at the coefficients of the last proximal map, and G* at xi, of channel c: their
+  // terms of the rows of a part (value_terms, conjugate_terms, with `row` a row of the
+  // canvas of the part's own), and their sums once every part has taken its own.
+  void value_terms(std::size_t c, operators::Rows rows) {
+    const Component& component = frame_.component(c);
+    const auto [first, end] = block_rows_of(c, rows);
+    const std::size_t columns = component.block_columns();
+    const std::size_t offset = first * columns * dct::block_size;
+    component.problem.value_terms(
+        Blocks<const double>(std::as_const(coefficients_[c]).view().data_handle() + offset, end - first, columns),
+        first, Blocks<double>(value_terms_[c].view().data_handle() + offset, end - first, columns));
   }
 
-  [[nodiscard]] double conjugate(std::size_t c, Grid<const double> xi, double radius) const {
-    return frame_.conjugate(c, xi, radius);
+  [[nodiscard]] double value_sum(std::size_t c) const { return Problem::sum(value_terms_[c].view()); }
+
+  void conjugate_terms(std::size_t c, Grid<const double> xi, double radius, operators::Rows rows,
+                       std::vector<double>& row) {
+    frame_.conjugate_terms(c, xi, radius, rows.first, rows.end, conjugate_terms_[c], row);
   }
+
+  [[nodiscard]] double conjugate_sum(std::size_t c) const { return frame_.conjugate_sum(c, conjugate_terms_[c]); }
 
   std::vector<BlocksArray<double>> take_coefficients(void) { return std::move(coefficients_); }
 
  private:
+  // The block rows [first, end) of channel c that the rows of a part cover, whose ends
+  // are ends of bands or of the canvas. An end within a block row would leave the block
+  // out: a mistake of the caller, which ends the program.
+  [[nodiscard]] std::pair<std::size_t, std::size_t> block_rows_of(std::size_t c, operators::Rows rows) const noexcept {
+    const Component& component = frame_.component(c);
+    const std::size_t height = dct::block * component.cell_rows;
+    const std::size_t blocks = component.block_rows();
+    if (rows.first % height != 0u || (rows.end % height != 0u && rows.end != frame_.rows())) std::abort();
+    return {std::min(rows.first / height, blocks), std::min(rows.end / height, blocks)};
+  }
+
   const Frame& frame_;
   std::vector<BlocksArray<double>> coefficients_;
   std::vector<Room> rooms_;
+  std::vector<BlocksArray<double>> value_terms_;
+  std::vector<Frame::ConjugateTerms> conjugate_terms_;
 };
 
 }  // namespace
@@ -177,6 +224,11 @@ std::expected<Plan, Error> plan(Model model, const Regularizer& regularizer, con
   result.relaxation = options.relaxation;
   result.record_every = options.record_every;
   result.free_radius = options.free_radius;
+  if (options.threads == 0u) {
+    result.threads = std::max<std::size_t>(1u, std::thread::hardware_concurrency());
+  } else {
+    result.threads = static_cast<std::size_t>(std::min<std::uint64_t>(options.threads, SIZE_MAX));
+  }
   return result;
 }
 

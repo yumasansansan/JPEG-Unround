@@ -147,6 +147,10 @@ class UnroundError(Exception):
         self.status = status
         self.message = message
 
+    def __reduce__(self) -> tuple[type[UnroundError], tuple[Status, str]]:
+        """The error made again from its status and message: pickled, it crosses processes."""
+        return (type(self), (self.status, self.message))
+
 
 class LibraryNotFoundError(RuntimeError):
     """The library is not where this module looks for it, or is not of its version."""
@@ -279,6 +283,8 @@ def _pdhg_options(solver: PdhgOptions) -> list[str]:
         str(solver.record_every),
         "--free-radius",
         _number(solver.free_radius),
+        "--threads",
+        str(solver.threads),
     ]
     if solver.iterations is not None:
         result += ["--iterations", str(solver.iterations)]

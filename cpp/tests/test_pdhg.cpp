@@ -7,9 +7,10 @@
 // gap of every record at least 0 (the primal value of a tilde point is at least the
 // least value, which is at least the dual value of a feasible dual), and the method
 // stopping where it meets its tolerance, with a result whose coefficients lie within
-// their intervals; a start given, which the method takes as the default one where it
-// is that one, and whose dual fields it projects; an observer that stops the method;
-// and no iterations.
+// their intervals; the method on several threads, whose results are those of one to
+// the last bit; a start given, which the method takes as the default one where it is
+// that one, and whose dual fields it projects; an observer that stops the method; and
+// no iterations.
 
 #include "unround/pdhg.hpp"
 
@@ -31,6 +32,7 @@
 #include <cstdlib>
 #include <exception>
 #include <expected>
+#include <optional>
 #include <print>
 #include <span>
 #include <utility>
@@ -295,6 +297,91 @@ void solves(void) {
   }));
 }
 
+// Whether two results are the same to the last bit: their canvases, coefficients and
+// records (but the seconds), iterations and stops.
+bool same_results(const unround::pdhg::Result& one, const unround::pdhg::Result& other) {
+  bool equal = one.iterations == other.iterations && one.stop == other.stop &&
+               one.canvas.size() == other.canvas.size() && one.coefficients.size() == other.coefficients.size() &&
+               one.records.size() == other.records.size();
+  for (std::size_t c = 0; equal && c < one.canvas.size(); ++c) {
+    equal = std::ranges::equal(one.canvas[c].entries(), other.canvas[c].entries(), same) &&
+            std::ranges::equal(one.coefficients[c].entries(), other.coefficients[c].entries(), same);
+  }
+  const auto same_optional = [](const std::optional<double>& a, const std::optional<double>& b) {
+    return a.has_value() == b.has_value() && (!a || same(*a, *b));
+  };
+  for (std::size_t k = 0; equal && k < one.records.size(); ++k) {
+    const unround::pdhg::Record& a = one.records[k];
+    const unround::pdhg::Record& b = other.records[k];
+    equal = a.iteration == b.iteration && same(a.primal, b.primal) && same(a.dual, b.dual) &&
+            same_optional(a.scaling, b.scaling) && same_optional(a.partial_gap, b.partial_gap);
+  }
+  return equal;
+}
+
+// The method on several threads, which take the canvas in parts of whole bands, ends
+// where it ends on one, to the last bit: TV and TGV, a grey picture of 7 bands, one in
+// 4:2:0 of 50 x 45 samples (4 bands of 16 rows, the luma's blocks ending a block row
+// before the canvas does), and one of 8 x 20 samples whose components are all sampled
+// 4 x 4 (4 bands of 8 rows in an MCU of 32, three of which hold no block), their
+// channels coupled and apart; more threads than bands too.
+void threads(void) {
+  Numbers numbers(29);
+  Picture grey;
+  grey.levels.push_back(levels_of(numbers, 7, 5));
+  Picture colour;
+  colour.levels.push_back(levels_of(numbers, 7, 6));
+  colour.levels.push_back(levels_of(numbers, 4, 3));
+  colour.levels.push_back(levels_of(numbers, 4, 3));
+  Picture sparse;
+  for (std::size_t c = 0; c < 3u; ++c) sparse.levels.push_back(levels_of(numbers, 1, 3));
+  for (Picture* picture : {&grey, &colour, &sparse}) {
+    for (std::size_t c = 0; c < picture->levels.size(); ++c) {
+      std::array<std::uint16_t, 64> table{};
+      for (std::size_t k = 0; k < 64u; ++k) table[k] = static_cast<std::uint16_t>(4u + 2u * (k / 8u + k % 8u));
+      const std::uint32_t factor = picture == &sparse ? 4u : (picture == &colour && c == 0u ? 2u : 1u);
+      picture->inputs.push_back(
+          ComponentInput{.levels = std::as_const(picture->levels[c]).view(), .table = table, .h = factor, .v = factor});
+    }
+  }
+  DataTerm data;
+  data.mu = 0.05;
+  data.flat_weight = 0.25;
+  const std::array<DataTerm, 1> terms{data};
+  auto grey_frame = Frame::make(56, 40, ColourSpace::grayscale, grey.inputs, terms);
+  auto colour_frame = Frame::make(50, 45, ColourSpace::ycbcr, colour.inputs, terms);
+  auto sparse_frame = Frame::make(8, 20, ColourSpace::ycbcr, sparse.inputs, terms);
+  CHECK(grey_frame.has_value() && colour_frame.has_value() && sparse_frame.has_value());
+  if (!grey_frame || !colour_frame || !sparse_frame) return;
+  CHECK(colour_frame->rows() == 64u && colour_frame->band() == 16u && grey_frame->band() == 8u);
+  CHECK(sparse_frame->rows() == 32u && sparse_frame->band() == 8u && sparse_frame->component(0).block_rows() == 1u);
+  Regularizer coupled;
+  Regularizer apart;
+  apart.coupled = false;
+  Options options;
+  options.iterations = 23;
+  options.tolerance = 0.0;
+  options.record_every = 5;
+  options.partial_radius = 50.0;
+  const std::array<std::pair<const Frame*, const Regularizer*>, 5> cases{{{&*grey_frame, &coupled},
+                                                                          {&*colour_frame, &coupled},
+                                                                          {&*colour_frame, &apart},
+                                                                          {&*sparse_frame, &coupled},
+                                                                          {&*sparse_frame, &apart}}};
+  for (const auto& [frame, regularizer] : cases) {
+    for (const Model model : {Model::tv, Model::tgv}) {
+      Options chosen = options;
+      if (model == Model::tv) chosen.partial_radius.reset();
+      chosen.threads = 1;
+      const unround::pdhg::Result one = solved(*frame, model, *regularizer, chosen);
+      for (const std::uint64_t count : {2u, 3u, 4u, 9u, 0u}) {
+        chosen.threads = count;
+        CHECK(same_results(one, solved(*frame, model, *regularizer, chosen)));
+      }
+    }
+  }
+}
+
 // A start given as the default one gives the default run, to the last bit; dual fields
 // given are projected onto their balls first; an observer stops the method at the
 // record where it asks to; and without iterations the result is the start.
@@ -425,6 +512,7 @@ void starts(void) {
 int run(void) {
   plans();
   solves();
+  threads();
   starts();
   return unround::test::finish("pdhg");
 }

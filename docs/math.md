@@ -699,9 +699,12 @@ of a component at the same place in its MCU: for a component of $P_c = P / a_c$
 columns in an MCU, coefficient $(v, u)$ of block $h m + t$ of a block row
 ($h = P_c / 8$ blocks across an MCU, $t < h$) is at
 $(v P_c + 8 t + u)\, M + m$ in the block row. An 8-point transform of eight such
-streams, a proximal map, a difference and a projection are each one loop over
-the MCUs, the same operation on neighbouring values, which the compiler makes
-vector code of the processor's width. The next sample across is in the next
+streams, a proximal map, a step with the differences it takes and the squares
+of its projection (of coupled channels added channel after channel, in their
+order, the last channel's loop making the sums the scales) and a projection are
+each one loop over the MCUs, the same operation on neighbouring values, which the
+compiler makes vector code of the processor's width; a channel's own projection
+is taken, and its dual relaxed, in the loop of its step. The next sample across is in the next
 plane at the same MCU, and after the last plane in the first plane at the next
 MCU.
 
@@ -709,17 +712,32 @@ MCU.
 band. For each band, the primal step: $x + \tau \gamma\, \mathrm{div}\, p$ row by
 row, and the proximal map of $G$ block row by block row, the DCT down the
 columns of every plane at once, then along the rows of each set of blocks, the
-map, and back; and for TGV the step of $w$, which needs $p$ and the differences
-of $r$ down to the row below the band. Then the dual steps and the relaxation of
-the band before, whose last row's forward differences down need the first row
-of the new band's $\tilde x$ (and $\tilde w$), and whose backward differences of
-$\bar w$ need the row above. Two bands of $\tilde x$ (and of $\tilde w$) are kept;
-the point is read and written once in an iteration, and the outputs of the
-proximal steps are written out where a record takes them.
+map, and back. Then the dual steps and the relaxation of the band before, row
+by row, whose last row's forward differences down need the first row of the new
+band's $\tilde x$; for TGV, each row's step of $w$ first, which needs $p$ and the
+differences of $r$ down to the row below, as they were, and then its $\bar w$,
+whose backward differences need the row above. A row of $x$ is relaxed where its
+$\bar x$ is made, and of $w$ in its step, where each is read last. Two bands of
+$\tilde x$ are kept; the point is read and written once in an iteration, and the
+outputs of the proximal steps are written out where a record takes them.
+
+**Strips.** Several threads sweep at once, each a strip of whole bands from the
+top, in the order above. A strip reads its neighbours' rows only as they were
+when the iteration began, which each strip copies out first: the strip above's
+last row of $p$ (and for TGV of $w$ and $r$, from which the strip makes that
+row's $\tilde w$ and $\bar w$ as the strip above does) and the strip below's
+first row of $r$. The strip below gives its first row of $\bar x$ once its first
+band has it, which the strip above's last row takes. Every value is then computed
+from the same values by the same operations as by one sweep, so that the result
+is the same, to the last bit, whatever the strips. A strip copies out again only
+once its neighbours have begun the iteration after the one that read it.
 
 **The records.** The values of 6 are computed in the same layout from those
 outputs, row by row, their sums in the order of Arithmetic, which differs from
 that of the natural layout: the two agree within the bounds of their rounding.
+On several threads, the threads take a record's rows at once, in parts of whole
+bands, each row's terms on one thread, and the rows' sums are added in the order
+of the rows: the values are the same, to the last bit, whatever the threads.
 
 ## 6. When to stop: duality gaps
 
@@ -1169,8 +1187,8 @@ of its exact value, with $\bar x = 2 \tilde x - x$ and $a$ the ascent before its
 projection: $\tilde x$'s error through the gradient ($\|\nabla\| \le \sqrt 8$),
 the rounding of $\bar x$ and of the sum with $p$, that of the difference and the
 two products, and that of the projection onto a ball whose squared norm adds $k$
-terms ($2C$ coupled, 2 apart): the norm, its quotient by the radius, and the
-entries' quotients. For TGV, $\tilde w = w + \tau\gamma (p + \mathrm{div}_2 r)$
+terms ($2C$ coupled, 2 apart): the norm, the radius's quotient by it, and the
+entries' products by that. For TGV, $\tilde w = w + \tau\gamma (p + \mathrm{div}_2 r)$
 lies within $u |w| + \gamma_7\, \tau\gamma\, S_{p + \mathrm{div}_2 r}$;
 
 $$ e_{\tilde p} \le \sigma\gamma\, (2 \sqrt 8\, e_{\tilde x} + 2 e_{\tilde w})

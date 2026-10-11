@@ -94,7 +94,8 @@ def solve(run: Run) -> dict[str, Any]:
     weights, levels, dc = run.variant
     terms = tuple(DataTerm(flat_weight=weight, flat_levels=levels, flat_dc=dc) for weight in weights)
     ratio, relaxation, tolerance, most = STOP
-    stop = PdhgOptions(iterations=most, tolerance=tolerance, step_ratio=ratio, relaxation=relaxation)
+    # One thread to a run: the runs go in parallel, one to a process.
+    stop = PdhgOptions(iterations=most, tolerance=tolerance, step_ratio=ratio, relaxation=relaxation, threads=1)
     settings = Settings(method="tgv", data=terms[0] if len(terms) == 1 else terms, pdhg=stop)
     started = time.perf_counter()
     decoded = native.decode(data, settings)

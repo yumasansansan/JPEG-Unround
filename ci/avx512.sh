@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: 2026 Yuma Kakei <yumasansansan@gmail.com>
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-#   ci/avx512.sh [test]
+#   ci/avx512.sh [test | measure]
 #
 # Builds the Rust command line (unround) and C API (unround_capi) for x86-64
 # processors with AVX-512, into rust/target/avx512/<triple>/release: the code of
@@ -13,6 +13,10 @@
 # named, so that the build scripts, which run here, are built for this processor.
 #
 # With `test`, the tests of the build run too, where the processor has AVX-512F.
+# With `measure`, where the processor has AVX-512F, the speed of the solvers and of
+# their parts (rust/unround/tests/throughput.rs) is measured in the build shipped
+# and in this one, twice each, one after the other, on the same machine; under
+# GitHub Actions the solvers' figures go into the summary of the run too.
 set -euo pipefail
 
 case "$(uname -s)" in
@@ -34,5 +38,41 @@ if [[ "${1:-}" == test ]]; then
         cargo test "${arguments[@]}" --workspace
     else
         echo "note: this processor has no AVX-512F; the build is not tested"
+    fi
+fi
+if [[ "${1:-}" == measure ]]; then
+    if ! grep -qw avx512f /proc/cpuinfo 2>/dev/null; then
+        echo "note: this processor has no AVX-512F; nothing is measured"
+        exit 0
+    fi
+    grep -m 1 "model name" /proc/cpuinfo
+    measured=$(mktemp -d)
+    for round in 1 2; do
+        for build in shipped avx512; do
+            if [[ $build == shipped ]]; then
+                build_arguments=(--release --locked)
+            else
+                build_arguments=("${arguments[@]}")
+            fi
+            echo "== $build, round $round"
+            cargo test "${build_arguments[@]}" -p jpeg-unround --test throughput -- --ignored --nocapture \
+                --test-threads 1 2>&1 | tee "$measured/$build-$round.txt"
+        done
+    done
+    if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+        {
+            echo "### The solvers, in ns per sample and iteration"
+            echo
+            echo "$(grep -m 1 "model name" /proc/cpuinfo | sed 's/.*: //'), $(nproc) threads"
+            echo
+            echo '```'
+            for round in 1 2; do
+                for build in shipped avx512; do
+                    echo "== $build, round $round"
+                    grep "ns per sample and iteration" "$measured/$build-$round.txt" || true
+                done
+            done
+            echo '```'
+        } >> "$GITHUB_STEP_SUMMARY"
     fi
 fi

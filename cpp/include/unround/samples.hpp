@@ -66,12 +66,21 @@ class Model {
   // The proximal map of tau G, sample by sample: clip((v + t c) r, a, b), t = tau mu,
   // r = 1 / (1 + t).
   void prox(std::size_t c, Grid<const double> v, double tau, Grid<double> out) const noexcept;
+  // The same of the rows of the canvas from `first` on that v and out hold: the part of
+  // the canvas that a thread takes.
+  void prox_rows(std::size_t c, Grid<const double> v, double tau, Grid<double> out, std::size_t first) const noexcept;
 
   // G at samples within their intervals, mu / 2 sum (x - c)^2, summed row by row.
   [[nodiscard]] double value(std::size_t c, Grid<const double> x) const;
 
   // G* at a field: the sum of g*(s), sample by sample.
   [[nodiscard]] double conjugate(std::size_t c, Grid<const double> xi) const;
+
+  // The terms of those sums of the rows of the canvas from `first` on that x (or xi)
+  // and `terms` hold: the part of the canvas that a thread takes. The sum of the terms
+  // of every row, in their order (exact::sum_rows), is the value.
+  void value_terms(std::size_t c, Grid<const double> x, std::size_t first, Grid<double> terms) const noexcept;
+  void conjugate_terms(std::size_t c, Grid<const double> xi, std::size_t first, Grid<double> terms) const noexcept;
 
  private:
   Model(void) = default;

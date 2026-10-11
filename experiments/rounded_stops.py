@@ -76,7 +76,9 @@ def solve(png: Path, out: Path, options: list[str]) -> dict[str, Any]:
     report = out.with_suffix(".json")
     program = os.environ.get("UNROUND_PROGRAM", str(PROGRAM))
     subprocess.run(
-        [program, "--quiet", "--overwrite", "--report", str(report), *options, str(png), str(out)], check=True
+        # One thread to a run: the runs go in parallel, one to a process.
+        [program, "--quiet", "--overwrite", "--threads", "1", "--report", str(report), *options, str(png), str(out)],
+        check=True,
     )
     found = json.loads(report.read_text(encoding="utf-8"))
     return {

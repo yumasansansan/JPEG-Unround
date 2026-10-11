@@ -167,6 +167,16 @@ unround::Decoded decoded_of(std::span<const std::uint8_t> file, const Arguments&
 
 bool contains(std::string_view text, std::string_view part) { return text.find(part) != std::string_view::npos; }
 
+// A path as a JSON string has it: Windows's backslashes doubled.
+std::string json_path(const fs::path& path) {
+  std::string text;
+  for (const char c : path.string()) {
+    if (c == '\\') text += '\\';
+    text += c;
+  }
+  return text;
+}
+
 // Whether every line of a text is an error of the command line.
 bool only_errors(std::string_view text) {
   if (text.empty()) return false;
@@ -420,7 +430,7 @@ void projection(const fs::path& directory) {
     const std::string text{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
     const unround::picture::Summary luma = unround::picture::summary(projected->excess[0].view());
     for (const std::string& key :
-         {std::string("\"method\": \"projection\""), std::format("\"picture\": \"{}\"", upright_png.string()),
+         {std::string("\"method\": \"projection\""), std::format("\"picture\": \"{}\"", json_path(upright_png)),
           std::string("\"oriented\": true"), std::string("\"settings\": [\"--slack=0\"]"),
           std::format("\"excess\": [{{\"coefficients\": {}, \"outside\": {}, \"largest\": {}}}", luma.coefficients,
                       luma.outside, luma.largest)}) {

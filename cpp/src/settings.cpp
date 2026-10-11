@@ -33,7 +33,7 @@ namespace unround {
 namespace {
 
 // The options with a value, and those without (flags).
-constexpr std::array<std::string_view, 35> valued = {"method",
+constexpr std::array<std::string_view, 36> valued = {"method",
                                                      "alpha",
                                                      "alpha1",
                                                      "alpha0",
@@ -62,6 +62,7 @@ constexpr std::array<std::string_view, 35> valued = {"method",
                                                      "norm-squared",
                                                      "record-every",
                                                      "free-radius",
+                                                     "threads",
                                                      "subgradient-iterations",
                                                      "subgradient-step",
                                                      "subgradient-decay",
@@ -383,6 +384,7 @@ std::expected<Settings, Error> parse_settings(std::span<const std::string_view> 
   pdhg.weight_scaling = !reader.flag("no-weight-scaling");
   if (const auto value = reader.whole("record-every", 0, unbounded, "a whole number")) pdhg.record_every = *value;
   if (const auto value = reader.real("free-radius", at_least_zero, from_zero)) pdhg.free_radius = *value;
+  if (const auto value = reader.whole("threads", 0, unbounded, "a whole number")) pdhg.threads = *value;
 
   // The subgradient method.
   subgradient::Options& sub = settings.subgradient;
@@ -491,6 +493,7 @@ std::vector<std::string> options_of(const Settings& settings) {
   if (!pdhg.weight_scaling) options.emplace_back("--no-weight-scaling");
   add("record-every", std::to_string(pdhg.record_every));
   add("free-radius", number(pdhg.free_radius));
+  add("threads", std::to_string(pdhg.threads));
   const subgradient::Options& sub = settings.subgradient;
   add("subgradient-iterations", std::to_string(sub.iterations));
   add("subgradient-step", number(sub.step));

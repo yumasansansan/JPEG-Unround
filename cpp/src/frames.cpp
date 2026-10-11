@@ -300,13 +300,13 @@ void Frame::coefficients(std::size_t c, Grid<const double> x, Blocks<double> out
 }
 
 template <typename Map>
-void Frame::map(std::size_t c, Grid<const double> v, Grid<double> out, Blocks<double> kept, Room& room,
-                const Map& zeta_of) const {
+void Frame::map(std::size_t c, Grid<const double> v, Grid<double> out, Blocks<double> kept, RoomView room,
+                std::vector<double>& row, const Map& zeta_of) const {
   const Component& component = components_[c];
-  const Blocks<double> at = room.coefficients.view();
+  const Blocks<double> at = room.coefficients;
   if (component.cells() == 1u) {
     dct::forward(v, at);
-    zeta_of(std::as_const(room.coefficients).view(), kept);
+    zeta_of(Blocks<const double>(at), kept);
     if (out.data_handle() != v.data_handle()) {
       const std::span<const double> from(v.data_handle(), v.size());
       std::ranges::copy(from, out.data_handle());
@@ -314,30 +314,68 @@ void Frame::map(std::size_t c, Grid<const double> v, Grid<double> out, Blocks<do
     dct::inverse(kept, out);
     return;
   }
-  cells_of<true>(v, component.cell_rows, component.cell_columns, room.means.view(), room.row);
-  dct::forward(std::as_const(room.means).view(), at);
-  zeta_of(std::as_const(room.coefficients).view(), kept);
-  dct::inverse(kept, room.change.view());
+  cells_of<true>(v, component.cell_rows, component.cell_columns, room.means, row);
+  dct::forward(Grid<const double>(room.means), at);
+  zeta_of(Blocks<const double>(at), kept);
+  dct::inverse(kept, room.change);
   // The change of each cell: the inverse DCT of zeta less the mean of v.
-  const std::span<double> changes = room.change.entries();
-  const std::span<const double> means = std::as_const(room.means).entries();
+  const std::span<double> changes(room.change.data_handle(), room.change.size());
+  const std::span<const double> means(room.means.data_handle(), room.means.size());
   const std::size_t count = changes.size();
   for (std::size_t k = 0; k < count; ++k) changes[k] -= means[k];
-  moved(c, v, std::as_const(room.change).view(), out, room.row);
+  moved(c, v, Grid<const double>(room.change), out, row);
 }
 
 void Frame::prox(std::size_t c, Grid<const double> v, double tau, Grid<double> out, Blocks<double> kept,
                  Room& room) const {
+  // The block rows from the first to the last.
+  if (kept.extent(0) != components_[c].block_rows()) std::abort();
+  prox_rows(c, v, tau, out, kept, room, 0, room.row);
+}
+
+void Frame::prox_rows(std::size_t c, Grid<const double> v, double tau, Grid<double> out, Blocks<double> kept,
+                      Room& room, std::size_t first, std::vector<double>& row) const {
   const Component& component = components_[c];
+  const std::size_t count = kept.extent(0);
+  const std::size_t columns = component.block_columns();
+  if (kept.extent(1) != columns || first > component.block_rows() || count > component.block_rows() - first) {
+    std::abort();
+  }
   const double step = tau / static_cast<double>(component.cells());
   const Problem& problem = component.problem;
-  map(c, v, out, kept, room,
-      [&problem, step](Blocks<const double> e, Blocks<double> zeta) { problem.prox(e, step, zeta); });
+  // The room's rows of those blocks: their coefficients, and their cells' means and
+  // change where the cells have several samples.
+  RoomView part{.coefficients = Blocks<double>(
+                    room.coefficients.view().data_handle() + (first * columns * block * block), count, columns),
+                .means = room.means.view(),
+                .change = room.change.view()};
+  if (component.cells() != 1u) {
+    const std::size_t width = room.means.extent(1);
+    part.means = Grid<double>(room.means.view().data_handle() + (block * first * width), block * count, width);
+    part.change = Grid<double>(room.change.view().data_handle() + (block * first * width), block * count, width);
+  }
+  map(c, v, out, kept, part, row, [&problem, step, first](Blocks<const double> e, Blocks<double> zeta) {
+    problem.prox_rows(e, step, zeta, first);
+  });
+}
+
+std::size_t Frame::band(void) const noexcept {
+  // The least multiple of the rows of every component's cell.
+  std::size_t rows = 1;
+  for (const Component& component : components_) {
+    std::size_t multiple = rows;
+    while (multiple % component.cell_rows != 0u) multiple += rows;
+    rows = multiple;
+  }
+  return block * rows;
 }
 
 void Frame::project(std::size_t c, Grid<const double> v, Grid<double> out, Blocks<double> kept, Room& room) const {
   const Problem& problem = components_[c].problem;
-  map(c, v, out, kept, room, [&problem](Blocks<const double> e, Blocks<double> zeta) { problem.clip(e, zeta); });
+  const RoomView whole{
+      .coefficients = room.coefficients.view(), .means = room.means.view(), .change = room.change.view()};
+  map(c, v, out, kept, whole, room.row,
+      [&problem](Blocks<const double> e, Blocks<double> zeta) { problem.clip(e, zeta); });
 }
 
 void Frame::canvas(std::size_t c, Blocks<const double> coefficients, double beyond, Grid<double> out) const {
@@ -367,50 +405,91 @@ void Frame::start(std::size_t c, Grid<double> out, Blocks<double> kept) const {
 }
 
 double Frame::conjugate(std::size_t c, Grid<const double> xi, double radius) const {
+  ConjugateTerms terms = conjugate_room(c);
+  std::vector<double> row;
+  conjugate_terms(c, xi, radius, 0, xi.extent(0), terms, row);
+  return conjugate_sum(c, terms);
+}
+
+Frame::ConjugateTerms Frame::conjugate_room(std::size_t c) const {
   const Component& component = components_[c];
   const BlockExtents extents = block_extents(component.block_rows(), component.block_columns());
-  BlocksArray<double> s(extents);
-  std::vector<double> buffer;
-  if (component.cells() == 1u) {
-    dct::forward(xi, s.view());
-  } else {
-    GridArray<double> cell_sums(grid_extents(block * component.block_rows(), block * component.block_columns()));
-    cells_of<false>(xi, component.cell_rows, component.cell_columns, cell_sums.view(), buffer);
-    dct::forward(std::as_const(cell_sums).view(), s.view());
-  }
-  const double value = component.problem.conjugate(std::as_const(s).view());
-  if (!free(c)) return value;
-  // The terms of <zeta, m> + R |zeta|_1, sample by sample: within the blocks, R times
-  // the deviation from the mean of the cell; beyond them, 128 xi + R |xi|.
+  // The cells' sums where they have several samples, and their means where some
+  // samples are free; the samples' terms there.
+  const bool cells = component.cells() != 1u || free(c);
+  return ConjugateTerms{.coefficients = BlocksArray<double>(extents),
+                        .cells = cells ? GridArray<double>(grid_extents(block * component.block_rows(),
+                                                                        block * component.block_columns()))
+                                       : GridArray<double>(),
+                        .blocks = BlocksArray<double>(extents),
+                        .samples = free(c) ? GridArray<double>(canvas_extents()) : GridArray<double>()};
+}
+
+void Frame::conjugate_terms(std::size_t c, Grid<const double> xi, double radius, std::size_t first, std::size_t end,
+                            ConjugateTerms& terms, std::vector<double>& row) const {
+  const Component& component = components_[c];
   const std::size_t down = component.cell_rows;
   const std::size_t across = component.cell_columns;
+  const std::size_t height = block * down;
   const std::size_t rows = xi.extent(0);
   const std::size_t columns = xi.extent(1);
-  const std::size_t cell_rows = block * component.block_rows();
-  const std::size_t cell_columns = block * component.block_columns();
+  // An end within a block row would leave the block out: a mistake of the caller,
+  // which ends the program.
+  if (first > end || end > rows || first % height != 0u || (end % height != 0u && end != rows)) std::abort();
+  // The part's block rows, and its xi from its first row.
+  const std::size_t block_columns = component.block_columns();
+  const std::size_t first_block = std::min(first / height, component.block_rows());
+  const std::size_t count = std::min(end / height, component.block_rows()) - first_block;
+  const Grid<const double> from(xi.data_handle() + (first * columns), rows - first, columns);
+  const std::size_t cell_columns = block * block_columns;
+  const auto cells_of_part = [&terms, first_block, count, cell_columns](void) noexcept {
+    return Grid<double>(terms.cells.view().data_handle() + (block * first_block * cell_columns), block * count,
+                        cell_columns);
+  };
+  const Blocks<double> s(terms.coefficients.view().data_handle() + (first_block * block_columns * block * block), count,
+                         block_columns);
+  if (component.cells() == 1u) {
+    dct::forward(from, s);
+  } else {
+    const Grid<double> sums = cells_of_part();
+    cells_of<false>(from, down, across, sums, row);
+    dct::forward(Grid<const double>(sums), s);
+  }
+  component.problem.conjugate_terms(
+      Blocks<const double>(s), first_block,
+      Blocks<double>(terms.blocks.view().data_handle() + (first_block * block_columns * block * block), count,
+                     block_columns));
+  if (!free(c)) return;
+  // The terms of <zeta, m> + R |zeta|_1, sample by sample: within the blocks, R times
+  // the deviation from the mean of the cell; beyond them, 128 xi + R |xi|.
   const std::size_t span = cell_columns * across;
-  GridArray<double> terms(grid_extents(rows, columns));
-  const Grid<double> term_view = terms.view();
-  GridArray<double> cell_means(grid_extents(cell_rows, cell_columns));
-  cells_of<true>(xi, down, across, cell_means.view(), buffer);
-  std::vector<double> spread_row(span);
-  for (std::size_t i = 0; i < cell_rows; ++i) {
-    spread_by(across, row_of(std::as_const(cell_means).view(), i), spread_row, cell_columns);
+  const Grid<double> term_view = terms.samples.view();
+  const Grid<double> means = cells_of_part();
+  cells_of<true>(from, down, across, means, row);
+  // cells_of took a row of the canvas, which now holds the means of a cell row spread.
+  const std::span<double> spread_row = std::span<double>(row).first(span);
+  for (std::size_t i = 0; i < block * count; ++i) {
+    spread_by(across, row_of(Grid<const double>(means), i), spread_row, cell_columns);
     for (std::size_t a = 0; a < down; ++a) {
-      const std::size_t row = down * i + a;
-      const std::span<const double> from = row_of(xi, row);
-      const std::span<double> to = row_of(term_view, row);
+      const std::size_t at = first + down * i + a;
+      const std::span<const double> samples = row_of(xi, at);
+      const std::span<double> to = row_of(term_view, at);
       const double* mean_row = spread_row.data();
-      for (std::size_t k = 0; k < span; ++k) to[k] = radius * std::abs(from[k] - mean_row[k]);
-      for (std::size_t k = span; k < columns; ++k) to[k] = beyond_blocks * from[k] + radius * std::abs(from[k]);
+      for (std::size_t k = 0; k < span; ++k) to[k] = radius * std::abs(samples[k] - mean_row[k]);
+      for (std::size_t k = span; k < columns; ++k) to[k] = beyond_blocks * samples[k] + radius * std::abs(samples[k]);
     }
   }
-  for (std::size_t row = down * cell_rows; row < rows; ++row) {
-    const std::span<const double> from = row_of(xi, row);
-    const std::span<double> to = row_of(term_view, row);
-    for (std::size_t k = 0; k < columns; ++k) to[k] = beyond_blocks * from[k] + radius * std::abs(from[k]);
+  for (std::size_t at = std::max(first, down * block * component.block_rows()); at < end; ++at) {
+    const std::span<const double> samples = row_of(xi, at);
+    const std::span<double> to = row_of(term_view, at);
+    for (std::size_t k = 0; k < columns; ++k) to[k] = beyond_blocks * samples[k] + radius * std::abs(samples[k]);
   }
-  return value + exact::sum_rows(std::as_const(terms).view());
+}
+
+double Frame::conjugate_sum(std::size_t c, const ConjugateTerms& terms) const {
+  const double value = Problem::sum(terms.blocks.view());
+  if (!free(c)) return value;
+  return value + exact::sum_rows(terms.samples.view());
 }
 
 }  // namespace unround

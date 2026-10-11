@@ -68,6 +68,10 @@ struct Options {
   std::uint64_t record_every = pdhg::record_every;
   // R of the box of the free samples (6.6).
   double free_radius = pdhg::free_radius;
+  // The threads that take the canvas at once, each a part of whole bands of rows, the
+  // part's rows of every step of an iteration: 0 for as many as the processor runs at
+  // once. The result is the same, to the last bit, whatever their count.
+  std::uint64_t threads = 0;
 };
 
 // The steps, tau and sigma, of the options' ratio, product and L^2: tau = sqrt(kappa
@@ -91,6 +95,8 @@ struct Plan {
   std::uint64_t record_every = 0;
   double free_radius = 0.0;
   std::vector<double> channel_weights;
+  // The threads of the options, those the processor runs at once for 0.
+  std::size_t threads = 1;
 };
 
 // The defaults of the ratio of the steps and of the stop, for a weight of 1: those of

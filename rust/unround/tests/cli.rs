@@ -489,7 +489,11 @@ fn a_picture_made_elsewhere_is_projected_as_the_library_projects_it() {
     let report = std::fs::read_to_string(&report).expect("the report");
     for fragment in [
         "\"method\": \"projection\"".to_owned(),
-        format!("\"picture\": \"{}\"", picture_path.display()),
+        // As JSON has it: Windows's backslashes doubled.
+        format!(
+            "\"picture\": \"{}\"",
+            picture_path.display().to_string().replace('\\', "\\\\")
+        ),
         "\"oriented\": true".to_owned(),
         "\"icc_profile\": true".to_owned(),
         "\"settings\": [\"--slack=0.0\"]".to_owned(),

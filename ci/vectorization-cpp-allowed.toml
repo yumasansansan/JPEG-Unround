@@ -9,6 +9,7 @@
 [functions]
 "unround::laplace::" = "the logarithms and exponentials of the system's library, one frequency at a time, once for each component"
 "unround::pdhg::plan" = "the largest of the channels' weights, a few numbers, once for each solve"
+"unround::pdhg::detail::run" = "the partial gap's residual of each channel weighted and added in a record, channel after channel"
 "unround::parse_settings" = "the numbers of the options read from their decimals (libc++'s from_chars, inlined), once for each command line"
 
 # Functions whose loops may be scalar where they only add: sums in a fixed order.

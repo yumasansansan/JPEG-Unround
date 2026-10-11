@@ -92,7 +92,9 @@ class PdhgOptions:
     none but the last), and after the last, the solver records the primal and dual values,
     and checks the tolerances; with partial_radius, which only TGV takes, it records the
     partial gap too. Where a frame has free samples, every gap is the partial gap of
-    free_radius, R of 6.6.
+    free_radius, R of 6.6. threads is how many threads sweep the canvas at once, each a strip
+    of bands (0: as many as the processor runs at once); the result is the same, to the last
+    bit, whatever their count.
     """
 
     iterations: int | None = None
@@ -107,6 +109,7 @@ class PdhgOptions:
     record_every: int = 10
     partial_radius: float | None = None
     free_radius: float = 255.0
+    threads: int = 0
 
 
 @dataclass(frozen=True, slots=True)

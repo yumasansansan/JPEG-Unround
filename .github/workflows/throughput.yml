@@ -1,0 +1,53 @@
+# SPDX-FileCopyrightText: 2026 Yuma Kakei <yumasansansan@gmail.com>
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Measures the speed of the Rust implementation's solvers in the build that is
+# shipped, for AVX2 and FMA, and in the build for AVX-512 (ci/avx512.sh measure),
+# one after the other on the same runner, where the runner has AVX-512: the
+# machines of one's own may not. A runner is shared, and its figures say how the
+# builds compare there rather than how quick either is. It runs by hand.
+#
+# The toolchain comes from ci/setup.sh, as for the build of JPEG-Unround.
+
+name: Throughput
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  measure:
+    name: throughput (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-26.04]
+
+    steps:
+      - name: Check out
+        run: |
+          git config --global core.autocrlf false
+          git -c init.defaultBranch=main init --quiet
+          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          git fetch --no-tags --quiet --depth 1 origin "$GITHUB_SHA"
+          git checkout --quiet --detach "$GITHUB_SHA"
+          git submodule update --init --depth 1 --jobs 4
+          git log -1 --format='%H %s'
+
+      - name: Set up the toolchain
+        run: bash ci/setup.sh
+
+      - name: Measure the build for AVX-512 against the one shipped
+        run: bash ci/avx512.sh measure

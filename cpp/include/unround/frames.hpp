@@ -107,6 +107,19 @@ class Frame {
   // them those of v. out may be v.
   void prox(std::size_t c, Grid<const double> v, double tau, Grid<double> out, Blocks<double> kept, Room& room) const;
 
+  // The same of the block rows of component c from `first` on, as many as `kept` holds:
+  // v and out are the rows of the canvas from the first of those blocks' on, to the
+  // end of a part of the canvas that a thread takes (with the rows beyond the blocks,
+  // where the part has them); the part's rows of `room`, and `row`, a row of the
+  // canvas of the thread's own, are its room.
+  void prox_rows(std::size_t c, Grid<const double> v, double tau, Grid<double> out, Blocks<double> kept, Room& room,
+                 std::size_t first, std::vector<double>& row) const;
+
+  // The rows of the canvas of a part that a thread takes whole, so that every
+  // component's blocks lie in one part: eight times the least multiple of the
+  // components' rows of a cell.
+  [[nodiscard]] std::size_t band(void) const noexcept;
+
   // The projection onto the set, alike with zeta = clip(A v).
   void project(std::size_t c, Grid<const double> v, Grid<double> out, Blocks<double> kept, Room& room) const;
 
@@ -125,14 +138,39 @@ class Frame {
   // and 0 within them. Where nothing is free, zeta is 0 and only g_c* is taken.
   [[nodiscard]] double conjugate(std::size_t c, Grid<const double> xi, double radius) const;
 
+  // The terms of that conjugate, and what they are taken from: the coefficients at
+  // A xi / nu, the sums of xi over the cells and then their means, the terms of g_c*
+  // and, where some are free, those of the samples.
+  struct ConjugateTerms {
+    BlocksArray<double> coefficients;
+    GridArray<double> cells;
+    BlocksArray<double> blocks;
+    GridArray<double> samples;
+  };
+  [[nodiscard]] ConjugateTerms conjugate_room(std::size_t c) const;
+  // The terms of the canvas's rows [first, end) of a part that a thread takes, whose
+  // ends are ends of bands or of the canvas: of the blocks of component c within them,
+  // and of their samples, `row` a row of the canvas of the thread's own. The sum of the
+  // terms of every part is the conjugate, as conjugate_sum adds them.
+  void conjugate_terms(std::size_t c, Grid<const double> xi, double radius, std::size_t first, std::size_t end,
+                       ConjugateTerms& terms, std::vector<double>& row) const;
+  [[nodiscard]] double conjugate_sum(std::size_t c, const ConjugateTerms& terms) const;
+
  private:
   Frame(void) = default;
 
+  // The arrays of a room, or of the rows of some of its blocks.
+  struct RoomView {
+    Blocks<double> coefficients;
+    Grid<double> means;
+    Grid<double> change;
+  };
+
   // The map of prox or project: from the coefficients at A v in room.coefficients,
-  // `map` writes zeta into kept; then out.
+  // `map` writes zeta into kept; then out. `row` holds a row of the canvas.
   template <typename Map>
-  void map(std::size_t c, Grid<const double> v, Grid<double> out, Blocks<double> kept, Room& room,
-           const Map& zeta_of) const;
+  void map(std::size_t c, Grid<const double> v, Grid<double> out, Blocks<double> kept, RoomView room,
+           std::vector<double>& row, const Map& zeta_of) const;
   // out = v + the change of each cell repeated over it, and v beyond the blocks.
   void moved(std::size_t c, Grid<const double> v, Grid<const double> change, Grid<double> out,
              std::vector<double>& row) const;

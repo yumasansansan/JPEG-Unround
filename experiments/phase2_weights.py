@@ -170,7 +170,8 @@ def solve(run: Run) -> dict[str, Any]:
     data = case.jpeg.read_bytes()
     image = jpegio.read(data)
     ratio, relaxation, tolerance, most = STOPS[run.model]
-    stop = PdhgOptions(iterations=most, tolerance=tolerance, step_ratio=ratio, relaxation=relaxation)
+    # One thread to a run: the runs go in parallel, one to a process.
+    stop = PdhgOptions(iterations=most, tolerance=tolerance, step_ratio=ratio, relaxation=relaxation, threads=1)
     settings = Settings(method=run.model, data=data_terms(run), pdhg=stop)  # type: ignore[arg-type]
     decoded = native.decode(data, settings)
     if decoded.result is None:

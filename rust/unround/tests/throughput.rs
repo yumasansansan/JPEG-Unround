@@ -1,11 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Yuma Kakei <yumasansansan@gmail.com>
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Measures the speed of the solvers and of their parts, on one thread: run by hand,
-//! `cargo test --release --test throughput -- --ignored --nocapture`, when a kernel
-//! changes. Each figure is the least of several runs, in nanoseconds per sample of the
-//! canvas (`C x H x W`): per iteration for the solvers, not counting their records,
-//! and per call for the parts.
+//! Measures the speed of the solvers and of their parts, on one thread, and of the
+//! solvers on several: run by hand, `cargo test --release --test throughput --
+//! --ignored --nocapture`, when a kernel changes. Each figure is the least of several
+//! runs, in nanoseconds per sample of the canvas (`C x H x W`): per iteration for the
+//! solvers, not counting their records, and per call for the parts.
 
 mod support;
 
@@ -36,22 +36,23 @@ fn per_sample(seconds: f64, samples: usize) -> f64 {
     seconds * 1e9 / f64::from(u32::try_from(samples).expect("fits"))
 }
 
-fn fixed(iterations: u64) -> Options {
+fn fixed(iterations: u64, threads: usize) -> Options {
     Options {
         iterations: Some(iterations),
         tolerance: Some(0.0),
         record_every: 0,
+        threads,
         ..Options::default()
     }
 }
 
-/// The solver's own seconds per iteration, not counting its records.
-fn solver(frame: &Frame, tgv: bool, iterations: u64) -> f64 {
+/// The solver's own seconds per iteration, not counting its records, on `threads`.
+fn solver(frame: &Frame, tgv: bool, iterations: u64, threads: usize) -> f64 {
     least(|| {
         let result = if tgv {
-            pdhg::solve_tgv(frame, &Tgv::default(), &fixed(iterations), None, None)
+            pdhg::solve_tgv(frame, &Tgv::default(), &fixed(iterations, threads), None, None)
         } else {
-            pdhg::solve_tv(frame, &Tv::default(), &fixed(iterations), None, None)
+            pdhg::solve_tv(frame, &Tv::default(), &fixed(iterations, threads), None, None)
         }
         .expect("a result");
         let seconds = result.history.seconds;
@@ -78,6 +79,7 @@ fn stream(samples: usize) -> f64 {
 fn setup(frame: &Frame, tgv: bool) -> f64 {
     let options = Options {
         iterations: Some(0),
+        threads: 1,
         ..Options::default()
     };
     least(|| {
@@ -354,8 +356,15 @@ fn throughput() {
     ];
     for (name, frame, iterations) in &frames {
         let samples = frame.samples();
-        let tv = solver(frame, false, *iterations);
-        let tgv = solver(frame, true, *iterations);
+        let tv = solver(frame, false, *iterations, 1);
+        let tgv = solver(frame, true, *iterations, 1);
+        for threads in [2, 4, 8] {
+            eprintln!(
+                "{name}: {threads} threads: TV {:.2}, TGV {:.2} ns per sample and iteration",
+                per_sample(solver(frame, false, *iterations, threads), samples),
+                per_sample(solver(frame, true, *iterations, threads), samples),
+            );
+        }
         let (planar, natural) = records(frame);
         eprintln!(
             "{name}: TV {:.2}, TGV {:.2} ns per sample and iteration; a record of TV {:.2} (natural layout {:.2}); \

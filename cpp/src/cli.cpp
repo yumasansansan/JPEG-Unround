@@ -86,6 +86,7 @@ The primal-dual method:
   --iterations N  --tolerance T  --relative-tolerance T  --partial-tolerance T
   --partial-radius R  --step-ratio K  --relaxation R  --step-product P
   --norm-squared L2  --no-weight-scaling  --record-every N  --free-radius R
+  --threads N
 
 The subgradient method:
   --subgradient-iterations N  --subgradient-step S  --subgradient-decay D

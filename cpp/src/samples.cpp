@@ -26,6 +26,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <expected>
 #include <format>
 #include <span>
@@ -150,12 +151,23 @@ std::expected<Model, Error> Model::make(Picture<const std::uint16_t> levels, std
 }
 
 void Model::prox(std::size_t c, Grid<const double> v, double tau, Grid<double> out) const noexcept {
+  if (v.extents() != extents()) std::abort();
+  prox_rows(c, v, tau, out, 0);
+}
+
+void Model::prox_rows(std::size_t c, Grid<const double> v, double tau, Grid<double> out,
+                      std::size_t first) const noexcept {
+  if (out.extents() != v.extents() || v.extent(1) != columns() || first > rows() || v.extent(0) > rows() - first) {
+    std::abort();
+  }
   const double t = tau * mu_;
   const double r = 1.0 / (1.0 + t);
+  // The part's samples of the intervals and the centres.
+  const std::size_t offset = first * columns();
   const double* from = v.data_handle();
-  const double* lows = lower_[c].entries().data();
-  const double* highs = upper_[c].entries().data();
-  const double* middles = centres_[c].entries().data();
+  const double* lows = lower_[c].entries().data() + offset;
+  const double* highs = upper_[c].entries().data() + offset;
+  const double* middles = centres_[c].entries().data() + offset;
   double* to = out.data_handle();
   const std::size_t count = v.size();
   for (std::size_t k = 0; k < count; ++k) {
@@ -165,27 +177,44 @@ void Model::prox(std::size_t c, Grid<const double> v, double tau, Grid<double> o
 
 double Model::value(std::size_t c, Grid<const double> x) const {
   GridArray<double> terms(extents());
+  value_terms(c, x, 0, terms.view());
+  return exact::sum_rows(std::as_const(terms).view());
+}
+
+void Model::value_terms(std::size_t c, Grid<const double> x, std::size_t first, Grid<double> terms) const noexcept {
+  if (terms.extents() != x.extents() || x.extent(1) != columns_ || first > rows_ || x.extent(0) > rows_ - first) {
+    std::abort();
+  }
   const double half = 0.5 * mu_;
   const double* from = x.data_handle();
-  const double* middles = centres_[c].entries().data();
-  double* to = terms.entries().data();
+  const double* middles = centres_[c].entries().data() + (first * columns_);
+  double* to = terms.data_handle();
   const std::size_t count = x.size();
   for (std::size_t k = 0; k < count; ++k) {
     const double away = from[k] - middles[k];
     to[k] = half * (away * away);
   }
-  return exact::sum_rows(std::as_const(terms).view());
 }
 
 double Model::conjugate(std::size_t c, Grid<const double> xi) const {
   GridArray<double> terms(extents());
+  conjugate_terms(c, xi, 0, terms.view());
+  return exact::sum_rows(std::as_const(terms).view());
+}
+
+void Model::conjugate_terms(std::size_t c, Grid<const double> xi, std::size_t first,
+                            Grid<double> terms) const noexcept {
+  if (terms.extents() != xi.extents() || xi.extent(1) != columns_ || first > rows_ || xi.extent(0) > rows_ - first) {
+    std::abort();
+  }
   const double m = mu_;
   const bool weighted = m > 0.0;
+  const std::size_t offset = first * columns_;
   const double* from = xi.data_handle();
-  const double* lows = lower_[c].entries().data();
-  const double* highs = upper_[c].entries().data();
-  const double* middles = centres_[c].entries().data();
-  double* to = terms.entries().data();
+  const double* lows = lower_[c].entries().data() + offset;
+  const double* highs = upper_[c].entries().data() + offset;
+  const double* middles = centres_[c].entries().data() + offset;
+  double* to = terms.data_handle();
   const std::size_t count = xi.size();
   for (std::size_t k = 0; k < count; ++k) {
     const double s = from[k];
@@ -195,7 +224,6 @@ double Model::conjugate(std::size_t c, Grid<const double> xi) const {
     const double support = std::max(s * lows[k], s * highs[k]);
     to[k] = weighted ? quadratic : support;
   }
-  return exact::sum_rows(std::as_const(terms).view());
 }
 
 namespace {
@@ -205,7 +233,11 @@ namespace {
 class SamplesData {
  public:
   explicit SamplesData(const Model& model) : model_(model) {
-    for (std::size_t c = 0; c < model.channels(); ++c) points_.emplace_back(model.extents());
+    for (std::size_t c = 0; c < model.channels(); ++c) {
+      points_.emplace_back(model.extents());
+      value_terms_.emplace_back(model.extents());
+      conjugate_terms_.emplace_back(model.extents());
+    }
   }
 
   [[nodiscard]] std::size_t channels(void) const noexcept { return model_.channels(); }
@@ -224,20 +256,49 @@ class SamplesData {
     return {};
   }
 
-  void prox(std::size_t c, Grid<const double> v, double tau, Grid<double> out) {
-    model_.prox(c, v, tau, out);
-    std::ranges::copy(std::span<const double>(out.data_handle(), out.size()), points_[c].entries().begin());
+  // A part of the canvas that a thread takes may begin at any row.
+  [[nodiscard]] static std::size_t band(void) noexcept { return 1; }
+
+  // The proximal map of channel c on the rows of a part of the canvas.
+  void prox_rows(std::size_t c, Grid<const double> v, double tau, Grid<double> out, operators::Rows rows,
+                 std::vector<double>& /*row*/) {
+    const std::size_t width = v.extent(1);
+    const std::size_t offset = rows.first * width;
+    const std::size_t count = rows.end - rows.first;
+    const Grid<const double> from(v.data_handle() + offset, count, width);
+    const Grid<double> to(out.data_handle() + offset, count, width);
+    model_.prox_rows(c, from, tau, to, rows.first);
+    std::ranges::copy(std::span<const double>(to.data_handle(), to.size()),
+                      points_[c].entries().begin() + static_cast<std::ptrdiff_t>(offset));
   }
 
-  [[nodiscard]] double value(std::size_t c) const { return model_.value(c, points_[c].view()); }
-
-  [[nodiscard]] double conjugate(std::size_t c, Grid<const double> xi, double /*radius*/) const {
-    return model_.conjugate(c, xi);
+  // G at the samples of the last proximal map, and G* at xi, of channel c: their terms
+  // of the rows of a part, and their sums once every part has taken its own.
+  void value_terms(std::size_t c, operators::Rows rows) {
+    model_.value_terms(c, rows_of(std::as_const(points_[c]).view(), rows), rows.first,
+                       rows_of(value_terms_[c].view(), rows));
   }
+
+  [[nodiscard]] double value_sum(std::size_t c) const { return exact::sum_rows(value_terms_[c].view()); }
+
+  void conjugate_terms(std::size_t c, Grid<const double> xi, double /*radius*/, operators::Rows rows,
+                       std::vector<double>& /*row*/) {
+    model_.conjugate_terms(c, rows_of(xi, rows), rows.first, rows_of(conjugate_terms_[c].view(), rows));
+  }
+
+  [[nodiscard]] double conjugate_sum(std::size_t c) const { return exact::sum_rows(conjugate_terms_[c].view()); }
 
  private:
+  // The rows of a part of a grid of the canvas's shape.
+  template <typename T>
+  [[nodiscard]] static Grid<T> rows_of(Grid<T> grid, operators::Rows rows) noexcept {
+    return Grid<T>(grid.data_handle() + (rows.first * grid.extent(1)), rows.end - rows.first, grid.extent(1));
+  }
+
   const Model& model_;
   std::vector<GridArray<double>> points_;
+  std::vector<GridArray<double>> value_terms_;
+  std::vector<GridArray<double>> conjugate_terms_;
 };
 
 std::unexpected<Error> refuse(Errc code, std::string message) {

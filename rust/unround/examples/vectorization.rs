@@ -74,38 +74,24 @@ pub fn inspect_descend_row(out: &mut [f64], rows: [&[f64]; 4], step: f64, planes
     kernels::descend_row(out, x, px, own, above, step, planes, across);
 }
 
-/// The dual ascent of a row.
+/// The projection of a dual row and the relaxation of the dual.
 #[inline(never)]
-pub fn inspect_ascend_row(tx: &mut [f64], ty: &mut [f64], rows: [&[f64]; 4], step: f64, planes: usize, across: usize) {
-    let [px, py, bar, below] = rows;
-    kernels::ascend_row(tx, ty, px, py, bar, Some(below), step, planes, across);
-}
-
-/// The scales of the projection of one channel's dual row.
-#[inline(never)]
-pub fn inspect_scale_rows(tx: &[f64], ty: &[f64], scale: &mut [f64], width: usize, radius: f64) {
-    kernels::scale_rows(tx, ty, scale, width, 1, radius, true);
-}
-
-/// The scales of the coupled projection of three channels' dual rows.
-#[inline(never)]
-pub fn inspect_scale_coupled(tx: &[f64], ty: &[f64], scale: &mut [f64], width: usize, radius: f64) {
-    kernels::scale_coupled::<3>(tx, ty, scale, width, radius);
-}
-
-/// The projection of a dual row and the relaxation of the point.
-#[inline(never)]
-pub fn inspect_settle_row(rows: [&[f64]; 4], point: [&mut [f64]; 3], rho: f64, rest: f64) {
-    let [tx, ty, scale, new] = rows;
-    let [x, px, py] = point;
-    let (a, b, c): (&mut [f64], &mut [f64], &mut [f64]) = (&mut [], &mut [], &mut []);
-    kernels::settle_row::<false>(tx, ty, scale, new, x, px, py, a, b, c, rho, rest);
+pub fn inspect_settle_row(rows: [&[f64]; 3], dual: [&mut [f64]; 2], rho: f64, rest: f64) {
+    let [tx, ty, scale] = rows;
+    let [px, py] = dual;
+    kernels::settle_row::<false>(tx, ty, scale, px, py, &mut [], &mut [], rho, rest);
 }
 
 /// The extrapolation of a row.
 #[inline(never)]
 pub fn inspect_extrapolate_row(bar: &mut [f64], new: &[f64], old: &[f64]) {
     kernels::extrapolate_row(bar, new, old);
+}
+
+/// The extrapolation of a row of the canvas and the relaxation of the canvas.
+#[inline(never)]
+pub fn inspect_extrapolate_relax_row(bar: &mut [f64], new: &[f64], x: &mut [f64], rho: f64, rest: f64) {
+    kernels::extrapolate_relax_row::<false>(bar, new, x, &mut [], rho, rest);
 }
 
 /// The forward differences across a row.
@@ -132,63 +118,289 @@ pub fn inspect_backward_down(own: &[f64], above: &[f64], out: &mut [f64]) {
     kernels::backward_down(Some(own), Some(above), out);
 }
 
-/// TGV's step of `w` along a row.
+/// The scales of an inspection: the first of two coupled channels' (squares written),
+/// a channel's own, and the last of two coupled channels' (squares added, and scales).
+fn scales_of(row: &mut [f64], mode: usize) -> kernels::Scales<'_> {
+    match mode {
+        0 => kernels::Scales::coupled(row, 1.0, 0, 2),
+        1 => kernels::Scales::own(row, 1.0),
+        _ => kernels::Scales::coupled(row, 1.0, 1, 2),
+    }
+}
+
+/// The dual ascent of a row, the squares of the first of coupled channels written.
 #[inline(never)]
-#[expect(
-    clippy::similar_names,
-    reason = "the names are those of the formulas: the differences of the tensor's entries xx, yy and xy"
-)]
-pub fn inspect_advance_row(out: [&mut [f64]; 2], rows: [&[f64]; 8], step: f64) {
-    let [out_x, out_y] = out;
-    let [wx, wy, px, py, across_xx, down_xy, across_xy, down_yy] = rows;
-    kernels::advance_row(
-        out_x,
-        out_y,
-        (wx, wy),
+pub fn inspect_ascend_row(t: [&mut [f64]; 3], rows: [&[f64]; 4], step: f64, planes: usize, across: usize) {
+    let [tx, ty, scale] = t;
+    let [px, py, bar, below] = rows;
+    let scales = scales_of(scale, 0);
+    kernels::ascend_row(tx, ty, px, py, bar, Some(below), step, planes, across, scales);
+}
+
+/// The dual ascent of a row with the scales of its own projection.
+#[inline(never)]
+pub fn inspect_ascend_row_scaled(t: [&mut [f64]; 3], rows: [&[f64]; 4], step: f64, planes: usize, across: usize) {
+    let [tx, ty, scale] = t;
+    let [px, py, bar, below] = rows;
+    let scales = scales_of(scale, 1);
+    kernels::ascend_row(tx, ty, px, py, bar, Some(below), step, planes, across, scales);
+}
+
+/// The dual ascent of a row with the scales of the last of coupled channels.
+#[inline(never)]
+pub fn inspect_ascend_row_summed(t: [&mut [f64]; 3], rows: [&[f64]; 4], step: f64, planes: usize, across: usize) {
+    let [tx, ty, scale] = t;
+    let [px, py, bar, below] = rows;
+    let scales = scales_of(scale, 2);
+    kernels::ascend_row(tx, ty, px, py, bar, Some(below), step, planes, across, scales);
+}
+
+/// TGV's step of `p` along a row, the squares of the first of coupled channels written.
+#[inline(never)]
+pub fn inspect_ascend_p_row(t: [&mut [f64]; 3], rows: [&[f64]; 6], planes: usize, across: usize) {
+    let [tx, ty, scale] = t;
+    let [px, py, bar, under, field_x, field_y] = rows;
+    let scales = scales_of(scale, 0);
+    kernels::ascend_p_row(
+        (tx, ty),
         (px, py),
-        across_xx,
-        down_xy,
-        across_xy,
-        down_yy,
-        step,
+        bar,
+        Some(under),
+        (field_x, field_y),
+        0.1,
+        planes,
+        across,
+        scales,
     );
 }
 
-/// TGV's step of `p` along a row.
+/// TGV's step of `p` along a row with the scales of its own projection.
 #[inline(never)]
-pub fn inspect_ascend_p_row(tx: &mut [f64], ty: &mut [f64], rows: [&[f64]; 6], step: f64) {
-    let [px, py, across, down, field_x, field_y] = rows;
-    kernels::ascend_p_row(tx, ty, (px, py), (across, down), (field_x, field_y), step);
+pub fn inspect_ascend_p_row_scaled(t: [&mut [f64]; 3], rows: [&[f64]; 6], planes: usize, across: usize) {
+    let [tx, ty, scale] = t;
+    let [px, py, bar, under, field_x, field_y] = rows;
+    let scales = scales_of(scale, 1);
+    kernels::ascend_p_row(
+        (tx, ty),
+        (px, py),
+        bar,
+        Some(under),
+        (field_x, field_y),
+        0.1,
+        planes,
+        across,
+        scales,
+    );
 }
 
-/// TGV's step of `r` along a row.
+/// TGV's step of `p` along a row with the scales of the last of coupled channels.
 #[inline(never)]
-pub fn inspect_ascend_r_row(out: [&mut [f64]; 3], rows: [&[f64]; 7], step: f64) {
-    let [txx, tyy, txy] = out;
-    let [rxx, ryy, rxy, across_x, down_x, across_y, down_y] = rows;
+pub fn inspect_ascend_p_row_summed(t: [&mut [f64]; 3], rows: [&[f64]; 6], planes: usize, across: usize) {
+    let [tx, ty, scale] = t;
+    let [px, py, bar, under, field_x, field_y] = rows;
+    let scales = scales_of(scale, 2);
+    kernels::ascend_p_row(
+        (tx, ty),
+        (px, py),
+        bar,
+        Some(under),
+        (field_x, field_y),
+        0.1,
+        planes,
+        across,
+        scales,
+    );
+}
+
+/// TGV's step of `p` along the last row with the scales of its own projection.
+#[inline(never)]
+pub fn inspect_ascend_p_last_row(t: [&mut [f64]; 3], rows: [&[f64]; 6], planes: usize, across: usize) {
+    let [tx, ty, scale] = t;
+    let [px, py, bar, _, field_x, field_y] = rows;
+    let scales = scales_of(scale, 1);
+    kernels::ascend_p_row(
+        (tx, ty),
+        (px, py),
+        bar,
+        None,
+        (field_x, field_y),
+        0.1,
+        planes,
+        across,
+        scales,
+    );
+}
+
+/// TGV's step of `r` along a row, the squares of the first of coupled channels written.
+#[inline(never)]
+pub fn inspect_ascend_r_row(t: [&mut [f64]; 4], rows: [&[f64]; 9], planes: usize, across: usize) {
+    let [txx, tyy, txy, scale] = t;
+    let [rxx, ryy, rxy, field_x, field_y, own_x, own_y, above_x, above_y] = rows;
     kernels::ascend_r_row(
         (txx, tyy, txy),
         (rxx, ryy, rxy),
-        across_x,
-        down_x,
-        across_y,
-        down_y,
-        step,
+        (field_x, field_y),
+        (own_x, own_y),
+        (above_x, above_y),
+        0.1,
+        planes,
+        across,
+        scales_of(scale, 0),
     );
 }
 
-/// The scales of the projection of one channel's tensor row.
+/// TGV's step of `r` along a row with the scales of its own projection.
 #[inline(never)]
-pub fn inspect_scale_tensor_rows(rows: [&[f64]; 3], scale: &mut [f64], width: usize, radius: f64) {
-    let [txx, tyy, txy] = rows;
-    kernels::scale_tensor_rows(txx, tyy, txy, scale, width, 1, radius, true);
+pub fn inspect_ascend_r_row_scaled(t: [&mut [f64]; 4], rows: [&[f64]; 9], planes: usize, across: usize) {
+    let [txx, tyy, txy, scale] = t;
+    let [rxx, ryy, rxy, field_x, field_y, own_x, own_y, above_x, above_y] = rows;
+    kernels::ascend_r_row(
+        (txx, tyy, txy),
+        (rxx, ryy, rxy),
+        (field_x, field_y),
+        (own_x, own_y),
+        (above_x, above_y),
+        0.1,
+        planes,
+        across,
+        scales_of(scale, 1),
+    );
 }
 
-/// The scales of the coupled projection of three channels' tensor rows.
+/// TGV's step of `r` along a row with the scales of the last of coupled channels.
 #[inline(never)]
-pub fn inspect_scale_tensor_coupled(rows: [&[f64]; 3], scale: &mut [f64], width: usize, radius: f64) {
-    let [txx, tyy, txy] = rows;
-    kernels::scale_tensor_coupled::<3>(txx, tyy, txy, scale, width, radius);
+pub fn inspect_ascend_r_row_summed(t: [&mut [f64]; 4], rows: [&[f64]; 9], planes: usize, across: usize) {
+    let [txx, tyy, txy, scale] = t;
+    let [rxx, ryy, rxy, field_x, field_y, own_x, own_y, above_x, above_y] = rows;
+    kernels::ascend_r_row(
+        (txx, tyy, txy),
+        (rxx, ryy, rxy),
+        (field_x, field_y),
+        (own_x, own_y),
+        (above_x, above_y),
+        0.1,
+        planes,
+        across,
+        scales_of(scale, 2),
+    );
+}
+
+/// TV's dual step of a row of a channel's own projection, projected and relaxed.
+#[inline(never)]
+pub fn inspect_dual_row(p: [&mut [f64]; 2], rows: [&[f64]; 2], planes: usize, across: usize) {
+    let [px, py] = p;
+    let [bar, below] = rows;
+    kernels::dual_p_row(
+        (px, py),
+        None,
+        bar,
+        Some(below),
+        None,
+        0.1,
+        (1.0, 1.9, -0.9),
+        planes,
+        across,
+    );
+}
+
+/// TGV's step of `p` of a channel's own projection, projected and relaxed.
+#[inline(never)]
+pub fn inspect_dual_p_row(p: [&mut [f64]; 2], rows: [&[f64]; 4], planes: usize, across: usize) {
+    let [px, py] = p;
+    let [bar, below, field_x, field_y] = rows;
+    let field = Some((field_x, field_y));
+    kernels::dual_p_row(
+        (px, py),
+        None,
+        bar,
+        Some(below),
+        field,
+        0.1,
+        (1.0, 1.9, -0.9),
+        planes,
+        across,
+    );
+}
+
+/// The same at the last row, its outputs kept.
+#[inline(never)]
+pub fn inspect_dual_p_last_row_kept(p: [&mut [f64]; 4], rows: [&[f64]; 3], planes: usize, across: usize) {
+    let [px, py, kept_x, kept_y] = p;
+    let [bar, field_x, field_y] = rows;
+    let (kept, field) = (Some((kept_x, kept_y)), Some((field_x, field_y)));
+    kernels::dual_p_row((px, py), kept, bar, None, field, 0.1, (1.0, 1.9, -0.9), planes, across);
+}
+
+/// TGV's step of `r` of a channel's own projection, projected and relaxed.
+#[inline(never)]
+pub fn inspect_dual_r_row(r: [&mut [f64]; 3], rows: [&[f64]; 6], planes: usize, across: usize) {
+    let [rxx, ryy, rxy] = r;
+    let [field_x, field_y, own_x, own_y, above_x, above_y] = rows;
+    kernels::dual_r_row(
+        (rxx, ryy, rxy),
+        None,
+        (field_x, field_y),
+        (own_x, own_y),
+        (above_x, above_y),
+        0.1,
+        (1.0, 1.9, -0.9),
+        planes,
+        across,
+    );
+}
+
+/// TGV's step of `w` along a row, its extrapolation and the relaxation of `w`.
+#[inline(never)]
+pub fn inspect_advance_row(out: [&mut [f64]; 4], rows: [&[f64]; 7], step: f64, planes: usize, across: usize) {
+    let [bar_x, bar_y, wx, wy] = out;
+    let [px, py, rxx, ryy, rxy, yy_below, xy_below] = rows;
+    kernels::advance_row(
+        (bar_x, bar_y),
+        (wx, wy),
+        None,
+        (px, py),
+        (rxx, ryy, rxy),
+        Some((yy_below, xy_below)),
+        (step, 1.9, -0.9),
+        planes,
+        across,
+    );
+}
+
+/// The same with the output of the step kept.
+#[inline(never)]
+pub fn inspect_advance_row_kept(out: [&mut [f64]; 6], rows: [&[f64]; 7], step: f64, planes: usize, across: usize) {
+    let [bar_x, bar_y, wx, wy, kept_x, kept_y] = out;
+    let [px, py, rxx, ryy, rxy, yy_below, xy_below] = rows;
+    kernels::advance_row(
+        (bar_x, bar_y),
+        (wx, wy),
+        Some((kept_x, kept_y)),
+        (px, py),
+        (rxx, ryy, rxy),
+        Some((yy_below, xy_below)),
+        (step, 1.9, -0.9),
+        planes,
+        across,
+    );
+}
+
+/// TGV's step of `w` along the last row, its extrapolation and the relaxation of `w`.
+#[inline(never)]
+pub fn inspect_advance_last_row(out: [&mut [f64]; 4], rows: [&[f64]; 5], step: f64, planes: usize, across: usize) {
+    let [bar_x, bar_y, wx, wy] = out;
+    let [px, py, rxx, ryy, rxy] = rows;
+    kernels::advance_row(
+        (bar_x, bar_y),
+        (wx, wy),
+        None,
+        (px, py),
+        (rxx, ryy, rxy),
+        None,
+        (step, 1.9, -0.9),
+        planes,
+        across,
+    );
 }
 
 /// The projection of a tensor row and the relaxation of `r`.
@@ -198,15 +410,6 @@ pub fn inspect_settle_tensor_row(rows: [&[f64]; 4], r: [&mut [f64]; 3], rho: f64
     let [rxx, ryy, rxy] = r;
     let none: (&mut [f64], &mut [f64], &mut [f64]) = (&mut [], &mut [], &mut []);
     kernels::settle_tensor_row::<false>((txx, tyy, txy), scale, (rxx, ryy, rxy), none, rho, rest);
-}
-
-/// The relaxation of a pair of rows of a field.
-#[inline(never)]
-pub fn inspect_relax_pair_row(new: [&[f64]; 2], field: [&mut [f64]; 2], rho: f64, rest: f64) {
-    let [new_x, new_y] = new;
-    let [x, y] = field;
-    let none: (&mut [f64], &mut [f64]) = (&mut [], &mut []);
-    kernels::relax_pair_row::<false>((new_x, new_y), (x, y), none, rho, rest);
 }
 
 /// The proximal maps of a row, of every kind.
@@ -232,6 +435,53 @@ fn prox_kernels(coefficients: &mut [f64], levels: &[i16], across: usize) {
     inspect_prox_row_flat_charged(coefficients, levels, [&frequencies, &flat], &marks, 0.5, across);
 }
 
+/// TGV's steps of `w` and `p` at a row with a row below it and at the last row, and
+/// the steps of TV and TGV with the scales of their projections: the sum of what they
+/// write.
+fn tgv_steps(row: &[f64], below: &[f64], planes: usize, across: usize) -> f64 {
+    let width = planes * across;
+    let [mut wx, mut wy, mut lx, mut ly, mut tx, mut ty, mut kx, mut ky]: [Vec<f64>; 8] =
+        std::array::from_fn(|_| vec![0.0; width]);
+    let (mut sx, mut sy) = (row.to_vec(), below.to_vec());
+    let rows = [row, row, row, below, row, below, row];
+    inspect_advance_row([&mut wx, &mut wy, &mut sx, &mut sy], rows, 0.1, planes, across);
+    inspect_advance_row_kept(
+        [&mut tx, &mut ty, &mut sx, &mut sy, &mut lx, &mut ly],
+        rows,
+        0.1,
+        planes,
+        across,
+    );
+    let rows = [row, row, below, row, below];
+    inspect_advance_last_row([&mut kx, &mut ky, &mut sx, &mut sy], rows, 0.1, planes, across);
+    let [mut scale, mut sxx, mut syy, mut sxy, mut scale_r]: [Vec<f64>; 5] = std::array::from_fn(|_| vec![0.0; width]);
+    let rows = [row, row, below, row, &wx, &wy];
+    inspect_ascend_p_row([&mut tx, &mut ty, &mut scale], rows, planes, across);
+    inspect_ascend_p_row_summed([&mut tx, &mut ty, &mut scale], rows, planes, across);
+    inspect_ascend_p_row_scaled([&mut sx, &mut sy, &mut scale], rows, planes, across);
+    let rows = [row, row, below, row, &lx, &ly];
+    inspect_ascend_p_last_row([&mut kx, &mut ky, &mut scale], rows, planes, across);
+    let rows = [row, row, below, row];
+    inspect_ascend_row_scaled([&mut sx, &mut sy, &mut scale], rows, 0.1, planes, across);
+    inspect_ascend_row_summed([&mut sx, &mut sy, &mut scale], rows, 0.1, planes, across);
+    let rows = [row, row, row, &wx, &wy, &wx, &wy, below, row];
+    inspect_ascend_r_row_scaled([&mut sxx, &mut syy, &mut sxy, &mut scale_r], rows, planes, across);
+    inspect_ascend_r_row_summed([&mut sxx, &mut syy, &mut sxy, &mut scale_r], rows, planes, across);
+    inspect_dual_row([&mut sx, &mut sy], [row, below], planes, across);
+    inspect_dual_p_row([&mut tx, &mut ty], [row, below, &wx, &wy], planes, across);
+    inspect_dual_p_last_row_kept([&mut tx, &mut ty, &mut kx, &mut ky], [row, &wx, &wy], planes, across);
+    inspect_dual_r_row(
+        [&mut sxx, &mut syy, &mut sxy],
+        [&wx, &wy, &wx, &wy, below, row],
+        planes,
+        across,
+    );
+    [wx, wy, lx, ly, tx, ty, kx, ky, sx, sy, scale, sxx, syy, sxy, scale_r]
+        .iter()
+        .flatten()
+        .sum()
+}
+
 fn main() {
     // The sizes are opaque, so that no kernel is specialized for them.
     let (planes, across) = (black_box(8), black_box(12));
@@ -252,25 +502,23 @@ fn main() {
     let mut target = vec![0.0; width];
     inspect_descend_row(&mut target, [row, row, row, row], 0.1, planes, across);
     let (mut tx, mut ty) = (vec![0.0; 3 * width], vec![0.0; 3 * width]);
+    let mut scale = vec![0.0; 3 * width];
     inspect_ascend_row(
-        &mut tx[..width],
-        &mut ty[..width],
+        [&mut tx[..width], &mut ty[..width], &mut scale[..width]],
         [row, row, row, row],
         0.1,
         planes,
         across,
     );
-    let mut scale = vec![0.0; 3 * width];
-    inspect_scale_rows(&tx[..width], &ty[..width], &mut scale[..width], width, 1.0);
-    inspect_scale_coupled(&tx, &ty, &mut scale[..width], width, 1.0);
     let (mut x, mut px, mut py) = (row.to_vec(), row.to_vec(), row.to_vec());
     inspect_settle_row(
-        [&tx[..width], &ty[..width], &scale[..width], row],
-        [&mut x, &mut px, &mut py],
+        [&tx[..width], &ty[..width], &scale[..width]],
+        [&mut px, &mut py],
         1.9,
         -0.9,
     );
     inspect_extrapolate_row(&mut target, row, &x);
+    inspect_extrapolate_relax_row(&mut target, row, &mut x, 1.9, -0.9);
     // TGV's kernels.
     let (mut first, mut second) = (vec![0.0; width], vec![0.0; width]);
     let (mut third, mut fourth) = (vec![0.0; width], vec![0.0; width]);
@@ -278,31 +526,16 @@ fn main() {
     inspect_backward_across(row, &mut second, planes, across);
     inspect_forward_down(row, &x, &mut third);
     inspect_backward_down(row, &x, &mut fourth);
-    let (mut wx, mut wy) = (vec![0.0; width], vec![0.0; width]);
-    inspect_advance_row(
-        [&mut wx, &mut wy],
-        [row, row, row, row, &first, &second, &third, &fourth],
-        0.1,
-    );
-    inspect_ascend_p_row(
-        &mut tx[..width],
-        &mut ty[..width],
-        [row, row, &first, &second, &wx, &wy],
-        0.1,
-    );
+    let steps = tgv_steps(row, &x, planes, across);
+    let (wx, wy) = (row.to_vec(), x.clone());
     let (mut txx, mut tyy, mut txy) = (vec![0.0; 3 * width], vec![0.0; 3 * width], vec![0.0; 3 * width]);
+    let mut scale_r = vec![0.0; width];
     inspect_ascend_r_row(
-        [&mut txx[..width], &mut tyy[..width], &mut txy[..width]],
-        [row, row, row, &first, &second, &third, &fourth],
-        0.1,
+        [&mut txx[..width], &mut tyy[..width], &mut txy[..width], &mut scale_r],
+        [row, row, row, &first, &second, &third, &fourth, &wx, &wy],
+        planes,
+        across,
     );
-    inspect_scale_tensor_rows(
-        [&txx[..width], &tyy[..width], &txy[..width]],
-        &mut scale[..width],
-        width,
-        1.0,
-    );
-    inspect_scale_tensor_coupled([&txx, &tyy, &txy], &mut scale[..width], width, 1.0);
     let (mut rxx, mut ryy, mut rxy) = (row.to_vec(), row.to_vec(), row.to_vec());
     inspect_settle_tensor_row(
         [&txx[..width], &tyy[..width], &txy[..width], &scale[..width]],
@@ -310,7 +543,6 @@ fn main() {
         1.9,
         -0.9,
     );
-    inspect_relax_pair_row([&first, &second], [&mut wx, &mut wy], 1.9, -0.9);
     let total: f64 = back
         .iter()
         .chain(&coefficients)
@@ -319,5 +551,5 @@ fn main() {
         .chain(&rxx)
         .chain(&wx)
         .sum();
-    println!("{}", black_box(total).is_finite());
+    println!("{}", black_box(total + steps).is_finite());
 }

@@ -96,6 +96,10 @@ pub struct Options {
     pub partial_radius: Option<f64>,
     /// `R` of the box of free samples.
     pub free_radius: f64,
+    /// The threads that sweep the canvas at once, each a strip of bands: 0 for as many
+    /// as the processor runs at once. The result is the same, to the last bit,
+    /// whatever their count.
+    pub threads: usize,
 }
 
 impl Default for Options {
@@ -113,6 +117,7 @@ impl Default for Options {
             record_every: 10,
             partial_radius: None,
             free_radius: frames::FREE_RADIUS,
+            threads: 0,
         }
     }
 }
@@ -142,6 +147,18 @@ pub struct Plan {
     pub partial_radius: Option<f64>,
     /// `R` of the box of free samples.
     pub free_radius: f64,
+    /// The threads that sweep the canvas at once: at least 1.
+    pub threads: usize,
+}
+
+/// The threads of an option: those given, or for 0 as many as the processor runs at once.
+#[must_use]
+pub fn threads_of(given: usize) -> usize {
+    if given > 0 {
+        given
+    } else {
+        std::thread::available_parallelism().map_or(1, std::num::NonZero::get)
+    }
 }
 
 /// The weights of the model a solver minimizes.
@@ -227,6 +244,7 @@ pub fn plan(options: &Options, weights: Weights<'_>) -> Result<Plan, Error> {
         record_every: options.record_every,
         partial_radius: options.partial_radius,
         free_radius: options.free_radius,
+        threads: threads_of(options.threads),
     };
     check(&settled)?;
     Ok(settled)
@@ -588,8 +606,13 @@ fn natural_room(layout: &Layout) -> Vec<Vec<f64>> {
         .collect()
 }
 
-fn due(iteration: u64, settled: &Plan) -> bool {
-    iteration == settled.iterations || (settled.record_every > 0 && iteration.is_multiple_of(settled.record_every))
+/// The iterations from after `iteration` to the next that records, which a sweep runs at
+/// once: every one between is due nothing.
+fn segment(iteration: u64, settled: &Plan) -> u64 {
+    let last = iteration
+        .checked_div(settled.record_every)
+        .map_or(settled.iterations, |records| (records + 1) * settled.record_every);
+    last.min(settled.iterations) - iteration
 }
 
 /// The gap per sample of a record, and whether a tolerance stops the solver there.
@@ -600,6 +623,52 @@ fn stops(settled: &Plan, samples: f64, primal: f64, dual: f64, partial: f64) -> 
         || (settled.relative_tolerance > 0.0 && gap <= settled.relative_tolerance * primal.abs())
         || (settled.partial_tolerance > 0.0 && partial / samples <= settled.partial_tolerance);
     (per_sample, met)
+}
+
+/// The values of a record: the primal and dual objectives, the scaling of the dual and
+/// the bound of the partial gap, the last two NaN where the model has none.
+type Taken = (f64, f64, f64, f64);
+
+/// What an observer is shown of a record: its iteration, its gap per sample and its
+/// primal and dual objectives.
+type Shown = (u64, f64, f64, f64);
+
+/// The iterations of a solver after its first record: segments that each end at an
+/// iteration due a record, which keeps its outputs, `sweep` running `count` of them;
+/// then the record of the outputs, which `record` takes on the solver's threads
+/// ([`Values::on_threads`]), and which `observe` is shown with the outputs it was taken
+/// of. Returns the iteration of the last record and why the solver stopped there.
+fn segments<Point, Outputs>(
+    settled: &Plan,
+    samples: f64,
+    recorder: &mut Recorder,
+    (point, outputs): (&mut Point, &mut Outputs),
+    mut sweep: impl FnMut(&mut Point, Option<&mut Outputs>, u64),
+    mut record: impl FnMut(&Outputs) -> Taken,
+    mut observe: impl FnMut(&Outputs, Shown) -> ControlFlow<()>,
+) -> (u64, Stop) {
+    let mut iteration = 0;
+    loop {
+        let count = segment(iteration, settled);
+        if count == 0 {
+            return (iteration, Stop::Iterations);
+        }
+        // The segment's iterations, the last keeping its outputs, which is due a record.
+        recorder.resume();
+        sweep(point, Some(outputs), count);
+        recorder.pause();
+        iteration += count;
+        let (primal, dual, scaling, partial) = record(outputs);
+        recorder.record(iteration, primal, dual, scaling, partial);
+        let (gap, met) = stops(settled, samples, primal, dual, partial);
+        let observed = observe(outputs, (iteration, gap, primal, dual));
+        if met {
+            return (iteration, Stop::Converged);
+        }
+        if observed.is_break() {
+            return (iteration, Stop::Observer);
+        }
+    }
 }
 
 /// Minimizes the TV model of a frame (docs/math.md, 4.4 and 5).
@@ -644,57 +713,47 @@ pub fn solve_tv(
         weights.coupled,
         settled.relaxation,
     );
-    let mut values = Values::new(frame, &layout, &gammas);
+    let mut values = Values::new(frame, &layout, &gammas).on_threads(settled.threads);
     let radius = settled.free_radius;
-    let samples = nearest_from_usize(size);
+    let mut record = |outputs: &TvOutputs| {
+        let (primal, dual) = values.tv(weights, outputs, radius);
+        (primal, dual, f64::NAN, f64::NAN)
+    };
     let mut recorder = Recorder::new();
-    let (primal, dual) = values.tv(weights, &outputs, radius);
-    recorder.record(0, primal, dual, f64::NAN, f64::NAN);
-    let mut stop = Stop::Iterations;
-    let mut iteration = 0;
+    let (primal, dual, scaling, partial) = record(&outputs);
+    recorder.record(0, primal, dual, scaling, partial);
     let mut coefficients = natural_room(&layout);
     let mut seen = if observer.is_some() {
         vec![0.0; size]
     } else {
         Vec::new()
     };
-    while iteration < settled.iterations {
-        recorder.resume();
-        iteration += 1;
-        let keep = due(iteration, &settled);
-        sweep.iterate(&mut point, keep.then_some(&mut outputs));
-        recorder.pause();
-        if keep {
-            let (primal, dual) = values.tv(weights, &outputs, radius);
-            recorder.record(iteration, primal, dual, f64::NAN, f64::NAN);
-            let (gap, met) = stops(&settled, samples, primal, dual, f64::NAN);
-            if met {
-                stop = Stop::Converged;
-            }
-            if let Some(observe) = observer.as_deref_mut() {
-                layout.write_natural(&outputs.canvas, &mut seen);
-                write_coefficients(&layout, &outputs.coefficients, &mut coefficients);
-                let record = Record {
-                    height: frame.height(),
-                    width: frame.width(),
-                    iteration,
-                    gap,
-                    primal,
-                    dual,
-                    coefficients: &coefficients,
-                    canvas: &seen,
-                    w: None,
-                };
-                if observe(&record).is_break() && !met {
-                    stop = Stop::Observer;
-                    break;
-                }
-            }
-            if met {
-                break;
-            }
-        }
-    }
+    let (iteration, stop) = segments(
+        &settled,
+        nearest_from_usize(size),
+        &mut recorder,
+        (&mut point, &mut outputs),
+        |point, outputs, count| sweep.run(point, outputs, count, settled.threads),
+        record,
+        |outputs, (iteration, gap, primal, dual)| {
+            let Some(observe) = observer.as_deref_mut() else {
+                return ControlFlow::Continue(());
+            };
+            layout.write_natural(&outputs.canvas, &mut seen);
+            write_coefficients(&layout, &outputs.coefficients, &mut coefficients);
+            observe(&Record {
+                height: frame.height(),
+                width: frame.width(),
+                iteration,
+                gap,
+                primal,
+                dual,
+                coefficients: &coefficients,
+                canvas: &seen,
+                w: None,
+            })
+        },
+    );
     let (canvas, p_out) = tv_natural(&layout, point, &outputs, &mut coefficients);
     Ok(FrameResult {
         primal: Primal {
@@ -745,11 +804,9 @@ pub fn solve_tgv(
         weights.coupled,
         settled.relaxation,
     );
-    let mut values = Values::new(frame, &layout, &gammas);
-    let samples = nearest_from_usize(size);
-    let mut recorder = Recorder::new();
+    let mut values = Values::new(frame, &layout, &gammas).on_threads(settled.threads);
     let radius = settled.free_radius;
-    let record = |values: &mut Values, outputs: &TgvOutputs| {
+    let mut record = |outputs: &TgvOutputs| {
         let (primal, dual, theta) = values.tgv(weights, outputs, radius);
         let partial = match settled.partial_radius {
             Some(partial_radius) => {
@@ -760,55 +817,43 @@ pub fn solve_tgv(
         };
         (primal, dual, theta, partial)
     };
-    let (primal, dual, theta, partial) = record(&mut values, &outputs);
+    let mut recorder = Recorder::new();
+    let (primal, dual, theta, partial) = record(&outputs);
     recorder.record(0, primal, dual, theta, partial);
-    let mut stop = Stop::Iterations;
-    let mut iteration = 0;
     let mut coefficients = natural_room(&layout);
     let (mut seen, mut seen_w) = if observer.is_some() {
         (vec![0.0; size], Vector::zeros(size))
     } else {
         (Vec::new(), Vector::zeros(0))
     };
-    while iteration < settled.iterations {
-        recorder.resume();
-        iteration += 1;
-        let keep = due(iteration, &settled);
-        sweep.iterate(&mut point, keep.then_some(&mut outputs));
-        recorder.pause();
-        if keep {
-            let (primal, dual, theta, partial) = record(&mut values, &outputs);
-            recorder.record(iteration, primal, dual, theta, partial);
-            let (gap, met) = stops(&settled, samples, primal, dual, partial);
-            if met {
-                stop = Stop::Converged;
-            }
-            if let Some(observe) = observer.as_deref_mut() {
-                layout.write_natural(&outputs.first.canvas, &mut seen);
-                write_coefficients(&layout, &outputs.first.coefficients, &mut coefficients);
-                layout.write_natural(&outputs.wx, &mut seen_w.x);
-                layout.write_natural(&outputs.wy, &mut seen_w.y);
-                let record = Record {
-                    height: frame.height(),
-                    width: frame.width(),
-                    iteration,
-                    gap,
-                    primal,
-                    dual,
-                    coefficients: &coefficients,
-                    canvas: &seen,
-                    w: Some(&seen_w),
-                };
-                if observe(&record).is_break() && !met {
-                    stop = Stop::Observer;
-                    break;
-                }
-            }
-            if met {
-                break;
-            }
-        }
-    }
+    let (iteration, stop) = segments(
+        &settled,
+        nearest_from_usize(size),
+        &mut recorder,
+        (&mut point, &mut outputs),
+        |point, outputs, count| sweep.run(point, outputs, count, settled.threads),
+        record,
+        |outputs, (iteration, gap, primal, dual)| {
+            let Some(observe) = observer.as_deref_mut() else {
+                return ControlFlow::Continue(());
+            };
+            layout.write_natural(&outputs.first.canvas, &mut seen);
+            write_coefficients(&layout, &outputs.first.coefficients, &mut coefficients);
+            layout.write_natural(&outputs.wx, &mut seen_w.x);
+            layout.write_natural(&outputs.wy, &mut seen_w.y);
+            observe(&Record {
+                height: frame.height(),
+                width: frame.width(),
+                iteration,
+                gap,
+                primal,
+                dual,
+                coefficients: &coefficients,
+                canvas: &seen,
+                w: Some(&seen_w),
+            })
+        },
+    );
     let (canvas, w_out, p_out, r_out) = tgv_natural(&layout, point, &outputs, &mut coefficients);
     Ok(FrameResult {
         primal: Primal {

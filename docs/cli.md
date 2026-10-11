@@ -222,6 +222,7 @@ one value for each (4.1, 4.4).
 | `--no-weight-scaling` | | | Keeps the defaults of the ratio and the tolerance as they are for a weight of 1 (6.5) |
 | `--record-every` | ≥ 0 | 10 | Iterations between records, where the gaps are taken and the tolerances checked; 0: only the last |
 | `--free-radius` | ≥ 0 | 255 | `R` of the box of free samples (6.6) |
+| `--threads` | ≥ 0 | 0 | The threads that take the canvas at once, each a part of its rows within which every block of every component lies whole; 0: as many as the processor runs at once. The result is the same, to the last bit, whatever their count |
 
 ## The subgradient method
 

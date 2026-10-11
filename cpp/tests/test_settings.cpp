@@ -112,6 +112,8 @@ void every_option(void) {
                                "7",
                                "--free-radius",
                                "100",
+                               "--threads",
+                               "5",
                                "--subgradient-iterations",
                                "12",
                                "--subgradient-step",
@@ -142,7 +144,7 @@ void every_option(void) {
   const unround::pdhg::Options& pdhg = settings->pdhg;
   CHECK(pdhg.iterations == 300u && pdhg.tolerance == 1e-5 && pdhg.relative_tolerance == 1e-3);
   CHECK(pdhg.step_ratio == 4.0 && pdhg.relaxation == 1.5 && pdhg.step_product == 0.5 && pdhg.norm_squared == 9.0);
-  CHECK(!pdhg.weight_scaling && pdhg.record_every == 7u && pdhg.free_radius == 100.0);
+  CHECK(!pdhg.weight_scaling && pdhg.record_every == 7u && pdhg.free_radius == 100.0 && pdhg.threads == 5u);
   const unround::subgradient::Options& sub = settings->subgradient;
   CHECK(sub.iterations == 12u && sub.step == 0.25 && sub.decay == 0.0 && !sub.momentum && sub.record_every == 3u);
   CHECK(settings->reading.max_pixels == 1000u && settings->reading.max_scans == 9 &&

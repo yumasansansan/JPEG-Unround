@@ -6,7 +6,8 @@
 // on fields of integers, where every product and sum is exact in binary64; the norms
 // within the bounds of 3.3; and the projections onto the balls: a field within its
 // ball stays as it is, one beyond it lands on the sphere, within the rounding of the
-// norm and the quotients, and projecting again moves nothing by more than that.
+// norm, the quotient and the products, and projecting again moves nothing by more than
+// that.
 
 #include "unround/operators.hpp"
 
@@ -148,8 +149,8 @@ void projections(void) {
     unround::operators::project(views_of<Vector, VectorView<double>>(fields), radius, coupled);
     unround::operators::project(views_of<Tensor, TensorView<double>>(tensors), radius, coupled);
     // The norm of a projected pixel is within the rounding of the norm (a sum of k
-    // squares and a root: gamma_{k+1}), of its quotient by the radius, and of the
-    // entries' quotients: gamma_{k+4} (docs/math.md, 9.3), with k = 6 coupled.
+    // squares and a root: gamma_{k+1}), of the radius's quotient by it, and of the
+    // entries' products by that: gamma_{k+4} (docs/math.md, 9.3), with k = 6 coupled.
     const auto norm_of = [&](const std::array<Vector, 3>& vectors, std::size_t channel, std::size_t i, std::size_t j) {
       double squared = 0.0;
       for (std::size_t c = 0; c < 3u; ++c) {

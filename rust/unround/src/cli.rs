@@ -54,6 +54,7 @@ Data term:   --mu X|rule  --mu-scale S  --mu-power R  --mu-chroma K  --weight-po
 Solver:      --iterations N  --tolerance X  --relative-tolerance X  --partial-tolerance X
              --partial-radius X  --step-ratio X  --relaxation X  --step-product X
              --norm-squared X  --no-weight-scaling  --record-every N  --free-radius R
+             --threads N
 Subgradient: --subgradient-iterations N  --subgradient-step X  --subgradient-decay X
              --no-momentum  --subgradient-record-every N
 Reading:     --max-pixels N  --max-scans N  --warnings-are-errors
@@ -98,6 +99,7 @@ const VALUED: &[&str] = &[
     "norm-squared",
     "record-every",
     "free-radius",
+    "threads",
     "subgradient-iterations",
     "subgradient-step",
     "subgradient-decay",
@@ -503,6 +505,9 @@ fn settings(reader: &mut Reader<'_>) -> Settings {
     if let Some(value) = reader.number("free-radius", at_least_zero, "at least 0 and finite") {
         solver.free_radius = value;
     }
+    if let Some(value) = reader.count("threads", 0) {
+        solver.threads = usize::try_from(value).unwrap_or(usize::MAX);
+    }
     let subgradient = &mut settings.subgradient;
     if let Some(value) = reader.count("subgradient-iterations", 0) {
         subgradient.iterations = value;
@@ -678,6 +683,7 @@ pub fn options_of(settings: &Settings) -> Vec<String> {
     }
     put("record-every", solver.record_every.to_string());
     put("free-radius", decimal(solver.free_radius));
+    put("threads", solver.threads.to_string());
     let method = &settings.subgradient;
     put("subgradient-iterations", method.iterations.to_string());
     put("subgradient-step", decimal(method.step));
@@ -1763,6 +1769,7 @@ mod tests {
                 record_every: 0,
                 partial_radius: None,
                 free_radius: 300.0,
+                threads: 3,
             },
             subgradient: subgradient::Options {
                 iterations: 7,
